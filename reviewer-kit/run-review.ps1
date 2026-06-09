@@ -18,6 +18,26 @@ $OutLog = Join-Path $ArtifactsRoot "logs\sidecar.stdout.log"
 $ErrLog = Join-Path $ArtifactsRoot "logs\sidecar.stderr.log"
 $script:SidecarStarted = $false
 
+function Repair-PathEnvironment {
+  $processEnv = [System.Environment]::GetEnvironmentVariables("Process")
+  $pathValue = $null
+  $pathKeys = @()
+  foreach ($key in $processEnv.Keys) {
+    if ([string]::Equals([string]$key, "PATH", [System.StringComparison]::OrdinalIgnoreCase)) {
+      $pathKeys += [string]$key
+      if ([string]::IsNullOrEmpty($pathValue)) {
+        $pathValue = [string]$processEnv[$key]
+      }
+    }
+  }
+  foreach ($key in $pathKeys) {
+    [System.Environment]::SetEnvironmentVariable($key, $null, "Process")
+  }
+  if (-not [string]::IsNullOrEmpty($pathValue)) {
+    [System.Environment]::SetEnvironmentVariable("Path", $pathValue, "Process")
+  }
+}
+
 function Initialize-TesterIdentity {
   $identityJson = & node (Join-Path $RepoRoot "scripts\tester-id.mjs") --json
   if ($LASTEXITCODE -ne 0) { Fail "tester identity initialization failed" }
@@ -97,6 +117,7 @@ function Assert-Port-Free {
 
 function Start-Sidecar {
   Assert-Port-Free
+  Repair-PathEnvironment
   Set-Content -LiteralPath $OutLog -Value "" -Encoding ASCII
   Set-Content -LiteralPath $ErrLog -Value "" -Encoding ASCII
   $publicKey = (Get-Content -LiteralPath $AuthPublicKey -Raw).Trim()
@@ -147,6 +168,10 @@ function Run-FullReview {
   if ($LASTEXITCODE -ne 0) { throw "ALLOW demo failed" }
   & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $KitRoot "refuse-demo.ps1")
   if ($LASTEXITCODE -ne 0) { throw "REFUSE demo failed" }
+  & node (Join-Path $RepoRoot "scripts\hostile-input-proof.mjs")
+  if ($LASTEXITCODE -ne 0) { throw "hostile input proof failed" }
+  & node (Join-Path $RepoRoot "scripts\executor-blocked-demo.mjs")
+  if ($LASTEXITCODE -ne 0) { throw "executor blocked demo failed" }
   & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $KitRoot "verify-receipt.ps1") (Join-Path $ArtifactsRoot "receipts\allow-receipt.json")
   if ($LASTEXITCODE -ne 0) { throw "ALLOW receipt verification failed" }
   & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $KitRoot "verify-receipt.ps1") (Join-Path $ArtifactsRoot "receipts\refuse-receipt.json")
@@ -161,6 +186,8 @@ function Run-FullReview {
   Write-Host "REFUSE: PASS"
   Write-Host "Receipt Verification: PASS"
   Write-Host "Replay Verification: PASS"
+  Write-Host "Hostile Inputs: PASS"
+  Write-Host "Executor Blocked: PASS"
   Write-Host ""
   Write-Host "FINAL VERDICT: PASS"
   Write-Host ""
@@ -172,6 +199,8 @@ function Run-FullReview {
   Write-Host "reviewer-kit/artifacts/proofs/security/refuse-response.json"
   Write-Host "reviewer-kit/artifacts/proofs/replay/allow-receipt-verification.json"
   Write-Host "reviewer-kit/artifacts/proofs/replay/refuse-receipt-verification.json"
+  Write-Host "reviewer-kit/artifacts/proofs/security/hostile-inputs.json"
+  Write-Host "reviewer-kit/artifacts/proofs/security/executor-blocked-before-execution.json"
 }
 
 try {

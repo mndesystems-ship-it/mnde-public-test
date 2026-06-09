@@ -19,7 +19,8 @@ Behavior:
 
 - Tester ID is assigned by the test coordinator or entered by the tester.
 - Installation ID is generated locally.
-- Tester ID and Installation ID are placed into reviewer-kit request actor metadata.
+- Tester ID is placed into reviewer-kit request actor metadata.
+- Tester ID and Installation ID are also placed into request parameters so they appear in receipts without changing the production actor schema.
 - Receipts include that actor metadata through the canonical request.
 - Logs and diagnostics include the local tester identity file.
 
@@ -29,4 +30,3 @@ Privacy:
 - No browsing activity is tracked.
 - No telemetry is transmitted automatically.
 - Test artifacts remain local unless the tester chooses to share them.
-

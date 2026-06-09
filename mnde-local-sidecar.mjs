@@ -359,7 +359,7 @@ async function fail(res, reason_code, status = 200, extra = {}, timings = {}) {
     reason_code: finalReason,
     request_hash: persisted.receipt?.request_hash ?? extra.request_hash ?? null,
     decision_hash: persisted.receipt?.decision_output?.decision_hash ?? extra.decision_hash ?? null,
-    receipt: null,
+    receipt: persisted.ok ? persisted.receipt : null,
     receipt_persisted: persisted.ok,
     ...publicExtra
   }, timings);
@@ -408,7 +408,9 @@ async function readStrictObject(req, timings) {
   timings.request_parse_ms = Math.max(0, Math.round(performance.now() - started));
   timings.parse_ms = timings.request_parse_ms;
   if (!parsed.ok || typeof parsed.value !== "object" || parsed.value === null || Array.isArray(parsed.value)) {
-    throw new Error(parsed.ok ? "ERR_REQUEST_SCHEMA_INVALID" : parsed.reason.toUpperCase());
+    const error = new Error(parsed.ok ? "ERR_REQUEST_SCHEMA_INVALID" : `ERR_${parsed.reason.toUpperCase()}`);
+    error.raw_body = raw;
+    throw error;
   }
   return { value: parsed.value, raw };
 }
@@ -635,7 +637,7 @@ async function handleDecide(req, res) {
     if (error?.message === WORKER_TIMEOUT) counters.request_timeout_refusals += 1;
     timings.total_server_ms = Math.max(0, Math.round(performance.now() - totalStarted));
     recordTimings(timings);
-    await fail(res, error.message?.startsWith("ERR_") ? error.message : "ERR_RUNTIME_ERROR", 400, {}, timings);
+    await fail(res, error.message?.startsWith("ERR_") ? error.message : "ERR_RUNTIME_ERROR", 400, { raw_body: error.raw_body ?? "" }, timings);
   } finally {
     inflight -= 1;
     admitted.release();
@@ -804,13 +806,22 @@ async function handleReplay(req, res) {
     }
     const replay = workerReply.result;
     if ("parse_boundary" in replay) {
+      const original = receipt.decision_output;
+      const mismatches = [
+        ["request_hash", receipt.request_hash, replay.request_hash],
+        ["decision", original.decision, replay.decision],
+        ["reason_code", original.reason_code, replay.reason_code],
+        ["decision_hash", original.decision_hash, replay.decision_hash]
+      ]
+        .filter(([, left, right]) => left !== right)
+        .map(([field, originalValue, replayedValue]) => ({ field, original: originalValue, replayed: replayedValue }));
       response(res, 200, {
         schema_version: "mnde.receipt_replay.v1",
         request_hash: receipt.request_hash,
-        original: receipt.decision_output,
-        replayed: null,
-        drift: true,
-        mismatches: [{ field: "replay", original: receipt.decision_output.reason_code, replayed: replay.reason_code }]
+        original,
+        replayed: replay,
+        drift: mismatches.length > 0,
+        mismatches
       });
       return;
     }

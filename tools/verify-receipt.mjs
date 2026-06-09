@@ -98,6 +98,18 @@ function verifyRequestHash(receipt) {
   return pass();
 }
 
+function sidecarRefusalReason(parsedCanonicalRequest) {
+  return typeof parsedCanonicalRequest?.sidecar_refusal === "string" ? parsedCanonicalRequest.sidecar_refusal : null;
+}
+
+function parseBoundaryDecisionHash(requestHash, reasonCode) {
+  return sha256Hex(canonicalizeJson({
+    request_hash: requestHash,
+    decision: "REFUSE",
+    reason_code: reasonCode
+  }));
+}
+
 function recomputeDecisionHash(receipt) {
   const arm = receipt.pipeline_trace.arm;
   return sha256Hex(canonicalizeJson({
@@ -115,7 +127,12 @@ function recomputeDecisionHash(receipt) {
 
 function verifyDecisionHash(receipt) {
   try {
-    const expected = recomputeDecisionHash(receipt);
+    const parsed = parseStrictJson(receipt.canonical_request);
+    const sidecarReason = parsed.ok ? sidecarRefusalReason(parsed.value) : null;
+    const preflight = !sidecarReason && parsed.ok ? runStrictPreflight(receipt.canonical_request) : null;
+    const expected = sidecarReason
+      ? parseBoundaryDecisionHash(receipt.request_hash, sidecarReason)
+      : preflight && "parse_boundary" in preflight ? preflight.decision_hash : recomputeDecisionHash(receipt);
     if (expected !== receipt.decision_output.decision_hash) {
       return fail(`expected ${expected}, got ${receipt.decision_output.decision_hash}`);
     }
@@ -127,7 +144,13 @@ function verifyDecisionHash(receipt) {
 
 function verifyPolicyHash(receipt, canonicalRequest) {
   const policy = canonicalRequest?.policy_document;
-  if (!isObject(policy)) return fail("canonical_request.policy_document is required");
+  if (!isObject(policy)) {
+    const decisionPolicy = receipt.decision_output?.policy_hash;
+    const tracePolicy = receipt.pipeline_trace?.preflight?.policy_hash;
+    return typeof decisionPolicy === "string" && decisionPolicy.length > 0 && decisionPolicy === tracePolicy
+      ? pass()
+      : fail("canonical_request.policy_document is required");
+  }
   const expected = policyHash(policy);
   const reported = receipt.decision_output.policy_hash;
   if (expected !== reported) return fail(`expected ${expected}, got ${reported}`);
@@ -148,8 +171,32 @@ function verifySignature(receipt) {
 function verifyReplayDeterminism(receipt) {
   try {
     resetArmStores();
+    const parsed = parseStrictJson(receipt.canonical_request);
+    if (!parsed.ok) return fail(`canonical_request parse failed: ${parsed.reason}`);
+    const sidecarReason = sidecarRefusalReason(parsed.value);
+    if (sidecarReason) {
+      const original = receipt.decision_output;
+      const checks = [
+        ["request_hash", receipt.request_hash, sha256Hex(receipt.canonical_request)],
+        ["decision", original.decision, "REFUSE"],
+        ["reason_code", original.reason_code, sidecarReason],
+        ["decision_hash", original.decision_hash, parseBoundaryDecisionHash(receipt.request_hash, sidecarReason)]
+      ];
+      const mismatch = checks.find(([, left, right]) => left !== right);
+      return mismatch ? fail(`${mismatch[0]} mismatch`) : pass();
+    }
     const preflight = runStrictPreflight(receipt.canonical_request);
-    if ("parse_boundary" in preflight) return fail(`replay parse boundary: ${preflight.reason_code}`);
+    if ("parse_boundary" in preflight) {
+      const original = receipt.decision_output;
+      const checks = [
+        ["request_hash", receipt.request_hash, preflight.request_hash],
+        ["decision", original.decision, preflight.decision],
+        ["reason_code", original.reason_code, preflight.reason_code],
+        ["decision_hash", original.decision_hash, preflight.decision_hash]
+      ];
+      const mismatch = checks.find(([, left, right]) => left !== right);
+      return mismatch ? fail(`${mismatch[0]} mismatch`) : pass();
+    }
     const orbit = runStrictOrbit(preflight.parsed_input);
     const arm = runStrictArm(preflight.parsed_input, orbit, preflight.request_hash);
     const ramona = runStrictRamona(preflight.parsed_input, arm);

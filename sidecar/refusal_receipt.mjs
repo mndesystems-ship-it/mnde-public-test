@@ -1,6 +1,7 @@
 import { createHash, createHmac } from "node:crypto";
 import {
   RECEIPT_PUBLIC_KEY_FINGERPRINT,
+  RECEIPT_PUBLIC_KEY_PEM,
   RECEIPT_SIGNATURE_ALGORITHM,
   RECEIPT_SIGNATURE_KEY_ID,
   canonicalizeJson,
@@ -13,6 +14,14 @@ const RECEIPT_KEY_SET_VERSION = "receipt-key-set-v1";
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function parseBoundaryDecisionHash(requestHash, reasonCode) {
+  return sha256(canonicalizeJson({
+    request_hash: requestHash,
+    decision: "REFUSE",
+    reason_code: reasonCode
+  }));
 }
 
 function signPayload(payload) {
@@ -28,6 +37,7 @@ function signPayload(payload) {
       algorithm: RECEIPT_SIGNATURE_ALGORITHM,
       key_id: RECEIPT_SIGNATURE_KEY_ID,
       public_key_fingerprint: RECEIPT_PUBLIC_KEY_FINGERPRINT,
+      public_key_pem: RECEIPT_PUBLIC_KEY_PEM,
       value: signReceiptPayload(canonicalPayload)
     }
   };
@@ -54,18 +64,14 @@ export function buildSidecarRefusalReceipt({
   decision_hash = null
 }) {
   const safeTimings = safeTimingSnapshot(timings);
-  const canonicalRequest = typeof raw_body === "string" && raw_body.length > 0
-    ? raw_body
-    : canonicalizeJson({ sidecar_refusal: reason_code, request_id });
-  const resolvedRequestHash = request_hash ?? sha256(canonicalRequest);
-  const resolvedDecisionHash = decision_hash ?? sha256(canonicalizeJson({
-    request_hash: resolvedRequestHash,
-    policy_hash,
-    decision: "REFUSE",
-    reason_code,
-    policy_version,
-    execution_id: request_id ?? "sidecar-refusal"
-  }));
+  const canonicalRequest = canonicalizeJson({
+    sidecar_refusal: reason_code,
+    request_id,
+    raw_body_sha256: typeof raw_body === "string" && raw_body.length > 0 ? sha256(raw_body) : null,
+    raw_body_bytes: typeof raw_body === "string" ? Buffer.byteLength(raw_body, "utf8") : 0
+  });
+  const resolvedRequestHash = sha256(canonicalRequest);
+  const resolvedDecisionHash = parseBoundaryDecisionHash(resolvedRequestHash, reason_code);
   const payload = {
     schema_version: "ecs.receipt.v2",
     canonical_request: canonicalRequest,

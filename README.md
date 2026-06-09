@@ -41,6 +41,30 @@ Expected final output:
 FINAL VERDICT: PASS
 ```
 
+The reviewer kit is the supported one-command proof path. It starts MNDe, runs the ALLOW and REFUSE examples, verifies receipts, verifies replay, checks hostile input refusal behavior, and proves that a destructive executor action is blocked before execution.
+
+## Known Reviewer Claims Now Proven
+
+- Fresh clone install
+- Tester init
+- Reviewer kit
+- Safe ALLOW
+- Unsafe REFUSE
+- Offline receipt verification
+- Tamper detection
+- Deterministic repeat requests
+- Executor blocked before execution
+
+## Desktop Smoke Test
+
+Run:
+
+```powershell
+npm run desktop-smoke
+```
+
+This verifies that the packaged Windows desktop executable exists, launches, stays alive during the smoke test, and can work with the sidecar-facing health, receipt, replay, policy, and logs/metrics surfaces.
+
 ## Trigger An ALLOW Decision
 
 ```powershell
