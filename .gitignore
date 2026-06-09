@@ -1,0 +1,16 @@
+.mnde-test/
+reviewer-kit/artifacts/
+reviewer-kit/logs/
+reviewer-kit/receipts/
+reviewer-kit/proofs/
+shared/receipt_keys/
+*.log
+*.tmp
+auth-config.local.json
+mnde-auth-session*.json
+mnde-auth-session*.key
+jwks-cache/
+auth-audit/
+receipt-exports/
+node_modules/
+

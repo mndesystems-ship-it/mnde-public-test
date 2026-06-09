@@ -1,0 +1,11 @@
+{
+  "submitted_action": "read_status",
+  "expected_decision": "ALLOW",
+  "receipt_path": "reviewer-kit/artifacts/receipts/allow-receipt.json",
+  "verification": {
+    "signature": "PASS",
+    "schema": "PASS",
+    "replay": "PASS",
+    "hashes": "PASS"
+  }
+}

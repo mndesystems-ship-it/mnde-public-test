@@ -1,0 +1,11 @@
+{
+  "submitted_action": "recursive_delete",
+  "expected_decision": "REFUSE",
+  "receipt_path": "reviewer-kit/artifacts/receipts/refuse-receipt.json",
+  "verification": {
+    "signature": "PASS",
+    "schema": "PASS",
+    "replay": "PASS",
+    "hashes": "PASS"
+  }
+}

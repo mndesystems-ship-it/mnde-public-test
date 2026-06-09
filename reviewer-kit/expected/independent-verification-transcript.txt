@@ -1,0 +1,4 @@
+Sidecar Reachable: NO
+Receipt Verification: PASS
+Replay Determinism: PASS
+FINAL VERDICT: VERIFIED

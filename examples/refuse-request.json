@@ -1,0 +1,4 @@
+{
+  "action": "recursive_delete",
+  "expected_decision": "REFUSE"
+}

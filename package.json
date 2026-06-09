@@ -1,0 +1,16 @@
+{
+  "name": "mnde-public-test",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "tester:init": "node ./scripts/tester-id.mjs",
+    "reviewer-kit": "powershell -NoProfile -ExecutionPolicy Bypass -File ./reviewer-kit/run-review.ps1 -Full",
+    "reviewer-kit:verify": "powershell -NoProfile -ExecutionPolicy Bypass -File ./reviewer-kit/verify-review.ps1",
+    "reviewer-kit:allow": "powershell -NoProfile -ExecutionPolicy Bypass -File ./reviewer-kit/allow-demo.ps1",
+    "reviewer-kit:refuse": "powershell -NoProfile -ExecutionPolicy Bypass -File ./reviewer-kit/refuse-demo.ps1",
+    "verify-receipt": "node ./tools/verify-receipt.mjs",
+    "test:receipt-verifier": "powershell -NoProfile -ExecutionPolicy Bypass -File ./tests/test_receipt_verifier.ps1"
+  }
+}
+
