@@ -2,13 +2,23 @@
 
 ## 1. Abstract
 
-An execution receipt is a cryptographically verifiable record of a pre-execution authorization decision. It binds an execution request, a policy reference, a deterministic decision output, pipeline trace data, and a signature produced by an authority-approved receipt signing key.
+Execution Receipts provide cryptographically verifiable proof that an action was authorized or refused before execution.
+
+An execution receipt is a cryptographically verifiable record of a pre-execution authorization decision. It binds an execution request, a policy reference, a deterministic decision output, decision trace data, and a signature produced by an authority-approved receipt signing key.
 
 An execution receipt MAY represent either an `ALLOW` decision or a `REFUSE` decision. A conforming verifier MUST be able to distinguish receipt integrity failures from authority trust failures.
 
-## 2. Goals
+## 2. Vendor Neutrality
 
-ERS v1 defines a receipt format and verification procedure that provides:
+ERS v1 defines verification behavior and receipt semantics.
+
+ERS v1 does not require a specific product, vendor, runtime architecture, policy engine, decision engine, or enforcement implementation.
+
+Any system that produces receipts conforming to this specification MAY claim ERS v1 compatibility.
+
+## 3. Goals
+
+ERS v1 defines verification requirements and receipt semantics that provide:
 
 - decision integrity
 - tamper detection
@@ -26,7 +36,7 @@ ERS v1 does not guarantee:
 - that runtime telemetry outside the receipt is complete
 - that storage systems preserve receipts indefinitely
 
-## 3. Terminology
+## 4. Terminology
 
 The key words `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY` are to be interpreted as normative requirement terms.
 
@@ -38,7 +48,7 @@ The key words `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY` are to be in
 
 `REFUSE`: A decision that denies the proposed execution before execution.
 
-`Receipt`: A signed object conforming to ERS v1 that records an execution decision.
+`Receipt`: A signed object conforming to ERS v1 semantics that records an execution decision.
 
 `Authority Bundle`: A verifier-provided bundle containing the trusted root authority public key and a signed authority manifest.
 
@@ -52,7 +62,7 @@ The key words `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY` are to be in
 
 `Verifier`: Software that validates ERS receipts without trusting the producer, dashboard, server, operator, or receipt-provided key material.
 
-## 4. Threat Model
+## 5. Threat Model
 
 ERS v1 is designed to detect:
 
@@ -77,26 +87,40 @@ Out of scope:
 - user-interface deception outside the receipt
 - execution bypasses outside the enforcement integration
 
-## 5. Receipt Format
+## 6. Receipt Format
 
-An ERS v1 receipt is a JSON object. The current MNDe schema identifier is `ecs.receipt.v2`. Implementations claiming ERS v1 compatibility MUST support this schema.
+An ERS v1 receipt is a JSON object that exposes receipt data sufficient to satisfy all ERS v1 verification requirements.
 
-### 5.1 Top-Level Fields
+ERS v1 defines verification requirements and receipt semantics. Implementations MAY use different internal schema identifiers provided they preserve:
+
+- canonicalization rules
+- hash semantics
+- authority validation requirements
+- replay requirements
+- signature requirements
+
+MNDe currently uses:
+
+```text
+ecs.receipt.v2
+```
+
+### 6.1 Top-Level Fields
 
 | Field | Type | Required | Description |
 |---|---:|---:|---|
-| `schema_version` | string | yes | Receipt schema identifier. MUST be `ecs.receipt.v2` for this version. |
+| `schema_version` | string | yes | Receipt schema identifier. MAY be implementation-specific. |
 | `canonical_request` | string | yes | Canonical JSON string containing the request and policy inputs used for decision evaluation. |
 | `request_hash` | string | yes | SHA-256 hash of `canonical_request`, lowercase hexadecimal. |
 | `decision_output` | object | yes | Deterministic decision result. |
-| `pipeline_trace` | object | yes | Layer-specific deterministic trace data. |
+| `pipeline_trace` | object | yes | Deterministic decision trace data. |
 | `signature` | object | optional | Legacy HMAC signature metadata. MUST NOT be used as the origin trust anchor. |
 | `verifiable_signature` | object | yes | Trust-anchored public signature metadata and value. |
 | `receipt_id` | string | optional | Stable receipt identifier, if assigned by a producer. |
 | `timestamp` | string | optional | Producer timestamp, if supplied. The verifier MUST NOT trust it unless signed. |
 | `verifier_version` | string | optional | Verifier version that produced a verification report, not part of receipt origin. |
 
-### 5.2 `decision_output`
+### 6.2 `decision_output`
 
 | Field | Type | Required | Description |
 |---|---:|---:|---|
@@ -112,42 +136,24 @@ An ERS v1 receipt is a JSON object. The current MNDe schema identifier is `ecs.r
 | `allowed_cost_usd` | string | yes | Decimal cost string allowed by the decision. |
 | `prevented_cost_usd` | string | yes | Decimal cost string prevented by the decision. |
 
-### 5.3 `pipeline_trace`
+### 6.3 Decision Trace Requirements
 
-`pipeline_trace` MUST contain `preflight`, `orbit`, `arm`, and `ramona` objects.
+A receipt MUST contain sufficient deterministic trace information to allow replay verification.
 
-`preflight` MUST contain:
+A trace implementation MUST contain:
 
-- `layer`
-- `request_hash`
-- `policy_hash`
-- `policy_version`
+- request validation stage
+- policy evaluation stage
+- execution authorization stage
+- runtime validation stage
 
-`orbit` MUST contain:
+Implementations MAY use different internal names for these stages.
 
-- `layer`
-- `decision`
-- `reason_code`
-- `validation_hash`
+Implementations MAY include additional stages.
 
-`arm` MUST contain:
+The verifier MUST include all stages present in the receipt when performing replay verification.
 
-- `layer`
-- `decision`
-- `reason_code`
-- `projected_total_cost_cents`
-- `allowed_cost_cents`
-- `prevented_cost_cents`
-- `execution_id`
-
-`ramona` MUST contain:
-
-- `layer`
-- `decision`
-- `reason_code`
-- `runtime_hash`
-
-### 5.4 `verifiable_signature`
+### 6.4 `verifiable_signature`
 
 | Field | Type | Required | Description |
 |---|---:|---:|---|
@@ -160,7 +166,7 @@ An ERS v1 receipt is a JSON object. The current MNDe schema identifier is `ecs.r
 
 The receipt MUST NOT be accepted merely because it contains a public key matching its signature. Public key authority MUST come from the Authority Bundle.
 
-## 6. Canonicalization Rules
+## 7. Canonicalization Rules
 
 ERS v1 canonicalization uses deterministic JSON serialization:
 
@@ -207,7 +213,7 @@ Sidecar-level refusal receipts that do not contain a full execution request MAY 
 }
 ```
 
-## 7. Signature Requirements
+## 8. Signature Requirements
 
 ERS v1 requires an Ed25519 signature in `verifiable_signature`.
 
@@ -228,7 +234,7 @@ The verifier MUST:
 
 Any signature verification failure MUST fail closed.
 
-## 8. Authority Bundle Requirements
+## 9. Authority Bundle Requirements
 
 An Authority Bundle contains:
 
@@ -258,7 +264,7 @@ Receipts generated on one system can be independently verified on another system
 
 Implementations SHOULD support multiple active keys and retired keys. Retired keys MAY verify old receipts if the receipt `signed_at` timestamp falls within the retired key validity interval. Active-only verification policies MAY reject retired keys.
 
-## 9. Verification Procedure
+## 10. Verification Procedure
 
 A conforming verifier MUST perform the following steps:
 
@@ -286,7 +292,7 @@ Required verdicts:
 
 Implementations MAY expose more detailed sub-results, but MUST NOT collapse `UNTRUSTED` into `VERIFIED`.
 
-## 10. Replay Verification
+## 11. Replay Verification
 
 Replay verification recomputes the deterministic decision from receipt contents.
 
@@ -295,6 +301,7 @@ Replay inputs:
 - `canonical_request`
 - policy document embedded in `canonical_request`, if present
 - deterministic pipeline logic
+- all decision trace stages present in the receipt
 - sidecar refusal envelope, if applicable
 
 Replay outputs:
@@ -313,10 +320,11 @@ Matching criteria:
 - `decision_hash` MUST match.
 - `policy_hash` MUST match when policy data is present.
 - cost fields MUST match for normal pipeline receipts.
+- trace stage outputs MUST match when represented in the receipt.
 
 A replay mismatch MUST fail verification.
 
-## 11. Failure Conditions
+## 12. Failure Conditions
 
 A verifier MUST fail verification for:
 
@@ -339,7 +347,7 @@ A verifier MUST fail verification for:
 - receipt signed by a key not authorized by the manifest
 - replay mismatch
 
-## 12. Security Considerations
+## 13. Security Considerations
 
 The Authority Bundle is security-critical. A verifier MUST obtain the trust anchor through an independent trusted channel. A receipt-provided public key MUST NOT establish authority.
 
@@ -356,7 +364,28 @@ Offline verification requires that the verifier possess:
 
 Long-term audit retention SHOULD include preservation of historical authority manifests or retired key metadata sufficient to validate old receipts.
 
-## 13. Example ALLOW Receipt
+## 14. MNDe Profile for ERS v1
+
+MNDe is one implementation of the Execution Firewall model.
+
+The implementation details described in this section are not normative requirements of ERS v1.
+
+MNDe implements the required trace stages using:
+
+- Preflight
+- Orbit
+- ARM
+- Ramona
+
+These names are implementation-specific and are not required by ERS v1.
+
+MNDe currently publishes receipts using:
+
+```text
+ecs.receipt.v2
+```
+
+## 15. Example ALLOW Receipt
 
 The following example is illustrative. Hex strings are shortened.
 
@@ -423,7 +452,7 @@ The following example is illustrative. Hex strings are shortened.
 }
 ```
 
-## 14. Example REFUSE Receipt
+## 16. Example REFUSE Receipt
 
 The following example is illustrative. Hex strings are shortened.
 
@@ -490,11 +519,11 @@ The following example is illustrative. Hex strings are shortened.
 }
 ```
 
-## 15. Verifier Conformance Requirements
+## 17. Verifier Conformance Requirements
 
 An implementation claiming `Execution Receipt Specification v1 Compatible`:
 
-- MUST parse and validate ERS v1 receipt schema.
+- MUST parse and validate receipt data sufficient to satisfy all ERS v1 verification requirements.
 - MUST reject malformed receipts.
 - MUST implement the canonicalization rules in this specification.
 - MUST recompute request, policy, and decision hashes.
@@ -509,7 +538,7 @@ An implementation claiming `Execution Receipt Specification v1 Compatible`:
 - SHOULD support retired keys for historical receipts.
 - MAY expose implementation-specific diagnostic detail.
 
-## 16. Versioning
+## 18. Versioning
 
 ERS versions use the format:
 
@@ -517,13 +546,23 @@ ERS versions use the format:
 ERS v<major>
 ```
 
-Receipt schema versions are independent strings. ERS v1 currently specifies `ecs.receipt.v2`.
+Receipt schema versions are independent strings.
+
+An ERS-compatible implementation MUST expose receipt data sufficient to satisfy all ERS v1 verification requirements.
+
+Receipt producers MAY use implementation-specific schema identifiers.
+
+MNDe currently publishes receipts using:
+
+```text
+ecs.receipt.v2
+```
 
 Compatible extensions MAY add optional fields. Compatible extensions MUST NOT change canonicalization, hash semantics, authority validation, or signature input for existing fields.
 
 Breaking changes MUST use a new ERS major version.
 
-## 17. References
+## 19. References
 
 - Ed25519 digital signatures
 - SHA-256 cryptographic hashing

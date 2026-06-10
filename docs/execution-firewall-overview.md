@@ -62,7 +62,11 @@ Agent or automation
 
 The agent does not need direct access to protected systems. The executor or tool wrapper is responsible for calling the Execution Firewall before performing work.
 
-## How MNDe Implements the Model
+## Reference Implementation: MNDe
+
+MNDe is one implementation of the Execution Firewall model.
+
+The implementation details described in this section are not normative requirements of ERS v1.
 
 MNDe implements the Execution Firewall model with:
 
