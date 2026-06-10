@@ -3,6 +3,8 @@
 Start here:
 
 - `first-tester-onboarding.md`
+- `execution-firewall-overview.md`
+- `execution-receipt-spec-v1.md`
 - `independent-verification.md`
 - `integration-guide.md`
 - `demo-scenarios.md`
