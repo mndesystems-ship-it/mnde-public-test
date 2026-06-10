@@ -1,35 +1,48 @@
 import { generateKeyPairSync } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { authorityPaths, writeSignedAuthorityManifest } from "../shared/authority-manifest.mjs";
 
 export function bootstrapReceiptKeys({ repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), ".."), force = false } = {}) {
   const keyDir = join(repoRoot, "shared", "receipt_keys");
   const privateKeyPath = join(keyDir, "receipt_signing_private.pem");
   const publicKeyPath = join(keyDir, "receipt_signing_public.pem");
+  const authority = authorityPaths(repoRoot);
   const existing = [privateKeyPath, publicKeyPath].filter((path) => existsSync(path));
 
-  if (existing.length === 2 && !force) {
-    return {
-      status: "exists",
-      privateKeyPath,
-      publicKeyPath,
-      message: "Receipt signing keys already exist."
-    };
+  mkdirSync(keyDir, { recursive: true });
+  mkdirSync(dirname(authority.manifestPath), { recursive: true });
+
+  if (force || existing.length !== 2) {
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    writeFileSync(privateKeyPath, privateKey.export({ type: "pkcs8", format: "pem" }), { flag: "w", mode: 0o600 });
+    writeFileSync(publicKeyPath, publicKey.export({ type: "spki", format: "pem" }), { flag: "w", mode: 0o644 });
   }
 
-  mkdirSync(keyDir, { recursive: true });
-  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-  writeFileSync(privateKeyPath, privateKey.export({ type: "pkcs8", format: "pem" }), { flag: "w", mode: 0o600 });
-  writeFileSync(publicKeyPath, publicKey.export({ type: "spki", format: "pem" }), { flag: "w", mode: 0o644 });
+  if (force || !existsSync(authority.rootPrivateKeyPath) || !existsSync(authority.rootPublicKeyPath)) {
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    writeFileSync(authority.rootPrivateKeyPath, privateKey.export({ type: "pkcs8", format: "pem" }), { flag: "w", mode: 0o600 });
+    writeFileSync(authority.rootPublicKeyPath, publicKey.export({ type: "spki", format: "pem" }), { flag: "w", mode: 0o644 });
+  }
+
+  writeSignedAuthorityManifest({
+    repoRoot,
+    rootPrivateKeyPem: readFileSync(authority.rootPrivateKeyPath, "utf8"),
+    rootPublicKeyPem: readFileSync(authority.rootPublicKeyPath, "utf8"),
+    receiptPublicKeyPem: readFileSync(publicKeyPath, "utf8")
+  });
 
   return {
-    status: existing.length === 1 ? "repaired" : "created",
+    status: existing.length === 2 && !force ? "exists" : existing.length === 1 ? "repaired" : "created",
     privateKeyPath,
     publicKeyPath,
-    message: existing.length === 1
-      ? "Local receipt signing key pair repaired."
-      : "Local development receipt signing keys generated."
+    manifestPath: authority.manifestPath,
+    message: existing.length === 2 && !force
+      ? "Receipt signing keys and authority manifest are ready."
+      : existing.length === 1
+        ? "Local receipt signing key pair repaired and authority manifest signed."
+        : "Local development receipt signing keys generated and authority manifest signed."
   };
 }
 

@@ -3,9 +3,11 @@ Set-StrictMode -Version Latest
 
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $KeyDir = Join-Path $RepoRoot "shared\receipt_keys"
+$AuthorityDir = Join-Path $RepoRoot "authority"
 $PrivateKey = Join-Path $KeyDir "receipt_signing_private.pem"
 $PublicKey = Join-Path $KeyDir "receipt_signing_public.pem"
 $BackupDir = Join-Path ([System.IO.Path]::GetTempPath()) ("mnde-receipt-keys-backup-{0}" -f ([guid]::NewGuid().ToString("N")))
+$AuthorityBackupDir = Join-Path ([System.IO.Path]::GetTempPath()) ("mnde-authority-backup-{0}" -f ([guid]::NewGuid().ToString("N")))
 
 function Restore-Keys {
   if (Test-Path -LiteralPath $KeyDir) {
@@ -13,6 +15,12 @@ function Restore-Keys {
   }
   if (Test-Path -LiteralPath $BackupDir) {
     Move-Item -LiteralPath $BackupDir -Destination $KeyDir -Force
+  }
+  if (Test-Path -LiteralPath $AuthorityDir) {
+    Remove-Item -LiteralPath $AuthorityDir -Recurse -Force -ErrorAction SilentlyContinue
+  }
+  if (Test-Path -LiteralPath $AuthorityBackupDir) {
+    Move-Item -LiteralPath $AuthorityBackupDir -Destination $AuthorityDir -Force
   }
 }
 
@@ -23,6 +31,9 @@ function Assert-True([bool]$Condition, [string]$Message) {
 try {
   if (Test-Path -LiteralPath $KeyDir) {
     Move-Item -LiteralPath $KeyDir -Destination $BackupDir -Force
+  }
+  if (Test-Path -LiteralPath $AuthorityDir) {
+    Move-Item -LiteralPath $AuthorityDir -Destination $AuthorityBackupDir -Force
   }
 
   Push-Location $RepoRoot

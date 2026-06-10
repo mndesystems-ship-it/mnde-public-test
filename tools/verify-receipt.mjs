@@ -7,12 +7,15 @@ import { fileURLToPath } from "node:url";
 import { runStrictPreflight } from "../preflight/engine.ts";
 import { runStrictOrbit } from "../orbit/engine.ts";
 import { resetArmStores, runStrictArm } from "../arm/engine.ts";
-import { runStrictRamona, verifyReceiptPublicSignature } from "../ram0na/engine.ts";
+import { runStrictRamona } from "../ram0na/engine.ts";
 import { REASON_CODES } from "../shared/contracts.ts";
 import { canonicalizeJson, parseStrictJson } from "../shared/json.ts";
 import { policyHash } from "../shared/policy-trust.ts";
+import { findAuthorityReceiptKey, loadAuthorityBundle } from "../shared/authority-manifest.mjs";
+import { verifyReceiptPayloadSignature } from "../shared/receipt-signing.ts";
 
 const SUPPORTED_SCHEMA = "ecs.receipt.v2";
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 function sha256Hex(value) {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -65,7 +68,7 @@ function validateSchema(receipt) {
     return fail("pipeline_trace.arm.execution_id is required");
   }
   if (!isObject(receipt.verifiable_signature)) return fail("verifiable_signature is required");
-  for (const field of ["algorithm", "key_id", "public_key_fingerprint", "public_key_pem", "value"]) {
+  for (const field of ["algorithm", "authority_id", "key_id", "public_key_fingerprint", "signed_at", "value"]) {
     if (typeof receipt.verifiable_signature[field] !== "string" || receipt.verifiable_signature[field].length === 0) {
       return fail(`verifiable_signature.${field} is required`);
     }
@@ -162,7 +165,22 @@ function verifyPolicyHash(receipt, canonicalRequest) {
 
 function verifySignature(receipt) {
   try {
-    return verifyReceiptPublicSignature(receipt) ? pass() : fail("Ed25519 signature verification failed");
+    const bundle = loadAuthorityBundle(REPO_ROOT);
+    if (!bundle.ok) return fail(`authority manifest invalid: ${bundle.reason}`);
+    const keyResult = findAuthorityReceiptKey(bundle.manifest, {
+      authorityId: receipt.verifiable_signature?.authority_id,
+      keyId: receipt.verifiable_signature?.key_id,
+      signedAt: receipt.verifiable_signature?.signed_at
+    });
+    if (!keyResult.ok) return fail(keyResult.reason);
+    if (receipt.verifiable_signature.public_key_fingerprint !== keyResult.key.public_key_fingerprint) {
+      return fail("receipt key fingerprint does not match authority manifest");
+    }
+    const { signature: _legacySignature, verifiable_signature: _verifiableSignature, ...payload } = receipt;
+    const canonicalPayload = canonicalizeJson(payload);
+    return verifyReceiptPayloadSignature(canonicalPayload, receipt.verifiable_signature.value, keyResult.key.public_key)
+      ? pass()
+      : fail("Ed25519 signature verification failed");
   } catch (error) {
     return fail(`signature verification failed: ${error instanceof Error ? error.message : String(error)}`);
   }

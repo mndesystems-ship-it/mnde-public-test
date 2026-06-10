@@ -1,0 +1,16 @@
+{
+  "authority_id": "mnde-public-test-local",
+  "authority_name": "MNDe Public Test Local Authority",
+  "root_key_fingerprint": "325dd2ee48f28dbeacb008ce4979bbb881ef8ca8cca4e41883c33183b9560cd8",
+  "active_keys": [
+    {
+      "key_id": "receipt-key-local",
+      "public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAM4lvTJtIaFR0s/MSW50wIFlC7C9udGDjBioy3IoKUc8=\n-----END PUBLIC KEY-----\n",
+      "public_key_fingerprint": "f3dd3a09596ff42603c09bc2b2d569f68af7428f718a69c25b0d6f272ff14dcb",
+      "valid_from": "2025-06-10T01:02:11.219Z",
+      "valid_to": "2036-06-10T01:02:11.219Z"
+    }
+  ],
+  "retired_keys": [],
+  "manifest_signature": "8a530075d97c9ef30f6e25afd8253b17143c31bb581e2c979fd70aae03ebedba3def4f49b2015f9f78269d5131e6689c79f03a209473129d0c90ffef827bf808"
+}

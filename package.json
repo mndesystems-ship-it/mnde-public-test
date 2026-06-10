@@ -12,6 +12,7 @@
     "desktop-smoke": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/desktop-smoke.ps1",
     "verify-receipt": "node ./tools/verify-receipt.mjs",
     "test:receipt-verifier": "powershell -NoProfile -ExecutionPolicy Bypass -File ./tests/test_receipt_verifier.ps1",
-    "test:fresh-setup": "powershell -NoProfile -ExecutionPolicy Bypass -File ./tests/test_fresh_setup.ps1"
+    "test:fresh-setup": "powershell -NoProfile -ExecutionPolicy Bypass -File ./tests/test_fresh_setup.ps1",
+    "test:trust-anchor": "node ./tests/test_trust_anchor.mjs"
   }
 }

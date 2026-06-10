@@ -1,10 +1,13 @@
-import { createHmac, createHash, createPublicKey } from "crypto";
+import { createHmac, createHash } from "crypto";
 import { performance } from "perf_hooks";
+import { dirname, resolve } from "path";
+import { fileURLToPath } from "url";
+import { findAuthorityReceiptKey, loadAuthorityBundle } from "../shared/authority-manifest.mjs";
 import {
   RECEIPT_PUBLIC_KEY_FINGERPRINT,
-  RECEIPT_PUBLIC_KEY_PEM,
+  RECEIPT_AUTHORITY_ID,
+  RECEIPT_AUTHORITY_KEY_ID,
   RECEIPT_SIGNATURE_ALGORITHM,
-  RECEIPT_SIGNATURE_KEY_ID,
   REASON_CODES,
   canonicalizeJson,
   signReceiptPayload,
@@ -60,9 +63,10 @@ function signPayload(payload: SignedReceiptPayload, config: SigningConfig, timin
     },
     verifiable_signature: {
       algorithm: RECEIPT_SIGNATURE_ALGORITHM,
-      key_id: RECEIPT_SIGNATURE_KEY_ID,
+      authority_id: RECEIPT_AUTHORITY_ID,
+      key_id: RECEIPT_AUTHORITY_KEY_ID,
       public_key_fingerprint: RECEIPT_PUBLIC_KEY_FINGERPRINT,
-      public_key_pem: RECEIPT_PUBLIC_KEY_PEM,
+      signed_at: new Date().toISOString(),
       value: verifiableValue
     }
   };
@@ -202,25 +206,26 @@ export function verifyReceiptPublicSignature(receipt: SignedReceipt): boolean {
     return false;
   }
   const { signature: _legacySignature, verifiable_signature, ...payload } = receipt;
-  const publicKeyPem = verifiable_signature.public_key_pem;
-  if (typeof publicKeyPem !== "string" || publicKeyPem.trim().length === 0) {
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const bundle = loadAuthorityBundle(repoRoot);
+  if (!bundle.ok) {
     return false;
   }
-  const publicKey = createPublicKey(publicKeyPem);
-  const publicKeyDer = publicKey.export({ format: "der", type: "spki" });
-  const rawPublicKeyHex = Buffer.from(publicKeyDer).subarray(-32).toString("hex");
-  const publicKeyFingerprint = createHash("sha256").update(Buffer.from(rawPublicKeyHex, "hex")).digest("hex");
-  const keyId = `receipt-ed25519-${publicKeyFingerprint.slice(0, 16)}`;
+  const keyResult = findAuthorityReceiptKey(bundle.manifest, {
+    authorityId: verifiable_signature.authority_id,
+    keyId: verifiable_signature.key_id,
+    signedAt: verifiable_signature.signed_at
+  });
+  if (!keyResult.ok) return false;
   if (
     verifiable_signature.algorithm !== RECEIPT_SIGNATURE_ALGORITHM ||
-    verifiable_signature.key_id !== keyId ||
-    verifiable_signature.public_key_fingerprint !== publicKeyFingerprint
+    verifiable_signature.public_key_fingerprint !== keyResult.key.public_key_fingerprint
   ) {
     return false;
   }
 
   const canonicalPayload = canonicalizeJson(payload as unknown as JsonValue);
-  return verifyReceiptPayloadSignature(canonicalPayload, verifiable_signature.value, publicKeyPem);
+  return verifyReceiptPayloadSignature(canonicalPayload, verifiable_signature.value, keyResult.key.public_key);
 }
 
 export function verifyReceiptReplay(receipt: SignedReceipt, rerunReceipt: SignedReceipt): { ok: boolean; reason_code: string } {

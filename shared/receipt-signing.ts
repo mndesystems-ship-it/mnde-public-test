@@ -1,5 +1,6 @@
 import { createHash, createPrivateKey, createPublicKey, sign, verify } from "crypto";
 import { existsSync, readFileSync } from "fs";
+import { AUTHORITY_ID, RECEIPT_KEY_ID } from "./authority-manifest.mjs";
 
 const PRIVATE_KEY_URL = new URL("./receipt_keys/receipt_signing_private.pem", import.meta.url);
 const PUBLIC_KEY_URL = new URL("./receipt_keys/receipt_signing_public.pem", import.meta.url);
@@ -12,14 +13,15 @@ const FALLBACK_PUBLIC_KEY_PEM = [
 const PUBLIC_KEY_PEM = existsSync(PUBLIC_KEY_URL) ? readFileSync(PUBLIC_KEY_URL, "utf8") : FALLBACK_PUBLIC_KEY_PEM;
 const PUBLIC_KEY_OBJECT = createPublicKey(PUBLIC_KEY_PEM);
 const PUBLIC_KEY_DER = PUBLIC_KEY_OBJECT.export({ format: "der", type: "spki" });
-const PUBLIC_KEY_RAW_HEX = Buffer.from(PUBLIC_KEY_DER).subarray(-32).toString("hex");
 
 export const RECEIPT_PUBLIC_KEY_PEM = PUBLIC_KEY_PEM;
 export const RECEIPT_SIGNATURE_ALGORITHM = "ED25519";
 export const RECEIPT_PUBLIC_KEY_FINGERPRINT = createHash("sha256")
-  .update(Buffer.from(PUBLIC_KEY_RAW_HEX, "hex"))
+  .update(PUBLIC_KEY_DER)
   .digest("hex");
 export const RECEIPT_SIGNATURE_KEY_ID = `receipt-ed25519-${RECEIPT_PUBLIC_KEY_FINGERPRINT.slice(0, 16)}`;
+export const RECEIPT_AUTHORITY_ID = AUTHORITY_ID;
+export const RECEIPT_AUTHORITY_KEY_ID = RECEIPT_KEY_ID;
 
 export function receiptSigningKeyStatus(): { ok: boolean; reason: string | null } {
   if (!existsSync(PRIVATE_KEY_URL)) {

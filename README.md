@@ -25,8 +25,9 @@ npm run tester:init -- TESTER-001
 
 - `.mnde-test\identity.json`
 - `shared\receipt_keys\receipt_signing_private.pem` and `receipt_signing_public.pem`
+- `authority\authority-manifest.json` signed by the local root authority
 
-The signing keys are generated on your machine, ignored by git, and required for live signed receipts. If those keys are missing or invalid, MNDe refuses to start with a clear `ERR_RECEIPT_SIGNING_KEYS_*` error instead of crashing during the first decision.
+The signing keys are generated on your machine, ignored by git, and required for live signed receipts. Receipts do not trust their own embedded key. The verifier checks the signed authority manifest first, then verifies the receipt with an authority-approved key. If keys or authority evidence are missing or invalid, MNDe refuses to start with a clear `ERR_RECEIPT_SIGNING_KEYS_*` or `ERR_AUTHORITY_MANIFEST_INVALID` error instead of crashing during the first decision.
 
 The desktop test app is here:
 
@@ -59,6 +60,7 @@ The reviewer kit is the supported one-command proof path. It starts MNDe, runs t
 - Unsafe REFUSE
 - Offline receipt verification
 - Tamper detection
+- Trust-anchored receipt origin
 - Deterministic repeat requests
 - Executor blocked before execution
 
@@ -160,6 +162,7 @@ See [docs/feedback-workflow.md](docs/feedback-workflow.md).
 
 - [First tester onboarding](docs/first-tester-onboarding.md)
 - [Independent receipt verification](docs/independent-verification.md)
+- [Trust-anchored receipt verification](docs/trust-anchored-verification.md)
 - [Demo scenarios](docs/demo-scenarios.md)
 - [Tester ID implementation](docs/tester-id-implementation.md)
 - [Release checklist](docs/release-checklist.md)

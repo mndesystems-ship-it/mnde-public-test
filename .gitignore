@@ -4,6 +4,7 @@ reviewer-kit/logs/
 reviewer-kit/receipts/
 reviewer-kit/proofs/
 shared/receipt_keys/
+authority/root_authority_private.pem
 *.log
 *.tmp
 auth-config.local.json
@@ -13,4 +14,3 @@ jwks-cache/
 auth-audit/
 receipt-exports/
 node_modules/
-

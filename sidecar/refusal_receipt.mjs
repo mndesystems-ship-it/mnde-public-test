@@ -1,9 +1,9 @@
 import { createHash, createHmac } from "node:crypto";
 import {
   RECEIPT_PUBLIC_KEY_FINGERPRINT,
-  RECEIPT_PUBLIC_KEY_PEM,
+  RECEIPT_AUTHORITY_ID,
+  RECEIPT_AUTHORITY_KEY_ID,
   RECEIPT_SIGNATURE_ALGORITHM,
-  RECEIPT_SIGNATURE_KEY_ID,
   canonicalizeJson,
   signReceiptPayload
 } from "../shared/index.ts";
@@ -35,9 +35,10 @@ function signPayload(payload) {
     },
     verifiable_signature: {
       algorithm: RECEIPT_SIGNATURE_ALGORITHM,
-      key_id: RECEIPT_SIGNATURE_KEY_ID,
+      authority_id: RECEIPT_AUTHORITY_ID,
+      key_id: RECEIPT_AUTHORITY_KEY_ID,
       public_key_fingerprint: RECEIPT_PUBLIC_KEY_FINGERPRINT,
-      public_key_pem: RECEIPT_PUBLIC_KEY_PEM,
+      signed_at: new Date().toISOString(),
       value: signReceiptPayload(canonicalPayload)
     }
   };

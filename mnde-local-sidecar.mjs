@@ -6,6 +6,7 @@ import { dirname, join, parse as parsePath } from "node:path";
 import { PerformanceObserver, monitorEventLoopDelay, performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { assertReceiptSigningKeysAvailable } from "./shared/receipt-signing.ts";
+import { loadAuthorityBundle } from "./shared/authority-manifest.mjs";
 import { canonicalizeJson, parseStrictJson } from "./shared/json.ts";
 import { canonicalPolicyPayload, policyHash, verifyPolicySignature } from "./shared/policy-trust.ts";
 import {
@@ -89,6 +90,8 @@ let policy = JSON.parse(readFileSync(activePolicyPath, "utf8"));
 let policy_hash = policyHash(policy);
 try {
   assertReceiptSigningKeysAvailable();
+  const authority = loadAuthorityBundle(REPO_ROOT);
+  if (!authority.ok) throw new Error(`ERR_AUTHORITY_MANIFEST_INVALID: ${authority.reason}`);
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
   process.exit(1);
