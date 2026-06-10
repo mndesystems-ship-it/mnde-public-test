@@ -10,13 +10,12 @@ AI agents and automation can perform useful work, but they can also take unsafe 
 
 Requirements:
 
-- Windows
 - Node.js 24 or later
-- PowerShell
+- Windows, macOS, or Linux
 
 Run:
 
-```powershell
+```bash
 npm install
 npm run tester:init -- TESTER-001
 ```
@@ -29,6 +28,8 @@ npm run tester:init -- TESTER-001
 
 The signing keys are generated on your machine, ignored by git, and required for live signed receipts. Receipts do not trust their own embedded key. The verifier checks the signed authority manifest first, then verifies the receipt with an authority-approved key. If keys or authority evidence are missing or invalid, MNDe refuses to start with a clear `ERR_RECEIPT_SIGNING_KEYS_*` or `ERR_AUTHORITY_MANIFEST_INVALID` error instead of crashing during the first decision.
 
+The local test authority is generated for evaluator use. Production verification requires a stable MNDe-published authority bundle. Receipts are independently verifiable only when the verifier has the trusted authority manifest and root public key. Unknown authority IDs, unknown key IDs, expired keys, and invalid manifests fail closed.
+
 The desktop test app is here:
 
 ```text
@@ -39,7 +40,7 @@ installer\MNDe-Execution-Control.exe
 
 Run:
 
-```powershell
+```bash
 npm run reviewer-kit
 ```
 
@@ -50,6 +51,12 @@ FINAL VERDICT: PASS
 ```
 
 The reviewer kit is the supported one-command proof path. It starts MNDe, runs the ALLOW and REFUSE examples, verifies receipts, verifies replay, checks hostile input refusal behavior, and proves that a destructive executor action is blocked before execution.
+
+`npm run reviewer-kit` is cross-platform and uses Node.js. Windows PowerShell helper scripts remain available through:
+
+```powershell
+npm run reviewer-kit:windows
+```
 
 ## Known Reviewer Claims Now Proven
 
@@ -73,6 +80,10 @@ npm run desktop-smoke
 ```
 
 This verifies that the packaged Windows desktop executable exists, launches, stays alive during the smoke test, and can work with the sidecar-facing health, receipt, replay, policy, and logs/metrics surfaces.
+
+## Integration
+
+See [docs/integration-guide.md](docs/integration-guide.md) for a minimal agent wrapper that calls `POST /v1/decisions` before execution, executes only on `ALLOW`, never executes on `REFUSE`, stores receipts, and verifies them offline.
 
 ## Trigger An ALLOW Decision
 
@@ -162,6 +173,7 @@ See [docs/feedback-workflow.md](docs/feedback-workflow.md).
 
 - [First tester onboarding](docs/first-tester-onboarding.md)
 - [Independent receipt verification](docs/independent-verification.md)
+- [Minimal agent integration](docs/integration-guide.md)
 - [Trust-anchored receipt verification](docs/trust-anchored-verification.md)
 - [Demo scenarios](docs/demo-scenarios.md)
 - [Tester ID implementation](docs/tester-id-implementation.md)

@@ -4,6 +4,7 @@ Start here:
 
 - `first-tester-onboarding.md`
 - `independent-verification.md`
+- `integration-guide.md`
 - `demo-scenarios.md`
 - `tester-id-implementation.md`
 - `feedback-workflow.md`
