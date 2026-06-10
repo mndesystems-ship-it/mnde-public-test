@@ -5,6 +5,7 @@ import { availableParallelism } from "node:os";
 import { dirname, join, parse as parsePath } from "node:path";
 import { PerformanceObserver, monitorEventLoopDelay, performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
+import { assertReceiptSigningKeysAvailable } from "./shared/receipt-signing.ts";
 import { canonicalizeJson, parseStrictJson } from "./shared/json.ts";
 import { canonicalPolicyPayload, policyHash, verifyPolicySignature } from "./shared/policy-trust.ts";
 import {
@@ -86,6 +87,12 @@ const RECEIPT_QUEUE_CONFIG = validateReceiptPersistenceConfig({
 });
 let policy = JSON.parse(readFileSync(activePolicyPath, "utf8"));
 let policy_hash = policyHash(policy);
+try {
+  assertReceiptSigningKeysAvailable();
+} catch (error) {
+  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  process.exit(1);
+}
 const receiptQueue = new ReceiptPersistenceQueue(RECEIPT_QUEUE_CONFIG);
 const workerPool = new DeterministicWorkerPool({
   worker_count: WORKER_POOL_SIZE,

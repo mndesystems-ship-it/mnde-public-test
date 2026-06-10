@@ -21,7 +21,31 @@ export const RECEIPT_PUBLIC_KEY_FINGERPRINT = createHash("sha256")
   .digest("hex");
 export const RECEIPT_SIGNATURE_KEY_ID = `receipt-ed25519-${RECEIPT_PUBLIC_KEY_FINGERPRINT.slice(0, 16)}`;
 
+export function receiptSigningKeyStatus(): { ok: boolean; reason: string | null } {
+  if (!existsSync(PRIVATE_KEY_URL)) {
+    return { ok: false, reason: "ERR_RECEIPT_SIGNING_KEYS_MISSING: shared/receipt_keys/receipt_signing_private.pem is missing. Run npm run tester:init -- TESTER-001 before starting MNDe." };
+  }
+  if (!existsSync(PUBLIC_KEY_URL)) {
+    return { ok: false, reason: "ERR_RECEIPT_SIGNING_KEYS_MISSING: shared/receipt_keys/receipt_signing_public.pem is missing. Run npm run tester:init -- TESTER-001 before starting MNDe." };
+  }
+  try {
+    createPrivateKey(readFileSync(PRIVATE_KEY_URL, "utf8"));
+    createPublicKey(readFileSync(PUBLIC_KEY_URL, "utf8"));
+    return { ok: true, reason: null };
+  } catch (error) {
+    return { ok: false, reason: `ERR_RECEIPT_SIGNING_KEYS_INVALID: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
+export function assertReceiptSigningKeysAvailable(): void {
+  const status = receiptSigningKeyStatus();
+  if (!status.ok) {
+    throw new Error(status.reason ?? "ERR_RECEIPT_SIGNING_KEYS_INVALID");
+  }
+}
+
 export function signReceiptPayload(payload: string): string {
+  assertReceiptSigningKeysAvailable();
   const privateKeyPem = readFileSync(PRIVATE_KEY_URL, "utf8");
   const privateKeyObject = createPrivateKey(privateKeyPem);
   return sign(null, Buffer.from(payload, "utf8"), privateKeyObject).toString("hex");

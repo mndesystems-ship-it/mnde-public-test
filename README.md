@@ -21,6 +21,13 @@ npm install
 npm run tester:init -- TESTER-001
 ```
 
+`tester:init` creates two local-only things:
+
+- `.mnde-test\identity.json`
+- `shared\receipt_keys\receipt_signing_private.pem` and `receipt_signing_public.pem`
+
+The signing keys are generated on your machine, ignored by git, and required for live signed receipts. If those keys are missing or invalid, MNDe refuses to start with a clear `ERR_RECEIPT_SIGNING_KEYS_*` error instead of crashing during the first decision.
+
 The desktop test app is here:
 
 ```text

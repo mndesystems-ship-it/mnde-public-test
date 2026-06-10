@@ -9,12 +9,12 @@ export function bootstrapReceiptKeys({ repoRoot = resolve(dirname(fileURLToPath(
   const publicKeyPath = join(keyDir, "receipt_signing_public.pem");
   const existing = [privateKeyPath, publicKeyPath].filter((path) => existsSync(path));
 
-  if (existing.length > 0 && !force) {
+  if (existing.length === 2 && !force) {
     return {
       status: "exists",
       privateKeyPath,
       publicKeyPath,
-      message: "Receipt signing keys already exist. Refusing to overwrite without --force."
+      message: "Receipt signing keys already exist."
     };
   }
 
@@ -24,10 +24,12 @@ export function bootstrapReceiptKeys({ repoRoot = resolve(dirname(fileURLToPath(
   writeFileSync(publicKeyPath, publicKey.export({ type: "spki", format: "pem" }), { flag: "w", mode: 0o644 });
 
   return {
-    status: "created",
+    status: existing.length === 1 ? "repaired" : "created",
     privateKeyPath,
     publicKeyPath,
-    message: "Local development receipt signing keys generated."
+    message: existing.length === 1
+      ? "Local receipt signing key pair repaired."
+      : "Local development receipt signing keys generated."
   };
 }
 
