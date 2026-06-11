@@ -90,7 +90,7 @@ let policy = JSON.parse(readFileSync(activePolicyPath, "utf8"));
 let policy_hash = policyHash(policy);
 try {
   assertReceiptSigningKeysAvailable();
-  const authority = loadAuthorityBundle(REPO_ROOT);
+  const authority = loadAuthorityBundle(REPO_ROOT, { kind: "local" });
   if (!authority.ok) throw new Error(`ERR_AUTHORITY_MANIFEST_INVALID: ${authority.reason}`);
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);

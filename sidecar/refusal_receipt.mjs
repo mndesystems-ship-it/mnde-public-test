@@ -8,8 +8,8 @@ import {
   signReceiptPayload
 } from "../shared/index.ts";
 
-const SIGNING_SECRET = "ecs-prod-signing-secret-v2";
-const SIGNING_KEY_ID = "ecs-prod-key-v2";
+const SIGNING_SECRET = "demo-legacy-signature-key";
+const SIGNING_KEY_ID = "demo-legacy-signature-key";
 const RECEIPT_KEY_SET_VERSION = "receipt-key-set-v1";
 
 function sha256(value) {

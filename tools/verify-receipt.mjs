@@ -11,7 +11,7 @@ import { runStrictRamona } from "../ram0na/engine.ts";
 import { REASON_CODES } from "../shared/contracts.ts";
 import { canonicalizeJson, parseStrictJson } from "../shared/json.ts";
 import { policyHash } from "../shared/policy-trust.ts";
-import { findAuthorityReceiptKey, loadAuthorityBundle } from "../shared/authority-manifest.mjs";
+import { findAuthorityReceiptKey, loadAuthorityBundleForReceipt } from "../shared/authority-manifest.mjs";
 import { verifyReceiptPayloadSignature } from "../shared/receipt-signing.ts";
 
 const SUPPORTED_SCHEMA = "ecs.receipt.v2";
@@ -165,7 +165,7 @@ function verifyPolicyHash(receipt, canonicalRequest) {
 
 function verifySignature(receipt) {
   try {
-    const bundle = loadAuthorityBundle(REPO_ROOT);
+    const bundle = loadAuthorityBundleForReceipt(REPO_ROOT, receipt.verifiable_signature?.authority_id);
     if (!bundle.ok) return fail(`authority manifest invalid: ${bundle.reason}`);
     const keyResult = findAuthorityReceiptKey(bundle.manifest, {
       authorityId: receipt.verifiable_signature?.authority_id,

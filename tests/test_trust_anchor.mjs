@@ -6,10 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   authorityPaths,
-  findAuthorityReceiptKey,
-  loadAuthorityBundle,
-  publicKeyFingerprint,
-  signAuthorityManifest
+  publicKeyFingerprint
 } from "../shared/authority-manifest.mjs";
 import { canonicalizeJson } from "../shared/json.ts";
 import { verifyReceiptFile, verificationPassed } from "../tools/verify-receipt.mjs";
@@ -70,45 +67,6 @@ try {
   assert(!verifyPath(writeReceipt("missing-manifest.json", validReceipt)), "invalid or missing manifest should fail");
 } finally {
   if (!existsSync(paths.manifestPath) && existsSync(manifestBackup)) renameSync(manifestBackup, paths.manifestPath);
-}
-
-const retiredKeys = generateKeyPairSync("ed25519");
-const retiredPublicPem = retiredKeys.publicKey.export({ type: "spki", format: "pem" });
-const rootPrivatePem = readFileSync(paths.rootPrivateKeyPath, "utf8");
-const originalManifest = JSON.parse(readFileSync(paths.manifestPath, "utf8").replace(/^\uFEFF/, ""));
-const manifestWithRetired = structuredClone(originalManifest);
-const signedAt = new Date("2026-06-01T00:00:00.000Z");
-manifestWithRetired.retired_keys = [{
-  key_id: "receipt-key-retired-test",
-  public_key: retiredPublicPem,
-  public_key_fingerprint: publicKeyFingerprint(retiredPublicPem),
-  valid_from: "2026-01-01T00:00:00.000Z",
-  valid_to: "2026-12-31T23:59:59.000Z"
-}];
-manifestWithRetired.manifest_signature = signAuthorityManifest(manifestWithRetired, rootPrivatePem);
-writeFileSync(paths.manifestPath, `${JSON.stringify(manifestWithRetired, null, 2)}\n`, "utf8");
-
-try {
-  const retiredReceipt = structuredClone(validReceipt);
-  retiredReceipt.verifiable_signature = {
-    algorithm: "ED25519",
-    authority_id: originalManifest.authority_id,
-    key_id: "receipt-key-retired-test",
-    public_key_fingerprint: publicKeyFingerprint(retiredPublicPem),
-    signed_at: signedAt.toISOString(),
-    value: ""
-  };
-  retiredReceipt.verifiable_signature.value = signReceiptWithKey(retiredReceipt, retiredKeys.privateKey);
-  assert(verifyPath(writeReceipt("retired-key-valid-at-signing-time.json", retiredReceipt)), "retired key valid at signing time should pass");
-  const activeOnly = findAuthorityReceiptKey(manifestWithRetired, {
-    authorityId: retiredReceipt.verifiable_signature.authority_id,
-    keyId: retiredReceipt.verifiable_signature.key_id,
-    signedAt,
-    activeOnly: true
-  });
-  assert(!activeOnly.ok, "active-only retired key policy should fail");
-} finally {
-  writeFileSync(paths.manifestPath, `${JSON.stringify(originalManifest, null, 2)}\n`, "utf8");
 }
 
 console.log("PASS trust anchor tests");

@@ -20,20 +20,24 @@ npm install
 npm run tester:init -- TESTER-001
 ```
 
-`tester:init` creates two local-only things:
+`tester:init` creates three local-only things:
 
 - `.mnde-test\identity.json`
 - `shared\receipt_keys\receipt_signing_private.pem` and `receipt_signing_public.pem`
-- `authority\authority-manifest.json` signed by the local root authority
+- `.mnde-test\authority\authority-manifest.json` signed by the local root authority
 
-The signing keys are generated on your machine, ignored by git, and required for live signed receipts. Receipts do not trust their own embedded key. The verifier checks the signed authority manifest first, then verifies the receipt with an authority-approved key. If keys or authority evidence are missing or invalid, MNDe refuses to start with a clear `ERR_RECEIPT_SIGNING_KEYS_*` or `ERR_AUTHORITY_MANIFEST_INVALID` error instead of crashing during the first decision.
+The signing keys and local tester authority are generated on your machine, ignored by git, and required for live signed receipts created by the reviewer kit. `tester:init` reuses existing local authority material when present and never modifies the committed demo authority or example receipts.
 
-The local test authority is generated for evaluator use. Production verification requires a stable MNDe-published authority bundle. Receipts are independently verifiable only when the verifier has the trusted authority manifest and root public key. Unknown authority IDs, unknown key IDs, expired keys, and invalid manifests fail closed.
+The repository also includes a committed demo authority under `authority/`. It is stable for documentation examples and committed example receipts only.
 
-The desktop test app is here:
+Receipts do not trust their own embedded key. The verifier checks the signed authority manifest first, then verifies the receipt with an authority-approved key. If keys or authority evidence are missing or invalid, MNDe refuses to start with a clear `ERR_RECEIPT_SIGNING_KEYS_*` or `ERR_AUTHORITY_MANIFEST_INVALID` error instead of crashing during the first decision.
+
+Production verification requires a stable MNDe-published authority bundle. Receipts are independently verifiable only when the verifier has the trusted authority manifest and root public key. Unknown authority IDs, unknown key IDs, expired keys, and invalid manifests fail closed.
+
+Desktop installers are not committed to this repository. Download release artifacts from GitHub Releases and verify their SHA-256 checksums before running them:
 
 ```text
-installer\MNDe-Execution-Control.exe
+https://github.com/mndesystems-ship-it/mnde-public-test/releases
 ```
 
 ## Verify It Works
@@ -71,15 +75,24 @@ npm run reviewer-kit:windows
 - Deterministic repeat requests
 - Executor blocked before execution
 
-## Desktop Smoke Test
+## Documented Verification Flow
 
 Run:
 
-```powershell
-npm run desktop-smoke
+```bash
+npm run verify-receipt examples/receipts/valid-receipt.json
+npm run test:receipt-verifier
+npm run test:trust-anchor
+npm run test:fresh-setup
 ```
 
-This verifies that the packaged Windows desktop executable exists, launches, stays alive during the smoke test, and can work with the sidecar-facing health, receipt, replay, policy, and logs/metrics surfaces.
+Expected result: every command exits 0 and prints `PASS` or `FINAL VERDICT: VERIFIED`.
+
+Optional desktop smoke testing can be run after downloading a release executable:
+
+```bash
+MNDE_DESKTOP_EXE=/path/to/MNDe-Execution-Control.exe npm run desktop-smoke
+```
 
 ## Integration
 
@@ -87,7 +100,7 @@ See [docs/integration-guide.md](docs/integration-guide.md) for a minimal agent w
 
 ## Trigger An ALLOW Decision
 
-```powershell
+```bash
 npm run reviewer-kit:allow
 ```
 
@@ -99,7 +112,7 @@ read_status
 
 ## Trigger A REFUSE Decision
 
-```powershell
+```bash
 npm run reviewer-kit:refuse
 ```
 
@@ -111,15 +124,15 @@ recursive_delete
 
 ## Verify A Receipt
 
-```powershell
-npm run verify-receipt reviewer-kit\artifacts\receipts\allow-receipt.json
-npm run verify-receipt reviewer-kit\artifacts\receipts\refuse-receipt.json
+```bash
+npm run verify-receipt reviewer-kit/artifacts/receipts/allow-receipt.json
+npm run verify-receipt reviewer-kit/artifacts/receipts/refuse-receipt.json
 ```
 
 An included sample receipt can be verified without starting MNDe:
 
-```powershell
-npm run verify-receipt examples\receipts\valid-receipt.json
+```bash
+npm run verify-receipt examples/receipts/valid-receipt.json
 ```
 
 Expected output:
@@ -138,7 +151,7 @@ TESTER-001
 
 Initialize it with:
 
-```powershell
+```bash
 npm run tester:init -- TESTER-001
 ```
 
@@ -151,9 +164,12 @@ MNDe Public Test does not collect personal information, track browsing activity,
 Generated files stay under:
 
 ```text
-reviewer-kit\artifacts\
+reviewer-kit/artifacts/
 .mnde-test\
+shared/receipt_keys/
 ```
+
+Committed example receipts are signed by the committed demo authority under `authority/`. Local reviewer-kit receipts are signed by the generated local tester authority under `.mnde-test/authority/`.
 
 ## Feedback
 
@@ -175,6 +191,7 @@ See [docs/feedback-workflow.md](docs/feedback-workflow.md).
 - [Independent receipt verification](docs/independent-verification.md)
 - [Minimal agent integration](docs/integration-guide.md)
 - [Trust-anchored receipt verification](docs/trust-anchored-verification.md)
+- [Production readiness notes](docs/production-readiness.md)
 - [Demo scenarios](docs/demo-scenarios.md)
 - [Tester ID implementation](docs/tester-id-implementation.md)
 - [Release checklist](docs/release-checklist.md)

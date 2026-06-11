@@ -1,6 +1,6 @@
 # Minimal Agent Integration
 
-MNDe sits in front of execution. An agent can think, plan, and choose tools normally, but every tool call must ask MNDe before execution.
+MNDe is a pre-execution authority layer. An agent can think, plan, and choose tools normally, but every integrated tool call must ask MNDe before execution.
 
 ```text
 Agent chooses action
@@ -9,7 +9,7 @@ Agent chooses action
   -> REFUSE: do not execute and persist receipt
 ```
 
-Never execute on `REFUSE`.
+Never execute on `REFUSE`. If an executor bypasses this wrapper, MNDe has not evaluated that action.
 
 ## Pseudocode
 
@@ -67,7 +67,12 @@ Verification is offline. It checks hashes, signature, replay determinism, and au
 
 ## Authority Bundle
 
-The public test package generates a local test authority for evaluator use. That makes fresh-clone testing self-contained.
+The public test package has two authority paths:
+
+- committed demo authority for example receipts
+- generated local tester authority for reviewer-kit receipts
+
+That makes fresh-clone testing self-contained while keeping documentation examples stable.
 
 For production, MNDe must publish a stable authority bundle:
 

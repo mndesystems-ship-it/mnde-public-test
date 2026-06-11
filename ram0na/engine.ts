@@ -2,7 +2,7 @@ import { createHmac, createHash } from "crypto";
 import { performance } from "perf_hooks";
 import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
-import { findAuthorityReceiptKey, loadAuthorityBundle } from "../shared/authority-manifest.mjs";
+import { findAuthorityReceiptKey, loadAuthorityBundleForReceipt } from "../shared/authority-manifest.mjs";
 import {
   RECEIPT_PUBLIC_KEY_FINGERPRINT,
   RECEIPT_AUTHORITY_ID,
@@ -207,7 +207,7 @@ export function verifyReceiptPublicSignature(receipt: SignedReceipt): boolean {
   }
   const { signature: _legacySignature, verifiable_signature, ...payload } = receipt;
   const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const bundle = loadAuthorityBundle(repoRoot);
+  const bundle = loadAuthorityBundleForReceipt(repoRoot, verifiable_signature.authority_id);
   if (!bundle.ok) {
     return false;
   }

@@ -2,14 +2,15 @@ import { generateKeyPairSync } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { authorityPaths, writeSignedAuthorityManifest } from "../shared/authority-manifest.mjs";
+import { LOCAL_AUTHORITY_ID, LOCAL_AUTHORITY_NAME, authorityPaths, writeSignedAuthorityManifest } from "../shared/authority-manifest.mjs";
 
 export function bootstrapReceiptKeys({ repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), ".."), force = false } = {}) {
   const keyDir = join(repoRoot, "shared", "receipt_keys");
   const privateKeyPath = join(keyDir, "receipt_signing_private.pem");
   const publicKeyPath = join(keyDir, "receipt_signing_public.pem");
-  const authority = authorityPaths(repoRoot);
+  const authority = authorityPaths(repoRoot, { kind: "local" });
   const existing = [privateKeyPath, publicKeyPath].filter((path) => existsSync(path));
+  const existingAuthority = [authority.rootPrivateKeyPath, authority.rootPublicKeyPath].filter((path) => existsSync(path));
 
   mkdirSync(keyDir, { recursive: true });
   mkdirSync(dirname(authority.manifestPath), { recursive: true });
@@ -20,7 +21,7 @@ export function bootstrapReceiptKeys({ repoRoot = resolve(dirname(fileURLToPath(
     writeFileSync(publicKeyPath, publicKey.export({ type: "spki", format: "pem" }), { flag: "w", mode: 0o644 });
   }
 
-  if (force || !existsSync(authority.rootPrivateKeyPath) || !existsSync(authority.rootPublicKeyPath)) {
+  if (force || existingAuthority.length !== 2) {
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     writeFileSync(authority.rootPrivateKeyPath, privateKey.export({ type: "pkcs8", format: "pem" }), { flag: "w", mode: 0o600 });
     writeFileSync(authority.rootPublicKeyPath, publicKey.export({ type: "spki", format: "pem" }), { flag: "w", mode: 0o644 });
@@ -28,6 +29,9 @@ export function bootstrapReceiptKeys({ repoRoot = resolve(dirname(fileURLToPath(
 
   writeSignedAuthorityManifest({
     repoRoot,
+    kind: "local",
+    authorityId: LOCAL_AUTHORITY_ID,
+    authorityName: LOCAL_AUTHORITY_NAME,
     rootPrivateKeyPem: readFileSync(authority.rootPrivateKeyPath, "utf8"),
     rootPublicKeyPem: readFileSync(authority.rootPublicKeyPath, "utf8"),
     receiptPublicKeyPem: readFileSync(publicKeyPath, "utf8")

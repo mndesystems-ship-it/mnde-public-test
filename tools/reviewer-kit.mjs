@@ -94,8 +94,8 @@ function startSidecar() {
     ...process.env,
     MNDE_RECEIPT_LOG: join(logsRoot, "sidecar-receipts.jsonl"),
     MNDE_AUTH_AUDIT_LOG: join(logsRoot, "auth-audit.jsonl"),
-    MNDE_RECEIPT_HMAC_SECRET: "reviewer-kit-hmac-secret-000000000000000001",
-    MNDE_RECEIPT_HMAC_KEY_ID: "reviewer-kit-hmac-key",
+    MNDE_RECEIPT_HMAC_SECRET: "demo-legacy-signature-key-000000000001",
+    MNDE_RECEIPT_HMAC_KEY_ID: "demo-legacy-signature-key",
     MNDE_INLINE_REFUSAL_RECEIPTS: "1",
     MNDE_RECEIPT_DURABILITY_MODE: "strict_audit",
     MNDE_WORKER_POOL_SIZE: "1",
@@ -239,7 +239,7 @@ async function runExecutorBlocked() {
 }
 
 async function ensureMissingAuthorityFails() {
-  const manifestPath = join(repoRoot, "authority", "authority-manifest.json");
+  const manifestPath = join(repoRoot, ".mnde-test", "authority", "authority-manifest.json");
   const backupPath = `${manifestPath}.reviewer-kit-backup`;
   const sampleReceipt = join(receiptsRoot, "allow-receipt.json");
   try {

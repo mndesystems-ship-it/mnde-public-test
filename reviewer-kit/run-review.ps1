@@ -124,8 +124,8 @@ function Start-Sidecar {
   $env:MNDE_AUTH_ASSERTION_PUBLIC_KEY_B64 = $publicKey
   $env:MNDE_AUTH_NONCE_CACHE = $NonceCache
   $env:MNDE_RECEIPT_LOG = $ReceiptLog
-  $env:MNDE_RECEIPT_HMAC_SECRET = "reviewer-kit-hmac-secret-000000000000000001"
-  $env:MNDE_RECEIPT_HMAC_KEY_ID = "reviewer-kit-hmac-key"
+  $env:MNDE_RECEIPT_HMAC_SECRET = "demo-legacy-signature-key-000000000001"
+  $env:MNDE_RECEIPT_HMAC_KEY_ID = "demo-legacy-signature-key"
   $env:MNDE_INLINE_REFUSAL_RECEIPTS = "1"
   $env:MNDE_RECEIPT_DURABILITY_MODE = "strict_audit"
   $env:MNDE_WORKER_POOL_SIZE = "1"

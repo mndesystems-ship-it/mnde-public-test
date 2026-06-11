@@ -2,7 +2,7 @@
 
 Run:
 
-```powershell
+```bash
 npm run verify-receipt receipt.json
 ```
 
@@ -19,6 +19,8 @@ This process requires:
 - no network access
 - no live MNDe process
 
-Verification is performed from the receipt contents and the public verification logic in this repository.
+Verification is performed from the receipt contents, public verification logic in this repository, and the trusted authority bundle available to the verifier.
 
-Receipt origin is verified through the signed authority manifest. The receipt identifies `authority_id` and `key_id`; the verifier only accepts the signature if that key is approved by the trusted MNDe authority manifest.
+Receipt origin is verified through a signed authority manifest. The receipt identifies `authority_id` and `key_id`; the verifier only accepts the signature if that key is approved by a trusted authority manifest.
+
+Committed example receipts use the demo authority in `authority/`. Reviewer-kit receipts use the local tester authority generated under `.mnde-test/authority/`.

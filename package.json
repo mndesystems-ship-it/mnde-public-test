@@ -10,10 +10,11 @@
     "reviewer-kit:verify": "powershell -NoProfile -ExecutionPolicy Bypass -File ./reviewer-kit/verify-review.ps1",
     "reviewer-kit:allow": "powershell -NoProfile -ExecutionPolicy Bypass -File ./reviewer-kit/allow-demo.ps1",
     "reviewer-kit:refuse": "powershell -NoProfile -ExecutionPolicy Bypass -File ./reviewer-kit/refuse-demo.ps1",
-    "desktop-smoke": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/desktop-smoke.ps1",
+    "desktop-smoke": "node ./scripts/desktop-smoke.mjs",
     "verify-receipt": "node ./tools/verify-receipt.mjs",
-    "test:receipt-verifier": "powershell -NoProfile -ExecutionPolicy Bypass -File ./tests/test_receipt_verifier.ps1",
-    "test:fresh-setup": "powershell -NoProfile -ExecutionPolicy Bypass -File ./tests/test_fresh_setup.ps1",
+    "receipts:refresh": "node ./scripts/refresh-demo-receipts.mjs",
+    "test:receipt-verifier": "node ./scripts/test-receipt-verifier.mjs",
+    "test:fresh-setup": "node ./scripts/test-fresh-setup.mjs",
     "test:trust-anchor": "node ./tests/test_trust_anchor.mjs",
     "test:reviewer-kit": "node ./tests/test_cross_platform_reviewer.mjs"
   }

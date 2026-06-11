@@ -15,7 +15,7 @@ The verifier does not trust the receipt as the source of key authority.
 
 ## Authority Manifest
 
-`authority/authority-manifest.json` contains the authority ID, root key fingerprint, active receipt keys, retired receipt keys, validity windows, and a root-authority signature over the manifest.
+`authority/authority-manifest.json` contains the committed demo authority ID, root key fingerprint, active receipt keys, retired receipt keys, validity windows, and a root-authority signature over the manifest.
 
 The trusted root public key is stored at:
 
@@ -23,7 +23,15 @@ The trusted root public key is stored at:
 authority/root_authority_public.pem
 ```
 
-The root private key is local-only and gitignored.
+This demo authority verifies committed example receipts only.
+
+`npm run tester:init -- TESTER-001` creates a separate local tester authority under:
+
+```text
+.mnde-test/authority/
+```
+
+Reviewer-kit receipts are signed by the local tester authority. `tester:init` must not modify the committed demo authority or invalidate committed example receipts.
 
 ## Verification Flow
 
@@ -48,7 +56,7 @@ The manifest supports multiple active keys, retired keys, and validity windows. 
 
 Run:
 
-```powershell
+```bash
 npm run test:trust-anchor
 ```
 
@@ -58,5 +66,4 @@ The test proves:
 - authority-approved receipt: PASS
 - modified `authority_id`: FAIL
 - modified `key_id`: FAIL
-- retired key valid at signing time: PASS
-- retired key under active-only policy: FAIL
+- missing authority manifest: FAIL
