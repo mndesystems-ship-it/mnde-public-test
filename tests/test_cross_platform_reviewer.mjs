@@ -48,14 +48,33 @@ for (let attempt = 0; attempt < 20; attempt += 1) {
 }
 assert(sidecarClosed, "sidecar still reachable after reviewer kit");
 
-const manifestPath = join(repoRoot, "authority", "authority-manifest.json");
-const backupPath = `${manifestPath}.cross-platform-test-backup`;
-try {
-  if (existsSync(backupPath)) throw new Error("stale authority manifest backup exists");
-  renameSync(manifestPath, backupPath);
-  assert(!verificationPassed(verifyReceiptFile(allowPath)), "missing authority bundle should fail verification");
-} finally {
-  if (!existsSync(manifestPath) && existsSync(backupPath)) renameSync(backupPath, manifestPath);
+const demoReceiptPath = join(repoRoot, "examples", "receipts", "valid-receipt.json");
+const demoManifestPath = join(repoRoot, "authority", "authority-manifest.json");
+const localManifestPath = join(repoRoot, ".mnde-test", "authority", "authority-manifest.json");
+
+function withManifestRemoved(manifestPath, label, fn) {
+  const backupPath = `${manifestPath}.cross-platform-test-backup`;
+  try {
+    if (existsSync(backupPath)) throw new Error(`stale ${label} authority manifest backup exists`);
+    assert(existsSync(manifestPath), `${label} authority manifest is missing before test`);
+    renameSync(manifestPath, backupPath);
+    fn();
+  } finally {
+    if (!existsSync(manifestPath) && existsSync(backupPath)) renameSync(backupPath, manifestPath);
+  }
 }
+
+assert(verificationPassed(verifyReceiptFile(demoReceiptPath)), "demo receipt did not verify before authority isolation tests");
+assert(verificationPassed(verifyReceiptFile(allowPath)), "live reviewer-kit receipt did not verify before authority isolation tests");
+
+withManifestRemoved(demoManifestPath, "demo", () => {
+  assert(!verificationPassed(verifyReceiptFile(demoReceiptPath)), "removing demo authority should break demo fixture verification");
+  assert(verificationPassed(verifyReceiptFile(allowPath)), "removing demo authority should not break live reviewer-kit receipt verification");
+});
+
+withManifestRemoved(localManifestPath, "local tester", () => {
+  assert(!verificationPassed(verifyReceiptFile(allowPath)), "removing local tester authority should break live reviewer-kit receipt verification");
+  assert(verificationPassed(verifyReceiptFile(demoReceiptPath)), "removing local tester authority should not break demo fixture verification");
+});
 
 console.log("PASS cross-platform reviewer tests");
