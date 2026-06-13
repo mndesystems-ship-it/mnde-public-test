@@ -10,8 +10,10 @@ import { loadAuthorityBundle } from "./shared/authority-manifest.mjs";
 import { canonicalizeJson, parseStrictJson } from "./shared/json.ts";
 import { canonicalPolicyPayload, policyHash, verifyPolicySignature } from "./shared/policy-trust.ts";
 import {
+  executeDeterministicPipeline,
   verifySignedReceipt
 } from "./audit/node_runtime.ts";
+import { boundaryReplayEndpointResponse } from "./shared/receipt-replay.mjs";
 import {
   DeterministicWorkerPool,
   WORKER_POOL_SATURATED,
@@ -790,31 +792,12 @@ async function handleReplay(req, res) {
       });
       return;
     }
-    const submitted = workerPool.submit(receipt.canonical_request);
-    if (!submitted.ok) {
-      response(res, 200, {
-        schema_version: "mnde.receipt_replay.v1",
-        request_hash: receipt.request_hash,
-        original: receipt.decision_output,
-        replayed: null,
-        drift: true,
-        mismatches: [{ field: "worker_pool", original: "available", replayed: submitted.reason_code }]
-      });
+    const boundaryReplay = boundaryReplayEndpointResponse(receipt);
+    if (boundaryReplay) {
+      response(res, 200, boundaryReplay);
       return;
     }
-    const workerReply = await submitted.result;
-    if (!workerReply.ok) {
-      response(res, 200, {
-        schema_version: "mnde.receipt_replay.v1",
-        request_hash: receipt.request_hash,
-        original: receipt.decision_output,
-        replayed: null,
-        drift: true,
-        mismatches: [{ field: "worker_pool", original: "ok", replayed: workerReply.reason_code }]
-      });
-      return;
-    }
-    const replay = workerReply.result;
+    const replay = executeDeterministicPipeline(receipt.canonical_request, { enforceExecutionId: false });
     if ("parse_boundary" in replay) {
       const original = receipt.decision_output;
       const mismatches = [

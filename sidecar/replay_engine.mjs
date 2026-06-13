@@ -1,4 +1,5 @@
 import { executeDeterministicPipeline, resetRuntimeState, verifySignedReceipt } from "../audit/node_runtime.ts";
+import { compareBoundaryReplay } from "../shared/receipt-replay.mjs";
 
 const SUPPORTED_RECEIPT_SCHEMA = "ecs.receipt.v2";
 
@@ -23,8 +24,31 @@ export function replayReceiptDeterministically(receipt) {
   }
 
   try {
+    const boundary = compareBoundaryReplay(receipt);
+    if (boundary.matched) {
+      if (boundary.drift) {
+        return {
+          status: "DRIFT",
+          receipt_id: receipt.receipt_id ?? receipt.decision_output.decision_hash ?? null,
+          reason: boundary.mismatches.map((item) => item.field).join(", "),
+          request_hash: receipt.request_hash ?? null,
+          decision_hash: receipt.decision_output.decision_hash ?? null,
+          policy_hash: receipt.decision_output.policy_hash ?? null,
+          mismatches: boundary.mismatches
+        };
+      }
+      return {
+        status: "PASS",
+        receipt_id: receipt.receipt_id ?? receipt.decision_output.decision_hash ?? null,
+        reason: null,
+        request_hash: receipt.request_hash ?? null,
+        decision_hash: receipt.decision_output.decision_hash ?? null,
+        policy_hash: receipt.decision_output.policy_hash ?? null,
+        mismatches: []
+      };
+    }
     resetRuntimeState();
-    const rerun = executeDeterministicPipeline(receipt.canonical_request);
+    const rerun = executeDeterministicPipeline(receipt.canonical_request, { enforceExecutionId: false });
     if ("parse_boundary" in rerun) {
       return replayFailure("DRIFT", rerun.reason_code, receipt, { request_hash: rerun.request_hash, decision_hash: rerun.decision_hash });
     }

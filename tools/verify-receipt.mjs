@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,12 +12,10 @@ import { canonicalizeJson, parseStrictJson } from "../shared/json.ts";
 import { policyHash } from "../shared/policy-trust.ts";
 import { findAuthorityReceiptKey, loadAuthorityBundleForReceipt } from "../shared/authority-manifest.mjs";
 import { verifyReceiptPayloadSignature } from "../shared/receipt-signing.ts";
+import { compareBoundaryReplay, parseBoundaryDecisionHash, sha256Hex, sidecarRefusalReason } from "../shared/receipt-replay.mjs";
 
 const SUPPORTED_SCHEMA = "ecs.receipt.v2";
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-function sha256Hex(value) {
-  return createHash("sha256").update(value).digest("hex");
-}
 
 function pass() {
   return { ok: true, detail: null };
@@ -101,18 +98,6 @@ function verifyRequestHash(receipt) {
   return pass();
 }
 
-function sidecarRefusalReason(parsedCanonicalRequest) {
-  return typeof parsedCanonicalRequest?.sidecar_refusal === "string" ? parsedCanonicalRequest.sidecar_refusal : null;
-}
-
-function parseBoundaryDecisionHash(requestHash, reasonCode) {
-  return sha256Hex(canonicalizeJson({
-    request_hash: requestHash,
-    decision: "REFUSE",
-    reason_code: reasonCode
-  }));
-}
-
 function recomputeDecisionHash(receipt) {
   const arm = receipt.pipeline_trace.arm;
   return sha256Hex(canonicalizeJson({
@@ -191,17 +176,9 @@ function verifyReplayDeterminism(receipt) {
     resetArmStores();
     const parsed = parseStrictJson(receipt.canonical_request);
     if (!parsed.ok) return fail(`canonical_request parse failed: ${parsed.reason}`);
-    const sidecarReason = sidecarRefusalReason(parsed.value);
-    if (sidecarReason) {
-      const original = receipt.decision_output;
-      const checks = [
-        ["request_hash", receipt.request_hash, sha256Hex(receipt.canonical_request)],
-        ["decision", original.decision, "REFUSE"],
-        ["reason_code", original.reason_code, sidecarReason],
-        ["decision_hash", original.decision_hash, parseBoundaryDecisionHash(receipt.request_hash, sidecarReason)]
-      ];
-      const mismatch = checks.find(([, left, right]) => left !== right);
-      return mismatch ? fail(`${mismatch[0]} mismatch`) : pass();
+    const boundary = compareBoundaryReplay(receipt);
+    if (boundary.matched) {
+      return boundary.drift ? fail(`${boundary.mismatches[0]?.field ?? "boundary"} mismatch`) : pass();
     }
     const preflight = runStrictPreflight(receipt.canonical_request);
     if ("parse_boundary" in preflight) {

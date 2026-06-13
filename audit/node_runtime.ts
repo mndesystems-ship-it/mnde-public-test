@@ -13,8 +13,9 @@ import {
 } from "../shared/index.ts";
 import { runStrictPreflight } from "../preflight/engine.ts";
 import { runStrictOrbit } from "../orbit/engine.ts";
-import { commitArmAllow, defineBudgetToken, resetArmStores, runStrictArm } from "../arm/engine.ts";
+import { commitArmAllow, defineBudgetToken, resetArmStores, resetTransientArmStores, runStrictArm } from "../arm/engine.ts";
 import { buildReceipt, runStrictRamona, verifyReceiptReplay, verifyReceiptSignature } from "../ram0na/engine.ts";
+import { buildSidecarRefusalReceipt } from "../sidecar/refusal_receipt.mjs";
 
 export type PipelineTimingKey =
   | "preflight_ms"
@@ -26,7 +27,7 @@ export type PipelineTimingKey =
   | "signing_ms";
 
 export type PipelineTimings = Partial<Record<PipelineTimingKey, number>>;
-type PipelineOptions = { timings?: PipelineTimings };
+type PipelineOptions = { timings?: PipelineTimings; enforceExecutionId?: boolean };
 
 function measure<T>(timings: PipelineTimings | undefined, key: PipelineTimingKey, fn: () => T): T {
   const started = performance.now();
@@ -63,7 +64,24 @@ export function executeDeterministicPipeline(rawInput: string, options: Pipeline
     policy_version: preflight.parsed_input.policy_document.policy_version
   };
   const orbit = measure(timings, "orbit_ms", () => runStrictOrbit(preflight.parsed_input));
-  const arm = measure(timings, "arm_ms", () => runStrictArm(preflight.parsed_input, orbit, preflight.request_hash));
+  const arm = measure(timings, "arm_ms", () => runStrictArm(preflight.parsed_input, orbit, preflight.request_hash, { enforceExecutionId: options.enforceExecutionId }));
+  if (
+    arm.decision === "REFUSE" &&
+    (arm.reason_code === REASON_CODES.ExecutionIdAlreadyConsumed || arm.reason_code === REASON_CODES.ExecutionIdReplayed)
+  ) {
+    const receipt = buildSidecarRefusalReceipt({
+      raw_body: rawInput,
+      reason_code: arm.reason_code,
+      policy_hash: preflight.policy_hash,
+      policy_version: preflight.parsed_input.policy_document.policy_version,
+      timings,
+      request_id: arm.execution_id
+    }) as SignedReceipt;
+    return {
+      receipt,
+      receipt_bytes: measure(timings, "canonicalize_ms", () => canonicalizeJson(receipt as unknown as JsonValue))
+    };
+  }
   const ramona = measure(timings, "ramona_ms", () => runStrictRamona(preflight.parsed_input, arm));
   const receipt = measure(timings, "receipt_build_ms", () => buildReceipt({
     canonical_request: preflight.canonical_input,
@@ -77,7 +95,7 @@ export function executeDeterministicPipeline(rawInput: string, options: Pipeline
     timings
   }));
 
-  if (receipt.decision_output.decision === "ALLOW") {
+  if (receipt.decision_output.decision === "ALLOW" && options.enforceExecutionId !== false) {
     commitArmAllow(arm.execution_id, preflight.request_hash, receipt.decision_output.decision_hash);
   }
 
@@ -115,7 +133,7 @@ export function replayReceiptStore(receiptPath: string): {
     }
 
     resetRuntimeState();
-    const rerun = executeDeterministicPipeline(parsed.canonical_request);
+    const rerun = executeDeterministicPipeline(parsed.canonical_request, { enforceExecutionId: false });
     if ("parse_boundary" in rerun) {
       mismatches.push({ request_hash: parsed.request_hash, error: rerun.reason_code });
       continue;
@@ -141,7 +159,7 @@ export function hashFileArtifact(path: string): string {
 }
 
 export function resetRuntimeState(): void {
-  resetArmStores();
+  resetTransientArmStores();
 }
 
 export function seedBudgetToken(token: string, maxBudgetCents: number): void {

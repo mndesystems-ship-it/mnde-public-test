@@ -14,6 +14,7 @@
     "verify-receipt": "node ./tools/verify-receipt.mjs",
     "receipts:refresh": "node ./scripts/refresh-demo-receipts.mjs",
     "test:receipt-verifier": "node ./scripts/test-receipt-verifier.mjs",
+    "test:correctness": "node ./tests/test_correctness_fixes.mjs",
     "test:fresh-setup": "node ./scripts/test-fresh-setup.mjs",
     "test:trust-anchor": "node ./tests/test_trust_anchor.mjs",
     "test:reviewer-kit": "node ./tests/test_cross_platform_reviewer.mjs"

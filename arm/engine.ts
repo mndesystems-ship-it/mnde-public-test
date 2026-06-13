@@ -31,11 +31,16 @@ export function resetArmStores(): void {
   budgetTokenStore.reset();
 }
 
+export function resetTransientArmStores(): void {
+  budgetTokenStore.reset();
+}
+
 export function defineBudgetToken(token: string, maxBudgetCents: number): void {
   budgetTokenStore.define(token, maxBudgetCents);
 }
 
-export function runStrictArm(input: CanonicalExecutionInput, orbit: OrbitTrace, requestHash: string): ArmTrace {
+export function runStrictArm(input: CanonicalExecutionInput, orbit: OrbitTrace, requestHash: string, options: { enforceExecutionId?: boolean } = {}): ArmTrace {
+  const enforceExecutionId = options.enforceExecutionId !== false;
   const projected = projectedCost(input);
   if (projected === null) {
     return {
@@ -53,30 +58,32 @@ export function runStrictArm(input: CanonicalExecutionInput, orbit: OrbitTrace, 
   const allowedCost = Math.min(projected, input.policy_document.rules.max_total_cost_cents);
   const preventedCost = Math.max(projected - allowedCost, 0);
   const executionId = input.execution_request.release_request.execution_id;
-  const beginStatus = executionAuthorityStore.begin(executionId, requestHash);
-  if (beginStatus === "inflight_exists") {
-    return {
-      layer: "arm",
-      decision: "REFUSE",
-      reason_code: REASON_CODES.ExecutionIdAlreadyConsumed,
-      projected_total_cost_cents: projected,
-      allowed_cost_cents: allowedCost,
-      prevented_cost_cents: preventedCost,
-      execution_id: executionId,
-      ...(input.execution_request.budget_token === undefined ? {} : { budget_token: input.execution_request.budget_token })
-    };
-  }
-  if (beginStatus === "allowed_exists") {
-    return {
-      layer: "arm",
-      decision: "REFUSE",
-      reason_code: REASON_CODES.ExecutionIdReplayed,
-      projected_total_cost_cents: projected,
-      allowed_cost_cents: allowedCost,
-      prevented_cost_cents: preventedCost,
-      execution_id: executionId,
-      ...(input.execution_request.budget_token === undefined ? {} : { budget_token: input.execution_request.budget_token })
-    };
+  if (enforceExecutionId) {
+    const beginStatus = executionAuthorityStore.begin(executionId, requestHash);
+    if (beginStatus === "inflight_exists") {
+      return {
+        layer: "arm",
+        decision: "REFUSE",
+        reason_code: REASON_CODES.ExecutionIdAlreadyConsumed,
+        projected_total_cost_cents: projected,
+        allowed_cost_cents: allowedCost,
+        prevented_cost_cents: preventedCost,
+        execution_id: executionId,
+        ...(input.execution_request.budget_token === undefined ? {} : { budget_token: input.execution_request.budget_token })
+      };
+    }
+    if (beginStatus === "allowed_exists") {
+      return {
+        layer: "arm",
+        decision: "REFUSE",
+        reason_code: REASON_CODES.ExecutionIdReplayed,
+        projected_total_cost_cents: projected,
+        allowed_cost_cents: allowedCost,
+        prevented_cost_cents: preventedCost,
+        execution_id: executionId,
+        ...(input.execution_request.budget_token === undefined ? {} : { budget_token: input.execution_request.budget_token })
+      };
+    }
   }
 
   if (orbit.decision === "REFUSE") {
@@ -133,6 +140,21 @@ export function runStrictArm(input: CanonicalExecutionInput, orbit: OrbitTrace, 
       layer: "arm",
       decision: "REFUSE",
       reason_code: REASON_CODES.RetryLimit,
+      projected_total_cost_cents: projected,
+      allowed_cost_cents: allowedCost,
+      prevented_cost_cents: preventedCost,
+      execution_id: executionId,
+      ...(input.execution_request.budget_token === undefined ? {} : { budget_token: input.execution_request.budget_token })
+    };
+  }
+  if (
+    projected > input.policy_document.rules.require_manual_approval_above_cents &&
+    input.execution_request.release_request.hold_state !== "APPROVED"
+  ) {
+    return {
+      layer: "arm",
+      decision: "REFUSE",
+      reason_code: REASON_CODES.ManualApprovalRequired,
       projected_total_cost_cents: projected,
       allowed_cost_cents: allowedCost,
       prevented_cost_cents: preventedCost,

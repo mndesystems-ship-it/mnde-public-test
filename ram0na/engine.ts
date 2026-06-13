@@ -184,20 +184,6 @@ export function buildReceipt(input: {
 }
 
 export function verifyReceiptSignature(receipt: SignedReceipt): boolean {
-  const { signature, verifiable_signature: _verifiableSignature, ...payload } = receipt;
-  const canonicalPayload = canonicalizeJson(payload as unknown as JsonValue);
-  const config = signingConfig();
-  if (config.ok && signature?.algorithm === "HMAC-SHA256" && signature.key_id === config.keyId) {
-    const expected = createHmac("sha256", config.secret).update(canonicalPayload).digest("hex");
-    if (expected === signature.value) {
-      return true;
-    }
-  }
-
-  if (!receipt.verifiable_signature) {
-    return false;
-  }
-
   return verifyReceiptPublicSignature(receipt);
 }
 
