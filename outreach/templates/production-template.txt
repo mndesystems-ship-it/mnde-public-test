@@ -1,0 +1,5 @@
+Hi — {{repo}} looks like production-focused MCP tooling.
+
+I'm working on a pre-execution authorization layer that sits in front of MCP tool calls and produces signed, offline-verifiable receipts.
+
+Would an optional authorization + receipt integration example be useful for the teams using it? How are they handling that today?

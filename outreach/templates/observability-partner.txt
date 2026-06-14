@@ -1,0 +1,5 @@
+Hi — {{repo}} {{focus}}.
+
+I'm working on authorization and signed receipts before execution, which seems complementary to inspecting or replaying what happened after.
+
+Do you see a fit between deciding what is allowed and recording what actually ran?
