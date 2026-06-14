@@ -12,6 +12,8 @@
     "reviewer-kit:refuse": "powershell -NoProfile -ExecutionPolicy Bypass -File ./reviewer-kit/refuse-demo.ps1",
     "desktop-smoke": "node ./scripts/desktop-smoke.mjs",
     "verify-receipt": "node ./tools/verify-receipt.mjs",
+    "sidecar": "node ./scripts/start-sidecar.mjs",
+    "test:sidecar": "node ./tests/test_sidecar_launcher.mjs",
     "executor-demo": "node ./scripts/executor-demo.mjs",
     "test:executor": "node ./tests/test_executor.mjs",
     "mcp-server": "node ./mcp/mnde-mcp-server.mjs",

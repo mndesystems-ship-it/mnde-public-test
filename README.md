@@ -18,6 +18,28 @@ Three layers turn that claim into code anyone can drop in:
 
 In every layer there is no code path where `REFUSE` executes (or, in the proxy, forwards) the call — proven by tests, including across process boundaries via a destruction marker.
 
+## Quick Start
+
+1. Start MNDe:
+
+   ```bash
+   npm run sidecar
+   ```
+
+2. Run a protected tool demo (in a second terminal):
+
+   ```bash
+   npm run mcp-proxy-demo
+   ```
+
+Expected result:
+
+- ALLOW actions execute.
+- REFUSE actions do not execute.
+- Receipts verify offline.
+
+`npm run sidecar` is a foreground service: it bootstraps local authority keys if needed, validates the environment, prints a `Status: READY` banner, and streams logs until you press Ctrl+C. No manual setup steps are required on a fresh clone.
+
 ## Install
 
 Requirements:
@@ -29,8 +51,11 @@ Run:
 
 ```bash
 npm install
-npm run tester:init -- TESTER-001
+npm run sidecar
+npm run mcp-proxy-demo
 ```
+
+`npm run sidecar` automatically creates the local authority assets it needs on first run, so no separate setup step is required. If you prefer to provision those assets explicitly (e.g. for the reviewer kit without starting a sidecar), `npm run tester:init -- TESTER-001` does the same bootstrap.
 
 `tester:init` creates three local-only things:
 
