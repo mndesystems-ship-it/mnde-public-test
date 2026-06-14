@@ -3,16 +3,22 @@
 // pre-execution authorization, receipts, auditability, or execution controls.
 //
 //   node scripts/find-mcp-targets.mjs
+//   node scripts/find-mcp-targets.mjs --quality --min-stars 1 --limit 50   (recommended daily batch)
 //
 // Automates discovery, scoring, categorization, draft generation, and tracking.
 // It does NOT send anything. Output: outreach/mcp-targets.csv (ranked) and
 // outreach/mcp-targets.json (full collected fields).
 //
-// Uses the public GitHub repository search API. Set GITHUB_TOKEN (or GH_TOKEN)
-// to raise the rate limit; without a token, requests are paced to stay under the
-// unauthenticated search limit.
+// Flags:
+//   --min-stars N      minimum stars (default 0; keeps fresh zero-star repos)
+//   --max-stars N      maximum stars (default 100)
+//   --updated-days N   pushed within N days (default 30; alias: --days)
+//   --limit N          max rows written (default 100)
+//   --quality          re-rank by quality signals and enrich a shortlist with
+//                      README / package-file detection (1 extra API call per
+//                      shortlisted repo; set GITHUB_TOKEN to raise the limit)
 //
-// Flags: --days N (default 30)  --max-stars N (default 100)  --per-term N (default 30)
+// Set GITHUB_TOKEN (or GH_TOKEN) to raise the GitHub rate limit.
 
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -28,14 +34,26 @@ function flag(name) {
   const i = process.argv.indexOf(name);
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
-function intArg(name, def) {
-  const n = Number.parseInt(flag(name) ?? "", 10);
-  return Number.isFinite(n) ? n : def;
+function intArg(names, def) {
+  for (const name of [].concat(names)) {
+    const raw = flag(name);
+    if (raw !== undefined) {
+      const n = Number.parseInt(raw, 10);
+      if (Number.isFinite(n)) return n;
+    }
+  }
+  return def;
+}
+function boolArg(name) {
+  return process.argv.includes(name);
 }
 
-const DAYS = intArg("--days", 30);
+const MIN_STARS = intArg("--min-stars", 0);
 const MAX_STARS = intArg("--max-stars", 100);
+const DAYS = intArg(["--updated-days", "--days"], 30);
+const LIMIT = intArg("--limit", 100);
 const PER_TERM = intArg("--per-term", 30);
+const QUALITY = boolArg("--quality");
 const TOKEN = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? null;
 const SINCE = new Date(Date.now() - DAYS * 86_400_000).toISOString().slice(0, 10);
 
@@ -45,7 +63,6 @@ const SEARCH_TERMS = [
   "Docker MCP", "database MCP"
 ];
 
-// category -> risk score (1..5)
 const SCORE = {
   shell: 5, ssh: 5, docker: 5, filesystem: 5, database: 5, payments: 5, deployment: 5,
   "agent-platform": 4,
@@ -56,7 +73,6 @@ const SCORE = {
 const HIGH = new Set(["shell", "ssh", "docker", "filesystem", "database", "payments", "deployment"]);
 const MEDIUM = new Set(["agent-platform", "audit", "replay", "observability", "signing"]);
 
-// ordered: specific/high-execution categories first, broad ones last
 const CATEGORY_RULES = [
   ["payments", /\b(payment|stripe|billing|invoice|treasury|bank|wallet|transfer|refund)\b/],
   ["ssh", /\bssh\b|\bsftp\b/],
@@ -110,6 +126,15 @@ const FOCUS = {
   other: "is an MCP-related project"
 };
 
+const QUALITY_TOPICS = new Set([
+  "mcp", "model-context-protocol", "modelcontextprotocol", "agent", "agents", "ai-agent",
+  "agentic", "claude", "openai", "anthropic", "langchain", "cursor", "llm", "tool-calling"
+]);
+const PACKAGE_FILES = new Set([
+  "package.json", "pyproject.toml", "cargo.toml", "go.mod", "requirements.txt",
+  "setup.py", "gemfile", "pom.xml", "build.gradle", "composer.json"
+]);
+
 function templateNameFor(category) {
   if (["shell", "ssh", "docker", "filesystem", "database", "deployment", "payments"].includes(category)) return "shell-maintainer";
   if (category === "agent-platform") return "production-template";
@@ -128,40 +153,46 @@ function loadTemplate(name) {
 }
 
 function categorize(haystack) {
-  for (const [category, rule] of CATEGORY_RULES) {
-    if (rule.test(haystack)) return category;
-  }
+  for (const [category, rule] of CATEGORY_RULES) if (rule.test(haystack)) return category;
   return "other";
 }
-
 function isListOrEducational(name, description) {
   const text = `${name} ${description}`.toLowerCase();
   return /awesome|(^|[-_ /])list($|[-_ ])|curated|tutorial|course|handbook|cheat[- ]?sheet|learning|study notes|exercises?$|examples?$/.test(text);
 }
-
+function genericOwner(login) {
+  return /\d{2,}$/.test(login) || (login.length >= 20 && !/[-_]/.test(login));
+}
+function genericName(name) {
+  const n = name.toLowerCase();
+  return /model[-_]context[-_]protocol/.test(n) || /[0-9a-f]{8,}/.test(n) || /\d{4,}/.test(n) || /(^|[-_])(poc|demo|copy|old|backup|untitled)([-_]|$)/.test(n);
+}
 function rankWeight(category) {
   if (HIGH.has(category)) return 3;
   if (MEDIUM.has(category)) return 2;
   return 1;
 }
-
 function sleep(ms) {
   return new Promise((done) => setTimeout(done, ms));
 }
-
 function warn(message) {
   process.stderr.write(`WARN: ${message}\n`);
 }
 
-async function searchTerm(term) {
-  const phrase = term.includes(" ") || term.includes("/") ? `"${term}"` : term;
-  const q = `${phrase} pushed:>=${SINCE} stars:0..${Math.max(0, MAX_STARS - 1)} archived:false`;
-  const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&sort=updated&order=desc&per_page=${PER_TERM}`;
+let coreRateLimited = false;
+async function ghFetch(url) {
   const headers = { Accept: "application/vnd.github+json", "User-Agent": "mnde-outreach-discovery" };
   if (TOKEN) headers.Authorization = `Bearer ${TOKEN}`;
+  return fetch(url, { headers });
+}
+
+async function searchTerm(term) {
+  const phrase = term.includes(" ") || term.includes("/") ? `"${term}"` : term;
+  const q = `${phrase} pushed:>=${SINCE} stars:${MIN_STARS}..${Math.max(MIN_STARS, MAX_STARS - 1)} archived:false`;
+  const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&sort=updated&order=desc&per_page=${PER_TERM}`;
   let res;
   try {
-    res = await fetch(url, { headers });
+    res = await ghFetch(url);
   } catch (error) {
     warn(`request failed for "${term}": ${error?.message ?? error}`);
     return [];
@@ -178,9 +209,57 @@ async function searchTerm(term) {
   return Array.isArray(body.items) ? body.items : [];
 }
 
+// One trees call per repo: detect a real README and package files at the root.
+async function enrichRepo(item) {
+  if (coreRateLimited) return { ok: false };
+  const branch = item.default_branch || "main";
+  const url = `https://api.github.com/repos/${item.full_name}/git/trees/${encodeURIComponent(branch)}`;
+  let res;
+  try {
+    res = await ghFetch(url);
+  } catch {
+    return { ok: false };
+  }
+  if (res.status === 403 || res.status === 429) {
+    coreRateLimited = true;
+    warn("core API rate limited during quality enrichment; remaining repos left unverified. Set GITHUB_TOKEN for full checks.");
+    return { ok: false };
+  }
+  if (!res.ok) return { ok: false };
+  const body = await res.json().catch(() => ({}));
+  const paths = Array.isArray(body.tree) ? body.tree.filter((e) => e.type === "blob").map((e) => String(e.path).toLowerCase()) : [];
+  return {
+    ok: true,
+    hasReadme: paths.some((p) => /^readme(\.|$)/.test(p)),
+    hasPackageFile: paths.some((p) => PACKAGE_FILES.has(p))
+  };
+}
+
+function qualityScore(record) {
+  let q = 0;
+  if (record.topicsMatch) q += 2;
+  if (record.hasReadme === true) q += 2;
+  if (record.hasPackageFile === true) q += 1;
+  if (record.descLen > 40) q += 1; else q -= 1;
+  if (record.stars >= 1) q += 1;
+  if (record.genericOwner) q -= 2;
+  if (record.genericName) q -= 1;
+  if (record.genericOwner && record.stars === 0 && record.descLen <= 40) q -= 2; // clearest junk: sinks below the cut
+  return q;
+}
+
 function csvCell(value) {
   const s = String(value ?? "");
   return /[",\n\r]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
+}
+
+function baseCompare(a, b) {
+  return b._weight - a._weight || b.score - a.score || a.stars - b.stars ||
+    (b.lastUpdated < a.lastUpdated ? -1 : b.lastUpdated > a.lastUpdated ? 1 : 0);
+}
+function qualityCompare(a, b) {
+  return b._weight - a._weight || b.score - a.score || b.qualityScore - a.qualityScore ||
+    a.stars - b.stars || (b.lastUpdated < a.lastUpdated ? -1 : b.lastUpdated > a.lastUpdated ? 1 : 0);
 }
 
 async function main() {
@@ -188,14 +267,12 @@ async function main() {
   mkdirSync(templatesDir, { recursive: true });
 
   console.log("MNDe outreach discovery");
-  console.log(`Window: pushed >= ${SINCE} | stars < ${MAX_STARS} | per term: ${PER_TERM} | token: ${TOKEN ? "yes" : "no"}\n`);
+  console.log(`Window: pushed >= ${SINCE} | stars ${MIN_STARS}..${MAX_STARS - 1} | limit ${LIMIT} | quality ${QUALITY ? "on" : "off"} | token ${TOKEN ? "yes" : "no"}\n`);
 
   const byRepo = new Map();
   for (const term of SEARCH_TERMS) {
     const items = await searchTerm(term);
-    for (const item of items) {
-      if (item?.full_name && !byRepo.has(item.full_name)) byRepo.set(item.full_name, item);
-    }
+    for (const item of items) if (item?.full_name && !byRepo.has(item.full_name)) byRepo.set(item.full_name, item);
     process.stdout.write(`  searched ${JSON.stringify(term).padEnd(26)} -> ${items.length} results (unique so far: ${byRepo.size})\n`);
     await sleep(TOKEN ? 1200 : 7000);
   }
@@ -205,14 +282,15 @@ async function main() {
     const description = item.description ?? "";
     const stars = item.stargazers_count ?? 0;
     if (item.archived) continue;
-    if (stars >= MAX_STARS) continue;
+    if (stars < MIN_STARS || stars >= MAX_STARS) continue;
     if (isListOrEducational(item.name ?? "", description)) continue;
-    if (!description) continue; // proxy for an informative repo (filters bare/list-only)
+    if (!description) continue;
 
-    const haystack = `${item.name ?? ""} ${description} ${(item.topics ?? []).join(" ")}`.toLowerCase();
+    const topics = (item.topics ?? []).map((t) => String(t).toLowerCase());
+    const haystack = `${item.name ?? ""} ${description} ${topics.join(" ")}`.toLowerCase();
     const category = categorize(haystack);
-    const score = SCORE[category] ?? 2;
-    const record = {
+    records.push({
+      _item: item,
       repo: item.full_name,
       owner: item.owner?.login ?? "",
       url: item.html_url,
@@ -222,50 +300,67 @@ async function main() {
       lastUpdated: (item.pushed_at ?? "").slice(0, 10),
       contactMethod: `${item.html_url}/issues`,
       category,
-      score,
+      score: SCORE[category] ?? 2,
       whyMndeFits: WHY[category] ?? WHY.other,
-      suggestedMessage: loadTemplate(templateNameFor(category))
-        .replaceAll("{{repo}}", item.full_name)
-        .replaceAll("{{focus}}", FOCUS[category] ?? FOCUS.other),
+      suggestedMessage: loadTemplate(templateNameFor(category)).replaceAll("{{repo}}", item.full_name).replaceAll("{{focus}}", FOCUS[category] ?? FOCUS.other),
       status: "new",
       notes: "",
-      _weight: rankWeight(category)
-    };
-    records.push(record);
+      _weight: rankWeight(category),
+      descLen: description.length,
+      topicsMatch: topics.some((t) => QUALITY_TOPICS.has(t)),
+      genericOwner: genericOwner(item.owner?.login ?? ""),
+      genericName: genericName(item.name ?? ""),
+      hasReadme: null,
+      hasPackageFile: null,
+      qualityScore: 0
+    });
   }
 
-  records.sort((a, b) =>
-    b._weight - a._weight ||
-    b.score - a.score ||
-    a.stars - b.stars ||
-    (b.lastUpdated < a.lastUpdated ? -1 : b.lastUpdated > a.lastUpdated ? 1 : 0)
-  );
-  records.forEach((record, index) => {
-    record.rank = index + 1;
-  });
+  if (QUALITY) {
+    records.sort(baseCompare); // shortlist the most promising before spending API calls
+    const budget = TOKEN ? Math.min(records.length, 150) : 20;
+    const shortlist = records.slice(0, Math.min(records.length, Math.max(LIMIT * 2, budget)));
+    let enriched = 0;
+    for (const record of shortlist) {
+      if (enriched >= budget || coreRateLimited) break;
+      const info = await enrichRepo(record._item);
+      if (info.ok) {
+        record.hasReadme = info.hasReadme;
+        record.hasPackageFile = info.hasPackageFile;
+      }
+      enriched += 1;
+      await sleep(TOKEN ? 700 : 1500);
+    }
+    for (const record of records) record.qualityScore = qualityScore(record);
+    records.sort(qualityCompare);
+    console.log(`\nQuality enrichment: checked ${enriched} repo(s) for README and package files.`);
+  } else {
+    records.sort(baseCompare);
+  }
+
+  const limited = records.slice(0, LIMIT);
+  limited.forEach((record, index) => { record.rank = index + 1; });
 
   const columns = ["rank", "score", "repo", "owner", "url", "description", "category", "whyMndeFits", "suggestedMessage", "status", "notes"];
-  const csv = [columns.join(",")]
-    .concat(records.map((r) => columns.map((c) => csvCell(r[c])).join(",")))
-    .join("\n") + "\n";
+  const csv = [columns.join(",")].concat(limited.map((r) => columns.map((c) => csvCell(r[c])).join(","))).join("\n") + "\n";
   writeFileSync(outCsv, csv, "utf8");
-  writeFileSync(outJson, `${JSON.stringify(records.map(({ _weight, ...rest }) => rest), null, 2)}\n`, "utf8");
+  writeFileSync(outJson, `${JSON.stringify(limited.map(({ _item, _weight, ...rest }) => rest), null, 2)}\n`, "utf8");
 
-  console.log(`\nWrote ${records.length} candidates to:`);
+  console.log(`\nWrote ${limited.length} candidates (of ${records.length} found) to:`);
   console.log(`  ${outCsv}`);
   console.log(`  ${outJson}`);
 
-  if (records.length === 0) {
+  if (limited.length === 0) {
     warn("no candidates. Check network access or set GITHUB_TOKEN, then re-run.");
-    console.log("\nTop targets: (none)");
     return;
   }
 
   console.log("\nTop targets:");
-  for (const r of records.slice(0, 20)) {
-    console.log(`  #${String(r.rank).padStart(2)} [${String(r.score)}] ${r.category.padEnd(14)} ${r.repo}`);
+  for (const r of limited.slice(0, 20)) {
+    const q = QUALITY ? ` q${r.qualityScore >= 0 ? "+" : ""}${r.qualityScore}${r.hasReadme === true ? " readme" : ""}${r.hasPackageFile === true ? " pkg" : ""}` : "";
+    console.log(`  #${String(r.rank).padStart(2)} [${r.score}] ${r.category.padEnd(14)} ${r.repo}${q}`);
   }
-  console.log("\nReview the top 20 manually before contacting anyone. See docs/outreach-process.md.");
+  console.log("\nReview the top results manually before contacting anyone. See docs/outreach-process.md.");
 }
 
 main().catch((error) => {

@@ -14,12 +14,48 @@ This system automates **discovery, scoring, categorization, draft generation, an
 Run it:
 
 ```bash
+# recommended daily batch:
+node scripts/find-mcp-targets.mjs --quality --min-stars 1 --limit 50
+
+# full unfiltered sweep (keeps zero-star fresh repos):
 node scripts/find-mcp-targets.mjs
-# optional: GITHUB_TOKEN=<token> node scripts/find-mcp-targets.mjs
-# flags: --days 30  --max-stars 100  --per-term 30
+
+# with a token for full quality checks and higher limits:
+GITHUB_TOKEN=<token> node scripts/find-mcp-targets.mjs --quality --min-stars 1 --limit 50
 ```
 
+Flags:
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--min-stars N` | 0 | minimum stars (0 keeps fresh, unknown teams) |
+| `--max-stars N` | 100 | maximum stars |
+| `--updated-days N` (`--days`) | 30 | pushed within N days |
+| `--limit N` | 100 | max rows written |
+| `--quality` | off | re-rank by quality signals and verify a shortlist |
+
 Set `GITHUB_TOKEN` (or `GH_TOKEN`) to raise the GitHub rate limit. Without a token the script paces requests to stay under the unauthenticated search limit.
+
+### Quality mode (`--quality`)
+
+Quality mode does not hard-filter; it **re-ranks** so cleaner candidates rise and noise sinks below the `--limit` cut. Fresh zero-star projects are kept. For a shortlist it makes one extra GitHub API call per repo (the repository root tree) to detect a real README and package files.
+
+Signals that raise rank:
+
+- topics include `mcp`, `agent`, `claude`, `openai`, `anthropic`, `langchain`, or `cursor`
+- a real README at the repository root
+- a package file (`package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`, …)
+- description longer than 40 characters
+- at least one star
+
+Signals that lower rank:
+
+- owner name looks random/generated (e.g. trailing digit runs)
+- generic/boilerplate repo name (echoes the protocol name, `-poc`, `-old`, long digit/hex runs)
+- short or missing description
+- zero stars **and** generic owner **and** short description (the clearest noise — sinks below the cut)
+
+Awesome lists, courses, tutorials, and handbooks are excluded regardless of mode. Without a token, quality enrichment is limited to about 20 repos (the unauthenticated core-API limit); the rest are ranked on metadata alone and left unverified.
 
 ### Filters applied
 
