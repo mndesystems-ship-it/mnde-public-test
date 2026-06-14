@@ -6,6 +6,18 @@ MNDe is a local pre-execution authority layer. Tools, agents, and automation ask
 
 AI agents and automation can perform useful work, but they can also take unsafe shortcuts. MNDe places an execution boundary before the action runs. A reviewer can inspect the decision, receipt, policy hash, signature, and replay result.
 
+## Enforcement Wedge
+
+**MNDe sits between agent intent and tool execution. If MNDe refuses, the tool call is not forwarded.**
+
+Three layers turn that claim into code anyone can drop in:
+
+- **`@mnde/executor`** ([executor/](executor/)) — wrap any risky function; `ALLOW` runs it once, `REFUSE` never does. `npm run executor-demo`, `npm run test:executor`.
+- **MNDe MCP server** ([mcp/](mcp/)) — expose guarded tools over the Model Context Protocol; every `tools/call` is authorized first. `npm run mcp-demo`, `npm run test:mcp`.
+- **MNDe MCP proxy** ([mcp/mnde-mcp-proxy.mjs](mcp/mnde-mcp-proxy.mjs)) — put MNDe in front of *any existing* MCP server; tool calls now require authority before execution, with zero changes to the upstream. `npm run mcp-proxy-demo`, `npm run test:mcp-proxy`.
+
+In every layer there is no code path where `REFUSE` executes (or, in the proxy, forwards) the call — proven by tests, including across process boundaries via a destruction marker.
+
 ## Install
 
 Requirements:

@@ -1,0 +1,94 @@
+# MNDe MCP Server
+
+An [MCP](https://modelcontextprotocol.io) server that puts MNDe between an agent and its tools.
+
+Every `tools/call` is routed through MNDe first: **ALLOW runs the tool, REFUSE never does**, and the response carries a signed, offline-verifiable receipt. It speaks newline-delimited JSON-RPC over stdio with **zero dependencies**, so it works with any MCP client — Claude Desktop, Cursor, MCP Inspector — and ships clean.
+
+## Why this is the wedge
+
+Agent builders are wiring tools into MCP right now. This server makes MNDe a one-line drop-in: point your MCP client at it, and every tool call your agent makes is authorized before execution and produces a receipt you can verify with no MNDe process running. No SDK, no rewrite of the agent.
+
+```
+Agent (MCP client)
+  -> tools/call delete_backups
+     -> MNDe MCP server -> POST /v1/decisions
+        -> ALLOW: tool runs, receipt returned
+        -> REFUSE: tool never runs, refusal receipt returned
+```
+
+## Try it
+
+```bash
+npm run mcp-demo     # drives the server over real stdio: ALLOW runs, REFUSE doesn't, receipts verify
+npm run test:mcp     # protocol conformance + enforcement (REFUSE proven via a cross-process marker)
+```
+
+## Register with an MCP client
+
+The MNDe sidecar must be reachable at `MNDE_SIDECAR_URL`. Example `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "mnde": {
+      "command": "node",
+      "args": ["/absolute/path/to/mnde-public-test/mcp/mnde-mcp-server.mjs"],
+      "env": { "MNDE_SIDECAR_URL": "http://127.0.0.1:8787" }
+    }
+  }
+}
+```
+
+`stdout` is protocol traffic only; logs go to `stderr`.
+
+## Tool result shape
+
+Each `tools/call` returns two content blocks: a human-readable line, and a JSON
+block with the MNDe envelope so an agent can branch on it programmatically.
+
+```json
+{ "mnde": { "decision": "REFUSE", "reason": "ERR_FORBIDDEN_ACTION_IN_PARAMETERS",
+            "executed": false, "receiptPath": "...", "verified": true, "failClosed": false } }
+```
+
+`isError` is `true` on REFUSE / fail-closed so MCP clients surface the block.
+
+## Adding your own tools
+
+Edit [`guarded-tools.mjs`](./guarded-tools.mjs): each entry is `{ name, description, inputSchema, run }`.
+The server wraps every `run` through the executor, so the safety invariant holds
+for any tool you add — there is no code path where REFUSE executes it.
+
+## Proxy mode — protect a server you did not write
+
+The hosted server above guards tools you define. **Proxy mode** ([mnde-mcp-proxy.mjs](./mnde-mcp-proxy.mjs)) puts MNDe in front of *any existing* MCP server: it relays every method to the upstream unchanged except `tools/call`, which it gates through MNDe. On REFUSE the call is never forwarded — zero changes to the upstream.
+
+```
+Agent (MCP client) -> MNDe MCP proxy -> upstream MCP server
+                                         (gated only on tools/call)
+```
+
+```bash
+npm run mcp-proxy-demo    # ALLOW forwarded + runs upstream; REFUSE never forwarded; receipts verify
+npm run test:mcp-proxy    # 9 acceptance criteria incl. upstream crash + malformed response fail closed
+```
+
+Register it like the hosted server, but point it at your upstream:
+
+```json
+{
+  "mcpServers": {
+    "mnde-proxy": {
+      "command": "node",
+      "args": ["/abs/path/to/mnde-public-test/mcp/mnde-mcp-proxy.mjs"],
+      "env": {
+        "MNDE_SIDECAR_URL": "http://127.0.0.1:8787",
+        "MNDE_PROXY_UPSTREAM_COMMAND": "node",
+        "MNDE_PROXY_UPSTREAM_ARGS": "[\"/abs/path/to/your-mcp-server.js\"]"
+      }
+    }
+  }
+}
+```
+
+Pass-through methods (`initialize`, `tools/list`, `resources/*`, `prompts/*`, `ping`, …) are relayed verbatim; only `tools/call` is gated.

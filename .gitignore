@@ -13,6 +13,7 @@ mnde-auth-session*.key
 jwks-cache/
 auth-audit/
 receipt-exports/
+mnde-receipts/
 node_modules/
 installer/*.exe
 installer/*.msi
