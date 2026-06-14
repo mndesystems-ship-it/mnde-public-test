@@ -18,7 +18,8 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export async function startMndeSidecar({
   url = "http://127.0.0.1:8787",
   testerId = "EXEC-DEMO-001",
-  installationId = "EXEC-INSTALL-001"
+  installationId = "EXEC-INSTALL-001",
+  env: extraEnv = {}
 } = {}) {
   // Fresh-clone safe: generate local receipt signing keys + signed local authority
   // if they don't exist yet (idempotent). Without this the sidecar refuses to boot.
@@ -38,7 +39,9 @@ export async function startMndeSidecar({
     MNDE_WORKER_POOL_SIZE: "1",
     MNDE_WORKER_QUEUE_MAX_DEPTH: "16",
     MNDE_TESTER_ID: testerId,
-    MNDE_INSTALLATION_ID: installationId
+    MNDE_INSTALLATION_ID: installationId,
+    // Caller overrides last (e.g. MNDE_DECISION_ENGINE, MNDE_PE_POLICY, MNDE_BIND_PORT).
+    ...extraEnv
   };
 
   const child = spawn(process.execPath, ["mnde-local-sidecar.mjs"], {

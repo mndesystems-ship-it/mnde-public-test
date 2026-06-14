@@ -260,6 +260,25 @@ if (cluster.isPrimary && CLUSTER_MODE) {
   await new Promise(() => {});
 }
 
+// Optional, opt-in decision engine. Default is "legacy" (the existing pipeline).
+// The policy-engine adapter is dynamically imported ONLY in policy-engine mode,
+// so legacy mode never loads it and its behavior is byte-for-byte unchanged.
+const DECISION_ENGINE = process.env.MNDE_DECISION_ENGINE === "policy-engine" ? "policy-engine" : "legacy";
+let policyEngine = null;
+let policyEngineConfigError = null;
+if (DECISION_ENGINE === "policy-engine") {
+  try {
+    const adapter = await import("./src/policy-engine/sidecar-adapter.mjs");
+    const peConfig = adapter.loadPolicyEngineConfig(process.env);
+    if (!peConfig.ok) policyEngineConfigError = peConfig.reason;
+    else policyEngine = { decide: (body, opts) => adapter.decidePolicyEngine(body, peConfig, opts) };
+    process.stdout.write(`MNDe decision engine: policy-engine${policyEngineConfigError ? ` (CONFIG ERROR: ${policyEngineConfigError})` : ""}\n`);
+  } catch (error) {
+    policyEngineConfigError = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`MNDe policy-engine adapter failed to load: ${policyEngineConfigError}\n`);
+  }
+}
+
 function testTimingHeaders(timings) {
   if (!TEST_HARNESS_ENABLED) return {};
   return {
@@ -486,6 +505,54 @@ function authorizeRequest(req, pathname, target = null) {
   return authz;
 }
 
+// Policy-engine decision path (opt-in). Fails closed on config errors or engine
+// errors. Returns the signed policy-engine receipt for offline verification.
+async function respondPolicyEngine(res, request, timings, totalStarted) {
+  if (policyEngineConfigError) {
+    timings.total_server_ms = Math.max(0, Math.round(performance.now() - totalStarted));
+    recordTimings(timings);
+    await fail(res, "ERR_PE_CONFIG_INVALID", 200, { policy_engine_error: policyEngineConfigError }, timings);
+    return;
+  }
+  let outcome;
+  try {
+    outcome = policyEngine.decide(request, { now: new Date().toISOString() });
+  } catch (error) {
+    timings.total_server_ms = Math.max(0, Math.round(performance.now() - totalStarted));
+    recordTimings(timings);
+    await fail(res, "ERR_PE_DECISION_FAILED", 200, { policy_engine_error: error instanceof Error ? error.message : String(error) }, timings);
+    return;
+  }
+  const queued = await receiptQueue.enqueue(outcome.receipt);
+  if (!queued.ok) {
+    counters.refused_overload += 1;
+    counters.receipt_refusals += 1;
+    timings.total_server_ms = Math.max(0, Math.round(performance.now() - totalStarted));
+    recordTimings(timings);
+    await fail(res, queued.reason_code, 200, {}, timings);
+    return;
+  }
+  if (RECEIPT_QUEUE_CONFIG.durability_mode === "strict_audit") {
+    await queued.durable;
+  }
+  timings.total_server_ms = Math.max(0, Math.round(performance.now() - totalStarted));
+  recordTimings(timings);
+  response(res, 200, {
+    schema_version: "mnde.api.response.v1",
+    decision_engine: "policy-engine",
+    decision: outcome.decision,
+    reason_code: outcome.reason_code,
+    policy_id: outcome.receipt.decision_output.policy_id,
+    policy_hash: outcome.receipt.policy_hash,
+    request_hash: outcome.receipt.request_hash,
+    decision_hash: outcome.receipt.decision_output.decision_hash,
+    trust_enforced: Boolean(outcome.receipt.trust_enforced),
+    approval_enforced: Boolean(outcome.receipt.approval_enforced),
+    receipt: outcome.receipt,
+    timings
+  }, timings);
+}
+
 async function handleDecide(req, res) {
   const totalStarted = performance.now();
   const timings = {
@@ -579,6 +646,10 @@ async function handleDecide(req, res) {
     }
     const { value: request, raw } = await readStrictObject(req, timings);
     timings.body_read_complete_ms = ms();
+    if (DECISION_ENGINE === "policy-engine") {
+      await respondPolicyEngine(res, request, timings, totalStarted);
+      return;
+    }
     const runtimeInput = createRuntimeInput(request, policy);
     timings.execution_start_ms = ms();
     const submitted = workerPool.submit(canonicalizeJson(runtimeInput));

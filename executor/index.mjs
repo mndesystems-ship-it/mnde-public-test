@@ -19,6 +19,7 @@ import { join, resolve } from "node:path";
 
 import { reviewerRequest } from "../scripts/reviewer-request.mjs";
 import { verifyReceiptFile, verificationPassed } from "../tools/verify-receipt.mjs";
+import { verifyAnyReceiptFile } from "../tools/verify.mjs";
 
 const DEFAULT_SIDECAR_URL = "http://127.0.0.1:8787";
 const DEFAULT_RECEIPTS_DIR = "./mnde-receipts";
@@ -78,7 +79,9 @@ export function createMndeExecutor(config = {}) {
   function offlineVerify(receiptPath) {
     if (!verify) return null;
     try {
-      return verificationPassed(verifyReceiptFile(receiptPath));
+      // Unified verifier handles both legacy pipeline receipts and policy-engine
+      // receipts; legacy receipts verify identically to before.
+      return verifyAnyReceiptFile(receiptPath).verified;
     } catch {
       return false;
     }

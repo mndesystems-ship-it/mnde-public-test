@@ -1248,3 +1248,43 @@ verification result. It can only be verified by a verifier that supplies approva
 trust anchors; a verifier with the wrong anchors does not accept it. With no
 approval trust anchors the engine is unchanged and `approval_required` has no
 effect, so existing behavior and tests are byte-for-byte preserved.
+
+## Decision Engine Modes
+
+The sidecar supports two decision engines, selected by `MNDE_DECISION_ENGINE`:
+
+- `legacy` (default) — the existing pipeline. Unchanged and byte-for-byte
+  compatible; the policy-engine adapter is not even loaded.
+- `policy-engine` (opt-in) — `/v1/decisions` (and therefore the MCP proxy and
+  executor) route through the policy engine and return a signed
+  `mnde.pe.receipt.v1` receipt that verifies offline through `npm run verify`.
+
+Policy-engine mode configuration (sidecar/env/flag only — never the request body):
+
+| Variable | Meaning |
+|---|---|
+| `MNDE_DECISION_ENGINE=policy-engine` | enable the policy-engine path |
+| `MNDE_PE_POLICY` | path to the active policy (required) |
+| `MNDE_PE_TRUST_ANCHORS` | policy/authority trust anchors (optional; enables the cryptographic authority chain) |
+| `MNDE_PE_APPROVAL_TRUST_ANCHORS` | approval trust anchors (optional; enables authenticated approvals) |
+
+Signed artifacts (authority grants, approvals) may be attached to the request as
+`mnde_authorities` / `mnde_approvals`. **Trust anchors are never read from the
+request body** — only from the configuration above.
+
+```bash
+MNDE_DECISION_ENGINE=policy-engine \
+MNDE_PE_POLICY=examples/policy-engine/sample-policy.json \
+  npm run sidecar
+# in another terminal:
+npm run reviewer-kit:pe        # optional policy-engine-mode reviewer kit
+```
+
+Fail-closed guarantees in policy-engine mode: a malformed or missing configured
+file (`ERR_PE_CONFIG_INVALID`), an engine error (`ERR_PE_DECISION_FAILED`),
+invalid signatures, bad/expired approvals, or unmatched rules all REFUSE. A
+REFUSE is never forwarded by the proxy.
+
+**Caveat:** these policy-engine guarantees apply to live traffic only when
+`MNDE_DECISION_ENGINE=policy-engine` is set. In the default `legacy` mode the
+existing pipeline decides, and the policy-engine path is inactive.
