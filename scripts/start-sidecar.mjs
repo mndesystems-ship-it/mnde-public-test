@@ -12,7 +12,7 @@
 // Node APIs only — works the same on Windows, macOS, and Linux.
 
 import { spawn } from "node:child_process";
-import { accessSync, constants, existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -46,16 +46,25 @@ out("");
 out("Starting authority service...");
 out("");
 
-// 2. Bootstrap (idempotent: creates local keys, signed authority, and receipt dirs if missing)
+// 2. Bootstrap local authority assets (existing repo logic; no new trust path).
 try {
   bootstrapReceiptKeys({ repoRoot });
-  mkdirSync(receiptsDir, { recursive: true });
-  mkdirSync(logsDir, { recursive: true });
 } catch (error) {
-  failClosed([`Bootstrap failed: ${error?.message ?? String(error)}`]);
+  failClosed([`Authority setup failed: ${error?.message ?? String(error)}`]);
 }
 
-// 3. Validation — fail loudly, exit non-zero
+// 3. Receipt directory — create if missing, then prove it is writable (fail closed).
+try {
+  mkdirSync(receiptsDir, { recursive: true });
+  mkdirSync(logsDir, { recursive: true });
+  const probe = join(receiptsDir, `.write-probe-${process.pid}`);
+  writeFileSync(probe, "ok");
+  rmSync(probe, { force: true });
+} catch {
+  failClosed(["Receipt directory not writable."]);
+}
+
+// 4. Validation — fail loudly, exit non-zero.
 const problems = [];
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) problems.push(`Invalid bind port: ${PORT_RAW}`);
 if (!existsSync(join(repoRoot, "mnde-local-sidecar.mjs"))) problems.push("Sidecar runtime mnde-local-sidecar.mjs missing.");
@@ -64,14 +73,9 @@ if (!existsSync(localAuthority.manifestPath)) problems.push("Authority manifest 
 if (!existsSync(join(repoRoot, "shared", "receipt_keys", "receipt_signing_private.pem"))) problems.push("Receipt signing key missing.");
 const bundle = loadAuthorityBundle(repoRoot, { kind: "local" });
 if (!bundle.ok) problems.push(`Authority manifest invalid: ${bundle.reason}`);
-try {
-  accessSync(receiptsDir, constants.W_OK);
-} catch {
-  problems.push("Receipt directory not writable.");
-}
 if (problems.length > 0) failClosed(problems);
 
-// 4. Start the existing sidecar runtime in the foreground, streaming its logs.
+// 5. Start the existing sidecar runtime in the foreground, streaming its logs.
 const env = {
   ...process.env,
   MNDE_BIND_PORT: String(PORT),

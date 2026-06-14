@@ -10,7 +10,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -107,7 +107,24 @@ async function main() {
     }
   });
 
-  await test("3. startup succeeds and prints the READY banner", async () => {
+  await test("3. receipt directory writable check fails closed", async () => {
+    // Put a FILE where the receipts parent dir must be, so the dir cannot be
+    // created or written. Cross-platform: mkdir/write under a file throws.
+    const dir = mkdtempSync(join(tmpdir(), "mnde-launcher-"));
+    const blockingFile = join(dir, "not-a-dir");
+    writeFileSync(blockingFile, "x");
+    const receiptsDir = join(blockingFile, "receipts");
+    const handle = runLauncher({ MNDE_BIND_PORT: "8815", MNDE_RECEIPTS_DIR: receiptsDir });
+    try {
+      const code = await waitForExit(handle.child);
+      assert.notEqual(code, 0, "an unwritable receipt directory must exit non-zero");
+      assert.match(handle.err(), /Receipt directory not writable\./);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test("4. startup succeeds and prints the READY banner", async () => {
     const handle = runLauncher({ MNDE_BIND_PORT: "8813" });
     try {
       await waitForOutput(handle.out, "Status: READY");
@@ -118,7 +135,7 @@ async function main() {
     }
   });
 
-  await test("4. invalid configuration fails closed", async () => {
+  await test("5. invalid configuration fails closed", async () => {
     const handle = runLauncher({ MNDE_BIND_PORT: "not-a-port" });
     const code = await waitForExit(handle.child);
     assert.notEqual(code, 0, "invalid config must exit non-zero");
@@ -126,7 +143,7 @@ async function main() {
     assert.match(handle.err(), /Invalid bind port/);
   });
 
-  await test("5. shutdown exits cleanly", async () => {
+  await test("6. shutdown exits cleanly", async () => {
     const handle = runLauncher({ MNDE_BIND_PORT: "8814" });
     await waitForOutput(handle.out, "Status: READY");
     const code = await stopLauncher(handle);
