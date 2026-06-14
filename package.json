@@ -9,6 +9,7 @@
   "scripts": {
     "mnde": "node ./bin/mnde.mjs",
     "test:onboarding": "node ./tests/test_onboarding.mjs",
+    "test:policy-engine": "node ./tests/test_policy_engine.mjs",
     "tester:init": "node ./scripts/setup.mjs",
     "reviewer-kit": "node ./tools/reviewer-kit.mjs",
     "reviewer-kit:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File ./reviewer-kit/run-review.ps1 -Full",

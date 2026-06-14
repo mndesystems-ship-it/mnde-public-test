@@ -60,6 +60,24 @@ The public tester uses demo policy logic to make the pre-execution decision flow
 
 Receipt generation, authority validation, offline verification, replay verification, and tamper detection are separate proof areas from the demo policy behavior.
 
+## Policy Engine Implementation Slice
+
+The repository now includes an initial MNDe Policy Engine implementation slice under:
+
+```text
+src/policy-engine/
+```
+
+It is covered by:
+
+```text
+npm run test:policy-engine
+```
+
+This slice currently supports request validation, policy validation, deterministic rule evaluation, `ALLOW` / `REFUSE` decisions, reason codes, conflict resolution where `REFUSE` wins, no-match refusal, invalid-input refusal, basic policy hashing, basic authority chain hashing, basic decision hashing, and first-pass authority checks for missing or expired authority.
+
+It is not yet the full production PE described in `docs/mnde-policy-engine-production-spec-v1.md`. Signed policy verification, authority signature verification, revocation checking, threshold signer enforcement, simulation mode, lockdown mode, and full production conformance vectors remain production work.
+
 ## Fail-Closed Expectations
 
 Production integrations should fail closed when:

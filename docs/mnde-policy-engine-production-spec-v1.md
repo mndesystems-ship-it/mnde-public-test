@@ -4,7 +4,24 @@ Short name: MNDe PE
 
 Status: Production target specification
 
-Implementation status: Defines the intended production behavior for MNDe PE. The public tester currently demonstrates a smaller deterministic policy path; this specification is the target for the production policy engine.
+Implementation status: Defines the intended production behavior for MNDe PE. The public tester includes an initial deterministic implementation slice under `src/policy-engine/`; this specification remains the target for the complete production policy engine.
+
+Current implementation slice:
+
+- request schema validation
+- policy bundle schema validation
+- deterministic rule evaluation
+- `ALLOW` / `REFUSE` decision output
+- reason codes
+- `REFUSE` wins conflict resolution
+- no matching rule returns `REFUSE`
+- invalid input returns `REFUSE`
+- basic policy hash
+- basic authority chain hash
+- basic decision hash
+- first authority checks for required and expired authority
+
+Current implementation does not yet include signed policy verification, authority signature verification, revocation checking, threshold signer enforcement, simulation mode, lockdown mode, or full production conformance vectors.
 
 ## Purpose
 

@@ -1,0 +1,292 @@
+import { createHash } from "node:crypto";
+import path from "node:path";
+
+import { canonicalizeJson } from "../../shared/json.ts";
+
+const REQUIRED_REQUEST_FIELDS = [
+  "schema_version",
+  "request_id",
+  "timestamp",
+  "principal",
+  "agent",
+  "tool",
+  "parameters",
+  "environment",
+  "context"
+];
+
+const VALID_EFFECTS = new Set(["ALLOW", "REFUSE"]);
+const VALID_POLICY_STATES = new Set(["ACTIVE"]);
+const VALID_OPERATORS = new Set(["eq", "neq", "contains", "prefix", "path_prefix", "exists", "missing"]);
+const VALID_ATTRIBUTE_ROOTS = new Set(["principal", "agent", "tool", "parameters", "environment", "context"]);
+const FIXED_FAIL_CLOSED_TIME = "1970-01-01T00:00:00.000Z";
+
+function sha256(value) {
+  return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
+}
+
+function isPlainObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function canonicalHash(value) {
+  return sha256(canonicalizeJson(value));
+}
+
+function refuse(reasonCode, context = {}) {
+  return buildDecision("REFUSE", reasonCode, context);
+}
+
+function buildDecision(decision, reasonCode, context = {}) {
+  const request = isPlainObject(context.request) ? context.request : {};
+  const policy = isPlainObject(context.policy) ? context.policy : {};
+  const authorities = Array.isArray(context.authorities) ? context.authorities : [];
+  const evaluatedAt = context.now ?? evaluationTime(request);
+  const requestHash = context.requestHash ?? safeHash(request);
+  const policyHash = context.policyHash ?? safeHash(policy);
+  const authorityChainHash = context.authorityChainHash ?? safeHash({ authorities });
+  const decisionMaterial = {
+    request_hash: requestHash,
+    policy_hash: policyHash,
+    authority_chain_hash: authorityChainHash,
+    decision,
+    reason_code: reasonCode,
+    evaluated_at: evaluatedAt
+  };
+
+  return {
+    schema_version: "1.0",
+    decision,
+    reason_code: reasonCode,
+    request_id: typeof request.request_id === "string" ? request.request_id : "unknown",
+    policy_id: typeof policy.policy_id === "string" ? policy.policy_id : "unknown",
+    policy_version: typeof policy.version === "string" ? policy.version : "unknown",
+    policy_hash: policyHash,
+    authority_chain_hash: authorityChainHash,
+    decision_hash: canonicalHash(decisionMaterial),
+    request_hash: requestHash,
+    evaluated_at: evaluatedAt
+  };
+}
+
+function isValidTimestamp(value) {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value) && !Number.isNaN(Date.parse(value));
+}
+
+function evaluationTime(request) {
+  return isValidTimestamp(request?.timestamp) ? request.timestamp : FIXED_FAIL_CLOSED_TIME;
+}
+
+function safeHash(value) {
+  try {
+    return canonicalHash(value);
+  } catch {
+    return sha256("invalid");
+  }
+}
+
+function validateRequest(request) {
+  if (!isPlainObject(request)) return "INVALID_REQUEST";
+  for (const field of REQUIRED_REQUEST_FIELDS) {
+    if (!(field in request)) return "INVALID_REQUEST";
+  }
+  if (request.schema_version !== "1.0") return "INVALID_REQUEST";
+  if (typeof request.request_id !== "string" || request.request_id.length === 0) return "INVALID_REQUEST";
+  if (!isValidTimestamp(request.timestamp)) return "INVALID_REQUEST";
+  if (!isPlainObject(request.principal) || !isPlainObject(request.agent) || !isPlainObject(request.tool)) return "INVALID_REQUEST";
+  if (!isPlainObject(request.parameters) || !isPlainObject(request.environment) || !isPlainObject(request.context)) return "INVALID_REQUEST";
+  if (typeof request.tool.tool_name !== "string" || request.tool.tool_name.length === 0) return "INVALID_REQUEST";
+  return null;
+}
+
+function validatePolicy(policy) {
+  if (!isPlainObject(policy)) return "INVALID_POLICY";
+  if (policy.schema_version !== "1.0") return "INVALID_POLICY";
+  if (typeof policy.policy_id !== "string" || typeof policy.version !== "string") return "INVALID_POLICY";
+  if (!VALID_POLICY_STATES.has(policy.state)) return "INVALID_POLICY";
+  if (!Array.isArray(policy.rules)) return "INVALID_POLICY";
+  const ruleIds = new Set();
+  for (const rule of policy.rules) {
+    if (!isPlainObject(rule)) return "INVALID_POLICY";
+    if (typeof rule.rule_id !== "string" || rule.rule_id.length === 0) return "INVALID_POLICY";
+    if (ruleIds.has(rule.rule_id)) return "INVALID_POLICY";
+    ruleIds.add(rule.rule_id);
+    if (!VALID_EFFECTS.has(rule.effect)) return "INVALID_POLICY";
+    if (!isPlainObject(rule.match)) return "INVALID_POLICY";
+    const expressionError = validateExpression(rule.match);
+    if (expressionError) return expressionError;
+    if (rule.authority_required !== undefined && (!Array.isArray(rule.authority_required) || rule.authority_required.some((id) => typeof id !== "string"))) {
+      return "INVALID_POLICY";
+    }
+  }
+  return null;
+}
+
+function validateExpression(expr, depth = 0, maxDepth = 8) {
+  if (depth > maxDepth) return "POLICY_LIMIT_EXCEEDED";
+  if (!isPlainObject(expr)) return "INVALID_POLICY";
+
+  const logicalKeys = Object.keys(expr).filter((key) => ["all", "any", "not"].includes(key));
+  if (logicalKeys.length > 1) return "INVALID_POLICY";
+  if ("all" in expr || "any" in expr) {
+    const items = "all" in expr ? expr.all : expr.any;
+    if (!Array.isArray(items) || items.length === 0) return "INVALID_POLICY";
+    for (const item of items) {
+      const childError = validateExpression(item, depth + 1, maxDepth);
+      if (childError) return childError;
+    }
+    return null;
+  }
+  if ("not" in expr) {
+    return validateExpression(expr.not, depth + 1, maxDepth);
+  }
+
+  if (typeof expr.field !== "string" || typeof expr.op !== "string") return "INVALID_POLICY";
+  if (!VALID_OPERATORS.has(expr.op)) return "INVALID_POLICY";
+  const root = expr.field.split(".")[0];
+  if (!VALID_ATTRIBUTE_ROOTS.has(root)) return "INVALID_POLICY";
+  return null;
+}
+
+function getPath(root, dottedPath) {
+  if (typeof dottedPath !== "string" || dottedPath.length === 0) return { exists: false };
+  const parts = dottedPath.split(".");
+  let current = root;
+  for (const part of parts) {
+    if (!isPlainObject(current) && !Array.isArray(current)) return { exists: false };
+    if (!(part in current)) return { exists: false };
+    current = current[part];
+  }
+  return { exists: true, value: current };
+}
+
+function normalizePath(value) {
+  const normalizedSlashes = String(value).replaceAll("\\", "/");
+  return path.posix.normalize(normalizedSlashes);
+}
+
+function containsWildcardLikePath(value) {
+  return typeof value === "string" && /[*?[\]{}]/.test(value);
+}
+
+function pathHasPrefix(candidate, prefix) {
+  if (containsWildcardLikePath(candidate) || containsWildcardLikePath(prefix)) return false;
+  const normalizedCandidate = normalizePath(candidate);
+  const normalizedPrefix = normalizePath(prefix);
+  if (normalizedCandidate === normalizedPrefix) return true;
+  const prefixWithSlash = normalizedPrefix.endsWith("/") ? normalizedPrefix : `${normalizedPrefix}/`;
+  return normalizedCandidate.startsWith(prefixWithSlash);
+}
+
+function evaluateLeaf(expr, request) {
+  if (!isPlainObject(expr)) throw new Error("INVALID_POLICY");
+  const { field, op, value } = expr;
+  if (typeof op !== "string" || !VALID_OPERATORS.has(op)) throw new Error("INVALID_POLICY");
+  if (typeof field !== "string") throw new Error("INVALID_POLICY");
+
+  const found = getPath(request, field);
+  if (op === "exists") return found.exists;
+  if (op === "missing") return !found.exists;
+  if (!found.exists) throw new Error("ATTRIBUTE_MISSING");
+
+  switch (op) {
+    case "eq":
+      return found.value === value;
+    case "neq":
+      return found.value !== value;
+    case "contains":
+      return Array.isArray(found.value) && found.value.includes(value);
+    case "prefix":
+      return typeof found.value === "string" && typeof value === "string" && found.value.startsWith(value);
+    case "path_prefix":
+      return typeof found.value === "string" && typeof value === "string" && pathHasPrefix(found.value, value);
+    default:
+      throw new Error("INVALID_POLICY");
+  }
+}
+
+function evaluateExpression(expr, request, depth = 0, maxDepth = 8) {
+  if (depth > maxDepth) throw new Error("POLICY_LIMIT_EXCEEDED");
+  if (!isPlainObject(expr)) throw new Error("INVALID_POLICY");
+
+  const keys = Object.keys(expr);
+  const logicalKeys = keys.filter((key) => ["all", "any", "not"].includes(key));
+  if (logicalKeys.length > 1) throw new Error("INVALID_POLICY");
+
+  if ("all" in expr) {
+    if (!Array.isArray(expr.all)) throw new Error("INVALID_POLICY");
+    return expr.all.every((item) => evaluateExpression(item, request, depth + 1, maxDepth));
+  }
+  if ("any" in expr) {
+    if (!Array.isArray(expr.any)) throw new Error("INVALID_POLICY");
+    return expr.any.some((item) => evaluateExpression(item, request, depth + 1, maxDepth));
+  }
+  if ("not" in expr) {
+    return !evaluateExpression(expr.not, request, depth + 1, maxDepth);
+  }
+  return evaluateLeaf(expr, request);
+}
+
+function authorityStatus(requiredIds, authorities, now) {
+  if (!Array.isArray(requiredIds) || requiredIds.length === 0) return { ok: true };
+  for (const id of requiredIds) {
+    const authority = authorities.find((candidate) => candidate?.authority_id === id);
+    if (!authority) return { ok: false, reason: "AUTHORITY_REQUIRED" };
+    if (!isValidTimestamp(authority.valid_from) || !isValidTimestamp(authority.valid_until) || !isValidTimestamp(now)) {
+      return { ok: false, reason: "AUTHORITY_EXPIRED" };
+    }
+    if (Date.parse(authority.valid_until) <= Date.parse(now)) {
+      return { ok: false, reason: "AUTHORITY_EXPIRED" };
+    }
+    if (Date.parse(authority.valid_from) > Date.parse(now)) {
+      return { ok: false, reason: "AUTHORITY_EXPIRED" };
+    }
+  }
+  return { ok: true };
+}
+
+export function evaluatePolicyRequest(request, policy, options = {}) {
+  const now = options.now ?? evaluationTime(request);
+  const authorities = Array.isArray(options.authorities) ? options.authorities : [];
+  const context = { request, policy, authorities, now };
+
+  try {
+    const requestError = validateRequest(request);
+    if (requestError) return refuse(requestError, context);
+
+    const policyError = validatePolicy(policy);
+    if (policyError) return refuse(policyError, context);
+
+    const requestHash = canonicalHash(request);
+    const policyHash = canonicalHash(policy);
+    const authorityChainHash = canonicalHash({ authorities });
+    const decisionContext = { ...context, requestHash, policyHash, authorityChainHash };
+    const maxDepth = Number.isSafeInteger(policy?.limits?.max_depth) ? policy.limits.max_depth : 8;
+
+    const matchingRules = [];
+    for (const rule of policy.rules) {
+      if (evaluateExpression(rule.match, request, 0, maxDepth)) matchingRules.push(rule);
+    }
+
+    if (matchingRules.some((rule) => rule.effect === "REFUSE")) {
+      return buildDecision("REFUSE", "RULE_REFUSE", decisionContext);
+    }
+
+    const allowRules = matchingRules.filter((rule) => rule.effect === "ALLOW");
+    if (allowRules.length === 0) {
+      return buildDecision("REFUSE", "NO_MATCHING_RULE", decisionContext);
+    }
+
+    let lastAuthorityFailure = null;
+    for (const rule of allowRules) {
+      const status = authorityStatus(rule.authority_required, authorities, now);
+      if (status.ok) return buildDecision("ALLOW", "OK_ALLOW", decisionContext);
+      lastAuthorityFailure = status.reason;
+    }
+
+    return buildDecision("REFUSE", lastAuthorityFailure ?? "AUTHORITY_REQUIRED", decisionContext);
+  } catch (error) {
+    const reason = error?.message === "POLICY_LIMIT_EXCEEDED" || error?.message === "ATTRIBUTE_MISSING" ? error.message : "INVALID_POLICY";
+    return refuse(reason, context);
+  }
+}

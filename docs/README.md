@@ -3,12 +3,12 @@
 Start here:
 
 - `first-tester-onboarding.md`
-- `execution-firewall-overview.md` — pre-execution authorization layer overview
+- `execution-firewall-overview.md` - pre-execution authorization layer overview
 - `execution-receipt-spec-v1.md`
 - `mnde-policy-engine-production-spec-v1.md`
+- `production-readiness.md` - includes current Policy Engine implementation slice coverage
 - `independent-verification.md`
 - `integration-guide.md`
-- `production-readiness.md`
 - `demo-scenarios.md`
 - `tester-id-implementation.md`
 - `feedback-workflow.md`
