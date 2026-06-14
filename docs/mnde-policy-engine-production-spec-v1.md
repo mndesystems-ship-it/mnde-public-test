@@ -1288,3 +1288,40 @@ REFUSE is never forwarded by the proxy.
 **Caveat:** these policy-engine guarantees apply to live traffic only when
 `MNDE_DECISION_ENGINE=policy-engine` is set. In the default `legacy` mode the
 existing pipeline decides, and the policy-engine path is inactive.
+
+## Sidecar Caller Authentication
+
+The sidecar can authenticate the caller of `/v1/decisions`, selected by
+`MNDE_SIDECAR_AUTH`:
+
+- `off` (default) — unauthenticated, legacy-compatible. Unchanged.
+- `bearer` (opt-in) — requires `Authorization: Bearer <token>`. The token is
+  validated against configuration only; the caller identity is the configured
+  token label, and is mapped into the policy-engine `principal`.
+
+Configuration (env/file only — never the request body):
+
+| Variable | Meaning |
+|---|---|
+| `MNDE_SIDECAR_AUTH=bearer` | enable bearer authentication |
+| `MNDE_SIDECAR_AUTH_TOKENS` | JSON object `{ "<token>": "<caller_id>" }` |
+| `MNDE_SIDECAR_AUTH_TOKENS_FILE` | path to the same JSON (alternative to the env var) |
+
+```bash
+MNDE_SIDECAR_AUTH=bearer \
+MNDE_SIDECAR_AUTH_TOKENS='{"local-pilot-token":"pilot-caller"}' \
+MNDE_DECISION_ENGINE=policy-engine \
+MNDE_PE_POLICY=examples/policy-engine/sample-policy.json \
+  npm run sidecar
+```
+
+Guarantees: authentication runs before any decision work. A missing, malformed,
+or wrong token returns `401` with `REFUSE` / `ERR_UNAUTHENTICATED` and **no
+receipt** — an unauthenticated caller never reaches evaluation and never receives
+an ALLOW receipt. The MCP proxy does not forward an unauthenticated call. Tokens
+and identities are configuration and are never written into receipts. Works in
+both legacy and policy-engine decision modes.
+
+**Caveat:** bearer tokens are for local/pilot use. Production should use stronger
+caller identity — mTLS, OIDC, or signed client assertions. Note the distinction:
+**approvals prove who approved an action; caller authentication proves who asked.**

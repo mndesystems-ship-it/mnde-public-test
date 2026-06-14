@@ -260,6 +260,15 @@ if (cluster.isPrimary && CLUSTER_MODE) {
   await new Promise(() => {});
 }
 
+// Optional, opt-in caller authentication. Default "off" (legacy-compatible).
+const { loadAuthConfig, authenticate } = await import("./src/sidecar-auth/index.mjs");
+const AUTH = loadAuthConfig(process.env);
+const AUTH_MODE = AUTH.mode;
+const AUTH_CONFIG_ERROR = AUTH.ok ? null : AUTH.reason;
+if (AUTH_MODE === "bearer") {
+  process.stdout.write(`MNDe caller auth: bearer${AUTH_CONFIG_ERROR ? ` (CONFIG ERROR: ${AUTH_CONFIG_ERROR})` : ` (${AUTH.tokens.size} token(s))`}\n`);
+}
+
 // Optional, opt-in decision engine. Default is "legacy" (the existing pipeline).
 // The policy-engine adapter is dynamically imported ONLY in policy-engine mode,
 // so legacy mode never loads it and its behavior is byte-for-byte unchanged.
@@ -507,7 +516,7 @@ function authorizeRequest(req, pathname, target = null) {
 
 // Policy-engine decision path (opt-in). Fails closed on config errors or engine
 // errors. Returns the signed policy-engine receipt for offline verification.
-async function respondPolicyEngine(res, request, timings, totalStarted) {
+async function respondPolicyEngine(res, request, timings, totalStarted, caller) {
   if (policyEngineConfigError) {
     timings.total_server_ms = Math.max(0, Math.round(performance.now() - totalStarted));
     recordTimings(timings);
@@ -516,7 +525,7 @@ async function respondPolicyEngine(res, request, timings, totalStarted) {
   }
   let outcome;
   try {
-    outcome = policyEngine.decide(request, { now: new Date().toISOString() });
+    outcome = policyEngine.decide(request, { now: new Date().toISOString(), caller });
   } catch (error) {
     timings.total_server_ms = Math.max(0, Math.round(performance.now() - totalStarted));
     recordTimings(timings);
@@ -548,12 +557,28 @@ async function respondPolicyEngine(res, request, timings, totalStarted) {
     decision_hash: outcome.receipt.decision_output.decision_hash,
     trust_enforced: Boolean(outcome.receipt.trust_enforced),
     approval_enforced: Boolean(outcome.receipt.approval_enforced),
+    ...(caller ? { authenticated_caller: caller.id } : {}),
     receipt: outcome.receipt,
     timings
   }, timings);
 }
 
 async function handleDecide(req, res) {
+  // Caller authentication runs before any decision work. Fails closed; an
+  // unauthenticated caller never reaches evaluation and never gets a receipt.
+  if (AUTH_MODE === "bearer") {
+    if (AUTH_CONFIG_ERROR) {
+      response(res, 503, { schema_version: "mnde.api.response.v1", decision: "REFUSE", reason_code: "ERR_AUTH_CONFIG_INVALID", receipt: null });
+      return;
+    }
+    const authResult = authenticate(req.headers, AUTH);
+    if (!authResult.ok) {
+      counters.auth_failures = (counters.auth_failures ?? 0) + 1;
+      response(res, 401, { schema_version: "mnde.api.response.v1", decision: "REFUSE", reason_code: "ERR_UNAUTHENTICATED", receipt: null });
+      return;
+    }
+    req._mndeCaller = authResult.caller;
+  }
   const totalStarted = performance.now();
   const timings = {
     parse_ms: 0,
@@ -647,7 +672,7 @@ async function handleDecide(req, res) {
     const { value: request, raw } = await readStrictObject(req, timings);
     timings.body_read_complete_ms = ms();
     if (DECISION_ENGINE === "policy-engine") {
-      await respondPolicyEngine(res, request, timings, totalStarted);
+      await respondPolicyEngine(res, request, timings, totalStarted, req._mndeCaller);
       return;
     }
     const runtimeInput = createRuntimeInput(request, policy);
@@ -714,7 +739,7 @@ async function handleDecide(req, res) {
     }
     timings.total_server_ms = Math.max(0, Math.round(performance.now() - totalStarted));
     recordTimings(timings);
-    response(res, 200, { ...apiResponseFromReceipt(result.receipt), timings }, timings);
+    response(res, 200, { ...apiResponseFromReceipt(result.receipt), ...(req._mndeCaller ? { authenticated_caller: req._mndeCaller.id } : {}), timings }, timings);
   } catch (error) {
     if (error?.message?.startsWith("ERR_RECEIPT_FLUSH_FAILED")) counters.flush_failures += 1;
     if (error?.message === WORKER_TIMEOUT) counters.request_timeout_refusals += 1;

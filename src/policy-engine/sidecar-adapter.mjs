@@ -69,6 +69,11 @@ export function toPolicyEngineRequest(body, now) {
 export function decidePolicyEngine(body, config, options = {}) {
   const now = options.now ?? new Date().toISOString();
   const request = toPolicyEngineRequest(body, now);
+  // When the caller is authenticated, the principal comes from the verified
+  // token identity — never from the request body.
+  if (options.caller && typeof options.caller.id === "string") {
+    request.principal = { ...(request.principal ?? {}), id: options.caller.id };
+  }
   // Signed artifacts attached to the request. Anchors are config-only (above).
   const authorities = Array.isArray(body?.mnde_authorities) ? body.mnde_authorities : (Array.isArray(body?.authorities) ? body.authorities : []);
   const approvals = Array.isArray(body?.mnde_approvals) ? body.mnde_approvals : (Array.isArray(body?.approvals) ? body.approvals : []);
