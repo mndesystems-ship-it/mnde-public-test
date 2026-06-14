@@ -289,6 +289,7 @@ See [docs/execution-receipt-spec-v1.md](docs/execution-receipt-spec-v1.md), sect
 These exist as architecture or concepts in the repository but are not claimed as complete:
 
 - Argument-level shell policy and operator-defined allowlists.
+- Production MNDe Policy Engine behavior defined in [docs/mnde-policy-engine-production-spec-v1.md](docs/mnde-policy-engine-production-spec-v1.md).
 - Authenticated approval (signed approval tokens) for `APPROVAL_REQUIRED`.
 - A published authority bundle with documented key rotation.
 - Centralized policy and audit management.
@@ -303,9 +304,11 @@ These exist as architecture or concepts in the repository but are not claimed as
 - [Discovery](docs/discovery.md)
 - [Wiring](docs/wiring.md)
 - [Policy drafting](docs/policy-drafting.md)
+- [MNDe Policy Engine production spec](docs/mnde-policy-engine-production-spec-v1.md)
 - [Onboarding security model](docs/security-model.md)
 - [Trust-anchored receipt verification](docs/trust-anchored-verification.md)
 - [Production readiness notes](docs/production-readiness.md)
+- [Release note: safe MCP onboarding](docs/release-891ceda-onboarding.md)
 - [Demo scenarios](docs/demo-scenarios.md)
 - [Tester ID implementation](docs/tester-id-implementation.md)
 - [Release checklist](docs/release-checklist.md)
