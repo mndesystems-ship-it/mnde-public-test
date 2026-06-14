@@ -14,8 +14,6 @@ jwks-cache/
 auth-audit/
 receipt-exports/
 mnde-receipts/
-outreach/mcp-targets.csv
-outreach/mcp-targets.json
 node_modules/
 installer/*.exe
 installer/*.msi

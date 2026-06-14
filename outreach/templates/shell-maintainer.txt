@@ -1,5 +1,0 @@
-Interesting project — {{repo}}.
-
-I saw it {{focus}}.
-
-How are you handling authorization before a tool call executes today?

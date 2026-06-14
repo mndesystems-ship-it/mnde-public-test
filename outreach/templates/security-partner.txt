@@ -1,5 +1,0 @@
-Hi — {{repo}} {{focus}}.
-
-I'm building pre-execution authorization with signed, offline-verifiable receipts for tool calls.
-
-We're adjacent on trust and verification — open to comparing approaches?
