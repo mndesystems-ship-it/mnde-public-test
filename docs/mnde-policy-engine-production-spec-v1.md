@@ -1208,3 +1208,43 @@ npm run verify receipt.json --trust-anchors trust-anchors.json
 ```
 
 A receipt produced under a trust anchor set is `trust_enforced: true` and can only be verified by a verifier that supplies trust anchors; a verifier with the wrong anchors does not accept it. Without trust anchors the engine behaves as a pure rule evaluator (unchanged), so existing behavior and tests are byte-for-byte preserved.
+
+## Authenticated approvals
+
+Beyond signed policy and signed authority grants, MNDe PE can require a signed,
+in-scope, unexpired **approval** from a trusted issuer where a policy rule asks
+for it. A verifier can later answer: who requested the action, who approved it,
+who issued the approval, whether that issuer was trusted, and whether the
+approval was valid at decision time.
+
+An approval artifact carries `approval_id`, `approver`, `issuer`, `issued_at`,
+`expires_at`, `scope` (`{ tool_name, request_id? }`), and an Ed25519 `signature`.
+A policy rule opts in with `approval_required` (a count; `true` means one).
+
+Approval trust anchors are supplied by the verifier OUT OF BAND — never read from
+the policy, request, or receipt:
+
+```
+approvalTrustAnchors = { approval_keys: [{ key_id, public_key (PEM), valid_from?, valid_until? }] }
+```
+
+Verification requires: a valid signature from a trusted issuer key, within the
+approval's validity window, with a scope that matches the requested action, and
+enough valid approvals to meet the rule's count. Fail-closed reason codes:
+`APPROVAL_REQUIRED`, `APPROVAL_MISSING`, `APPROVAL_MALFORMED`, `APPROVAL_EXPIRED`,
+`APPROVAL_NOT_YET_VALID`, `APPROVAL_SCOPE_MISMATCH`, `APPROVAL_UNSIGNED`,
+`APPROVAL_UNTRUSTED_ISSUER`, `APPROVAL_SIGNATURE_INVALID`, `APPROVAL_IDENTITY_INVALID`.
+
+```bash
+mnde decide --request req.json --policy policy.json --authorities grants.json \
+  --approvals approvals.json --trust-anchors anchors.json \
+  --approval-trust-anchors approval-anchors.json --out receipt.json
+npm run verify receipt.json --approval-trust-anchors approval-anchors.json
+```
+
+A receipt produced under approval enforcement is `approval_enforced: true` and
+records, per approval, the approver, issuer, approval id, validity window, and
+verification result. It can only be verified by a verifier that supplies approval
+trust anchors; a verifier with the wrong anchors does not accept it. With no
+approval trust anchors the engine is unchanged and `approval_required` has no
+effect, so existing behavior and tests are byte-for-byte preserved.

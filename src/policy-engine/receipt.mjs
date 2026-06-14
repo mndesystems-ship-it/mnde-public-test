@@ -31,7 +31,10 @@ function canonicalPayloadWithoutSignature(receiptLike) {
 export function buildPolicyReceipt(request, policy, options = {}) {
   const authorities = Array.isArray(options.authorities) ? options.authorities : [];
   const trustAnchors = options.trustAnchors;
-  const decision = evaluatePolicyRequest(request, policy, { authorities, now: options.now, trustAnchors });
+  const approvalTrustAnchors = options.approvalTrustAnchors;
+  const approvalEnforced = Boolean(approvalTrustAnchors);
+  const approvals = Array.isArray(options.approvals) ? options.approvals : [];
+  const decision = evaluatePolicyRequest(request, policy, { authorities, now: options.now, trustAnchors, approvals, approvalTrustAnchors });
 
   const payload = {
     schema_version: SCHEMA,
@@ -39,6 +42,9 @@ export function buildPolicyReceipt(request, policy, options = {}) {
     canonical_policy: canonicalizeJson(policy),
     authorities,
     trust_enforced: Boolean(trustAnchors),
+    // Embedded only when approval enforcement is active, so non-enforced receipts
+    // are unchanged. Approval trust anchors are NOT embedded (verifier-supplied).
+    ...(approvalEnforced ? { approval_enforced: true, approvals } : {}),
     request_hash: decision.request_hash,
     policy_hash: decision.policy_hash,
     authority_chain_hash: decision.authority_chain_hash,
@@ -76,12 +82,17 @@ export function verifyPolicyReceipt(receipt, options = {}) {
   if (receipt.trust_enforced && !options.trustAnchors) {
     return { verified: false, reason: "trust anchors required to verify a trust-enforced receipt" };
   }
+  if (receipt.approval_enforced && !options.approvalTrustAnchors) {
+    return { verified: false, reason: "approval trust anchors required to verify an approval-enforced receipt" };
+  }
 
   const original = receipt.decision_output ?? {};
   const replay = evaluatePolicyRequest(parsedRequest.value, parsedPolicy.value, {
     authorities: Array.isArray(receipt.authorities) ? receipt.authorities : [],
     now: original.evaluated_at,
-    trustAnchors: receipt.trust_enforced ? options.trustAnchors : undefined
+    trustAnchors: receipt.trust_enforced ? options.trustAnchors : undefined,
+    approvals: receipt.approval_enforced ? (Array.isArray(receipt.approvals) ? receipt.approvals : []) : undefined,
+    approvalTrustAnchors: receipt.approval_enforced ? options.approvalTrustAnchors : undefined
   });
 
   for (const field of ["decision", "reason_code", "request_hash", "policy_hash", "authority_chain_hash", "decision_hash"]) {

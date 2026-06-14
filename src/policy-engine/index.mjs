@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { canonicalizeJson } from "../../shared/json.ts";
 import { verifyPolicyTrust, verifyAuthorityGrant } from "./trust.mjs";
+import { evaluateApprovals } from "./authenticated-approvals.mjs";
 
 const REQUIRED_REQUEST_FIELDS = [
   "schema_version",
@@ -66,7 +67,10 @@ function buildDecision(decision, reasonCode, context = {}) {
     authority_chain_hash: authorityChainHash,
     decision_hash: canonicalHash(decisionMaterial),
     request_hash: requestHash,
-    evaluated_at: evaluatedAt
+    evaluated_at: evaluatedAt,
+    // Approval summary is metadata only; not part of decisionMaterial, so it does
+    // not affect decision_hash. Present only when approval enforcement is active.
+    ...(context.approval ? { approval: context.approval } : {})
   };
 }
 
@@ -283,6 +287,27 @@ export function evaluatePolicyRequest(request, policy, options = {}) {
       }
     }
 
+    // Optional authenticated approvals. When approval trust anchors are supplied,
+    // each provided approval is verified, and rules that declare `approval_required`
+    // are gated on enough valid approvals for this action. With no approval trust
+    // anchors this block is inert and `approval_required` has no effect.
+    const approvalTrustAnchors = options.approvalTrustAnchors;
+    const approvalEnforced = Boolean(approvalTrustAnchors);
+    const approvalEval = approvalEnforced ? evaluateApprovals(options.approvals ?? [], approvalTrustAnchors, now, request) : null;
+    if (approvalEnforced) decisionContext.approval = { enforced: true, verifications: approvalEval.verifications };
+
+    function approvalStatusForRule(rule) {
+      if (!approvalEnforced) return { ok: true };
+      const required = rule.approval_required;
+      if (required === undefined) return { ok: true };
+      const needed = required === true ? 1 : Number.isSafeInteger(required) && required > 0 ? required : null;
+      if (needed === null) return { ok: false, reason: "APPROVAL_MALFORMED" };
+      if (approvalEval.validCount >= needed) return { ok: true };
+      if (approvalEval.present === 0) return { ok: false, reason: "APPROVAL_REQUIRED" };
+      const firstBad = approvalEval.verifications.find((v) => v.result !== "VALID");
+      return { ok: false, reason: firstBad ? firstBad.result : "APPROVAL_MISSING" };
+    }
+
     const matchingRules = [];
     for (const rule of policy.rules) {
       if (evaluateExpression(rule.match, request, 0, maxDepth)) matchingRules.push(rule);
@@ -297,14 +322,16 @@ export function evaluatePolicyRequest(request, policy, options = {}) {
       return buildDecision("REFUSE", "NO_MATCHING_RULE", decisionContext);
     }
 
-    let lastAuthorityFailure = null;
+    let lastFailure = null;
     for (const rule of allowRules) {
-      const status = authorityStatus(rule.authority_required, effectiveAuthorities, now, rejectedById);
-      if (status.ok) return buildDecision("ALLOW", "OK_ALLOW", decisionContext);
-      lastAuthorityFailure = status.reason;
+      const authority = authorityStatus(rule.authority_required, effectiveAuthorities, now, rejectedById);
+      if (!authority.ok) { lastFailure = authority.reason; continue; }
+      const approval = approvalStatusForRule(rule);
+      if (!approval.ok) { lastFailure = approval.reason; continue; }
+      return buildDecision("ALLOW", "OK_ALLOW", decisionContext);
     }
 
-    return buildDecision("REFUSE", lastAuthorityFailure ?? "AUTHORITY_REQUIRED", decisionContext);
+    return buildDecision("REFUSE", lastFailure ?? "AUTHORITY_REQUIRED", decisionContext);
   } catch (error) {
     const reason = error?.message === "POLICY_LIMIT_EXCEEDED" || error?.message === "ATTRIBUTE_MISSING" ? error.message : "INVALID_POLICY";
     return refuse(reason, context);

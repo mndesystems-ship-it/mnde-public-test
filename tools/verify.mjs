@@ -26,7 +26,7 @@ export function verifyAnyReceiptFile(filePath, options = {}) {
   }
 
   if (receipt?.schema_version === POLICY_RECEIPT_SCHEMA) {
-    const result = verifyPolicyReceipt(receipt, { trustAnchors: options.trustAnchors });
+    const result = verifyPolicyReceipt(receipt, { trustAnchors: options.trustAnchors, approvalTrustAnchors: options.approvalTrustAnchors });
     return { kind: "policy-engine", verified: result.verified, reason: result.reason, decision: result.decision };
   }
 
@@ -36,15 +36,21 @@ export function verifyAnyReceiptFile(filePath, options = {}) {
 
 function main() {
   const args = process.argv.slice(2);
-  const taIndex = args.indexOf("--trust-anchors");
-  const trustAnchorsPath = taIndex >= 0 ? args[taIndex + 1] : undefined;
-  const filePath = args.find((a) => !a.startsWith("--") && a !== trustAnchorsPath);
+  const valueOf = (flag) => {
+    const i = args.indexOf(flag);
+    return i >= 0 ? args[i + 1] : undefined;
+  };
+  const trustAnchorsPath = valueOf("--trust-anchors");
+  const approvalAnchorsPath = valueOf("--approval-trust-anchors");
+  const flagValues = new Set([trustAnchorsPath, approvalAnchorsPath].filter(Boolean));
+  const filePath = args.find((a) => !a.startsWith("--") && !flagValues.has(a));
   if (!filePath) {
-    process.stderr.write("Usage: node tools/verify.mjs <receipt.json> [--trust-anchors <anchors.json>]\n");
+    process.stderr.write("Usage: node tools/verify.mjs <receipt.json> [--trust-anchors <f>] [--approval-trust-anchors <f>]\n");
     process.exit(2);
   }
   const trustAnchors = trustAnchorsPath ? JSON.parse(readFileSync(trustAnchorsPath, "utf8")) : undefined;
-  const result = verifyAnyReceiptFile(filePath, { trustAnchors });
+  const approvalTrustAnchors = approvalAnchorsPath ? JSON.parse(readFileSync(approvalAnchorsPath, "utf8")) : undefined;
+  const result = verifyAnyReceiptFile(filePath, { trustAnchors, approvalTrustAnchors });
   process.stdout.write("========================================\n");
   process.stdout.write("MNDe Receipt Verification (unified)\n");
   process.stdout.write("========================================\n");

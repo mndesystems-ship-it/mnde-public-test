@@ -161,12 +161,16 @@ async function main() {
       return;
     }
     const trustAnchorsPath = flagValue("--trust-anchors");
+    const approvalsPath = flagValue("--approvals");
+    const approvalAnchorsPath = flagValue("--approval-trust-anchors");
     const request = JSON.parse(readFileSync(requestPath, "utf8"));
     const policy = JSON.parse(readFileSync(policyPath, "utf8"));
     const authorities = authoritiesPath ? JSON.parse(readFileSync(authoritiesPath, "utf8")) : [];
     const trustAnchors = trustAnchorsPath ? JSON.parse(readFileSync(trustAnchorsPath, "utf8")) : undefined;
-    const receipt = buildPolicyReceipt(request, policy, { authorities, trustAnchors });
-    const verified = verifyPolicyReceipt(receipt, { trustAnchors }).verified;
+    const approvals = approvalsPath ? JSON.parse(readFileSync(approvalsPath, "utf8")) : undefined;
+    const approvalTrustAnchors = approvalAnchorsPath ? JSON.parse(readFileSync(approvalAnchorsPath, "utf8")) : undefined;
+    const receipt = buildPolicyReceipt(request, policy, { authorities, trustAnchors, approvals, approvalTrustAnchors });
+    const verified = verifyPolicyReceipt(receipt, { trustAnchors, approvalTrustAnchors }).verified;
     line(`Decision:    ${receipt.decision_output.decision}`);
     line(`Reason:      ${receipt.decision_output.reason_code}`);
     line(`Receipt:     ${verified ? "VERIFIED (offline)" : "NOT VERIFIED"}`);
