@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/workspace"]
+    },
+    "shell": {
+      "command": "node",
+      "args": ["/opt/tools/shell-mcp-server.js"],
+      "env": { "ALLOW_ROOT": "0" }
+    },
+    "already-protected": {
+      "command": "node",
+      "args": ["/repo/mcp/mnde-mcp-proxy.mjs"],
+      "env": {
+        "MNDE_SIDECAR_URL": "http://127.0.0.1:8787",
+        "MNDE_PROXY_UPSTREAM_COMMAND": "npx",
+        "MNDE_PROXY_UPSTREAM_ARGS": "[\"-y\",\"some-server\"]",
+        "_mnde_wrapped": "1"
+      }
+    }
+  }
+}

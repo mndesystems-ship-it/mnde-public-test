@@ -139,6 +139,50 @@ Optional desktop smoke testing can be run after downloading a release executable
 MNDE_DESKTOP_EXE=/path/to/MNDe-Execution-Control.exe npm run desktop-smoke
 ```
 
+## Onboard An MCP Client
+
+MNDe includes an offline onboarding command for supported MCP clients.
+
+Preview discovery:
+
+```bash
+npm run mnde -- init
+```
+
+Preview the exact wiring plan without writing files:
+
+```bash
+npm run mnde -- init --dry-run
+```
+
+Apply the wiring plan:
+
+```bash
+npm run mnde -- init --apply
+```
+
+Check recorded wiring and authority readiness:
+
+```bash
+npm run mnde -- status
+```
+
+Restore original configs:
+
+```bash
+npm run mnde -- uninstall
+```
+
+Onboarding creates backups before modifying supported MCP configs. It does not activate policy, change authority material, alter receipt signing, or change replay verification.
+
+Details:
+
+- [Onboarding](docs/onboarding.md)
+- [Discovery](docs/discovery.md)
+- [Wiring](docs/wiring.md)
+- [Policy drafting](docs/policy-drafting.md)
+- [Security model](docs/security-model.md)
+
 ## Integration
 
 See [docs/integration-guide.md](docs/integration-guide.md) for a minimal agent wrapper that calls `POST /v1/decisions` before execution, executes only on `ALLOW`, never executes on `REFUSE`, stores receipts, and verifies them offline.
@@ -255,6 +299,11 @@ These exist as architecture or concepts in the repository but are not claimed as
 - [First tester onboarding](docs/first-tester-onboarding.md)
 - [Independent receipt verification](docs/independent-verification.md)
 - [Minimal agent integration](docs/integration-guide.md)
+- [Onboarding](docs/onboarding.md)
+- [Discovery](docs/discovery.md)
+- [Wiring](docs/wiring.md)
+- [Policy drafting](docs/policy-drafting.md)
+- [Onboarding security model](docs/security-model.md)
 - [Trust-anchored receipt verification](docs/trust-anchored-verification.md)
 - [Production readiness notes](docs/production-readiness.md)
 - [Demo scenarios](docs/demo-scenarios.md)
