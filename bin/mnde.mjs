@@ -10,11 +10,18 @@
 // Onboarding only. It does not make authority decisions. Nothing is modified
 // unless you run `--apply`, and every `--apply` is reversible with `uninstall`.
 
+import { readFileSync, writeFileSync } from "node:fs";
+
 import { buildContext, discover, planDeployment, buildDraft, apply, uninstall, status } from "../src/onboarding/index.mjs";
+import { buildPolicyReceipt, verifyPolicyReceipt } from "../src/policy-engine/receipt.mjs";
 
 const argv = process.argv.slice(2);
 const command = argv[0];
 const has = (flag) => argv.includes(flag);
+const flagValue = (flag) => {
+  const i = argv.indexOf(flag);
+  return i >= 0 ? argv[i + 1] : undefined;
+};
 
 function line(text = "") {
   process.stdout.write(`${text}\n`);
@@ -139,6 +146,38 @@ async function main() {
     return;
   }
 
+  if (command === "decide") {
+    // Run a request + policy through the deterministic policy engine and emit a
+    // signed receipt on the shared authority chain. The decision logic is the
+    // authority layer; this command only produces and verifies its receipt.
+    banner("MNDe decide");
+    const requestPath = flagValue("--request");
+    const policyPath = flagValue("--policy");
+    const authoritiesPath = flagValue("--authorities");
+    const outPath = flagValue("--out");
+    if (!requestPath || !policyPath) {
+      line("Usage: mnde decide --request <request.json> --policy <policy.json> [--authorities <auth.json>] [--out <receipt.json>]");
+      process.exitCode = 1;
+      return;
+    }
+    const request = JSON.parse(readFileSync(requestPath, "utf8"));
+    const policy = JSON.parse(readFileSync(policyPath, "utf8"));
+    const authorities = authoritiesPath ? JSON.parse(readFileSync(authoritiesPath, "utf8")) : [];
+    const receipt = buildPolicyReceipt(request, policy, { authorities });
+    const verified = verifyPolicyReceipt(receipt).verified;
+    line(`Decision:    ${receipt.decision_output.decision}`);
+    line(`Reason:      ${receipt.decision_output.reason_code}`);
+    line(`Receipt:     ${verified ? "VERIFIED (offline)" : "NOT VERIFIED"}`);
+    if (outPath) {
+      writeFileSync(outPath, `${JSON.stringify(receipt, null, 2)}\n`, "utf8");
+      line(`RECEIPT WRITTEN: ${outPath}`);
+    } else {
+      line("");
+      line(JSON.stringify(receipt, null, 2));
+    }
+    return;
+  }
+
   if (command === "status") {
     banner("MNDe status");
     const s = status(ctx);
@@ -166,6 +205,8 @@ async function main() {
   line("  mnde init --apply      apply approved wiring (backups created first)");
   line("  mnde uninstall         restore original configurations from backups");
   line("  mnde status            show protected clients/servers and authority status");
+  line("  mnde decide            evaluate a request+policy and emit a signed receipt");
+  line("                         (--request <f> --policy <f> [--authorities <f>] [--out <f>])");
   process.exitCode = command ? 1 : 0;
 }
 

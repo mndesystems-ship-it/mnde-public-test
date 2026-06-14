@@ -1164,3 +1164,28 @@ MNDe PE decides whether execution had authority before it began.
 ```text
 Authority first. Execution second. Proof always.
 ```
+
+## Receipts and unified verification
+
+A MNDe PE decision is wrapped into a signed receipt (`mnde.pe.receipt.v1`) on the
+same Ed25519 authority chain as every other MNDe receipt — the same signing key,
+the same signed authority manifest, the same verification primitives.
+
+```bash
+# Evaluate a request against a policy and emit a signed receipt:
+mnde decide --request request.json --policy policy.json --out receipt.json
+
+# One verifier checks any MNDe receipt, regardless of producer:
+npm run verify receipt.json          # policy-engine receipt
+npm run verify path/to/legacy.json   # legacy pipeline receipt (ecs.receipt.v2)
+```
+
+Verification of a PE receipt replays the decision by re-running the deterministic
+engine on the embedded request, policy, and authorities, then checks the signature
+against the trusted authority manifest. A tampered request, policy, or decision
+fails closed.
+
+This unifies the trust surface: the policy engine and the receipt/verification
+system share one authority chain and one verifier. The legacy pipeline receipts
+remain verifiable unchanged; the policy engine is the canonical decision producer
+going forward.
