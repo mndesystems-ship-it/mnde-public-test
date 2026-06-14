@@ -1325,3 +1325,32 @@ both legacy and policy-engine decision modes.
 **Caveat:** bearer tokens are for local/pilot use. Production should use stronger
 caller identity — mTLS, OIDC, or signed client assertions. Note the distinction:
 **approvals prove who approved an action; caller authentication proves who asked.**
+
+### Authenticated proxy / executor
+
+The executor (and therefore the MCP server and proxy that use it) sends the
+bearer token only when one is configured, via `MNDE_SIDECAR_BEARER_TOKEN`
+(or `createMndeExecutor({ bearerToken })`). It is sent solely as the
+`Authorization` header on the call to `/v1/decisions`; it is never logged,
+stored in receipts, or included in error output.
+
+```bash
+# sidecar (terminal 1)
+MNDE_SIDECAR_AUTH=bearer \
+MNDE_SIDECAR_AUTH_TOKENS='{"local-pilot-token":"pilot-caller"}' \
+MNDE_DECISION_ENGINE=policy-engine \
+MNDE_PE_POLICY=examples/policy-engine/sample-policy.json \
+  npm run sidecar
+
+# proxy in front of an upstream MCP server (terminal 2)
+MNDE_SIDECAR_URL=http://127.0.0.1:8787 \
+MNDE_SIDECAR_BEARER_TOKEN=local-pilot-token \
+MNDE_PROXY_UPSTREAM_COMMAND=node \
+MNDE_PROXY_UPSTREAM_ARGS='["/abs/path/to/your-mcp-server.js"]' \
+  npm run mcp-proxy
+```
+
+Without a token (or with a wrong token) against an auth-enabled sidecar, every
+tool call is REFUSED and never forwarded. Bearer mode remains pilot-grade and is
+not the final enterprise identity mechanism (use mTLS / OIDC / signed client
+assertions in production).

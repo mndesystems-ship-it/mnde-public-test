@@ -20,6 +20,7 @@ import { join, resolve } from "node:path";
 import { reviewerRequest } from "../scripts/reviewer-request.mjs";
 import { verifyReceiptFile, verificationPassed } from "../tools/verify-receipt.mjs";
 import { verifyAnyReceiptFile } from "../tools/verify.mjs";
+import { resolveBearerToken, bearerAuthHeader } from "./bearer.mjs";
 
 const DEFAULT_SIDECAR_URL = "http://127.0.0.1:8787";
 const DEFAULT_RECEIPTS_DIR = "./mnde-receipts";
@@ -67,6 +68,8 @@ export function createMndeExecutor(config = {}) {
   const installationId = config.installationId ?? process.env.MNDE_INSTALLATION_ID ?? "INSTALLATION-UNASSIGNED";
   const timeoutMs = Number.isFinite(config.timeoutMs) ? config.timeoutMs : DEFAULT_TIMEOUT_MS;
   const verify = config.verify !== false;
+  // Sent only when configured (env MNDE_SIDECAR_BEARER_TOKEN or config.bearerToken).
+  const bearerToken = resolveBearerToken(config.bearerToken);
 
   mkdirSync(receiptsDir, { recursive: true });
 
@@ -107,7 +110,7 @@ export function createMndeExecutor(config = {}) {
     try {
       response = await fetch(`${sidecarUrl}/v1/decisions`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...bearerAuthHeader(bearerToken) },
         body: JSON.stringify(request),
         signal: controller.signal
       });
