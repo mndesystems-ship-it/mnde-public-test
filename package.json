@@ -14,6 +14,7 @@
     "verify-receipt": "node ./tools/verify-receipt.mjs",
     "sidecar": "node ./scripts/start-sidecar.mjs",
     "test:sidecar": "node ./tests/test_sidecar_launcher.mjs",
+    "test:feline": "node ./tests/test_feline_input.mjs",
     "executor-demo": "node ./scripts/executor-demo.mjs",
     "test:executor": "node ./tests/test_executor.mjs",
     "mcp-server": "node ./mcp/mnde-mcp-server.mjs",
