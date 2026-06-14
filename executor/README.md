@@ -1,8 +1,8 @@
 # @mnde/executor
 
-The layer between intent and execution.
+Authorize a function call through MNDe before running it.
 
-Wrap any risky function. MNDe is asked first. `ALLOW` runs it; `REFUSE` never does. You always get a signed receipt.
+Wrap a function. MNDe is asked first. `ALLOW` runs it; `REFUSE` does not. The call returns a signed receipt either way.
 
 ```js
 import { createMndeExecutor } from "@mnde/executor";

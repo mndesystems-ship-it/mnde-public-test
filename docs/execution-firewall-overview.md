@@ -1,82 +1,89 @@
-# Execution Firewall Overview
+# Pre-Execution Authorization Layer (Overview)
 
-## What is an Execution Firewall?
+## What it is
 
-An Execution Firewall is a pre-execution control layer for software agents, automation systems, and operational tools. It receives a proposed action before execution, evaluates the request against policy and runtime constraints, and returns a decision.
+A pre-execution authorization layer receives a proposed action before it runs, evaluates the action against a policy and runtime constraints, and returns a decision. The caller executes the action only after an `ALLOW`.
 
-The core decision set is:
+The decision set is:
 
 - `ALLOW`: execution may continue
 - `REFUSE`: execution must not occur
 
-An Execution Firewall is positioned before the executor. The executor must not perform the action until a valid `ALLOW` decision is received.
+The layer is positioned before the executor. The executor does not perform the action until it receives a valid `ALLOW`.
 
-## Why Monitoring is Insufficient
+## Why the enforcement point is before execution
 
-Monitoring observes behavior after or during execution. Monitoring can detect events, trigger alerts, and support investigation, but it cannot reliably prevent the first unsafe operation from occurring.
+Monitoring observes behavior during or after execution. It can detect events and support investigation, but it cannot prevent the first unsafe operation from running.
 
-For agentic systems, post-execution detection is insufficient when the action is destructive, irreversible, expensive, or regulated. Examples include deleting backups, exporting customer data, disabling monitoring, stopping production databases, or launching excessive compute.
-
-## Why Pre-Execution Control Matters
-
-Pre-execution control changes the enforcement point. The action is evaluated before the executor mutates state. This enables:
+Evaluating the action before the executor mutates state enables:
 
 - deterministic allow/refuse decisions
-- fail-closed behavior
+- fail-closed behavior on error
 - policy-bound execution
-- auditable refusal of unsafe actions
-- prevention of destructive shortcuts
+- an auditable record of refusals
 
-The enforcement invariant is:
+The invariant the integrations enforce:
 
 ```text
-No action executes unless the Execution Firewall returns ALLOW.
+The caller does not execute unless the authorization layer returns ALLOW.
 ```
 
-## Relationship Between Execution Firewalls and Execution Receipts
+This invariant holds for actions routed through MNDe. It does not constrain code paths that never call MNDe (see Limitations).
 
-An Execution Firewall controls whether execution may proceed. An Execution Receipt records what decision was made and why.
+## Decisions and receipts
 
-The receipt provides independent evidence for:
+The authorization layer decides whether an action may proceed. An execution receipt records the decision and the inputs to it.
 
-- the submitted request
-- the policy reference
-- the decision
-- the reason code
+A receipt provides evidence for:
+
+- the submitted request (as a canonical string)
+- the policy reference (policy version and hash)
+- the decision and reason code
 - the decision hash
-- the authority-approved signature
-- replay verification
+- the signature produced by an authority-approved key
+- replay verification (recomputing the decision from the receipt)
 
-Without receipts, an Execution Firewall can enforce policy but cannot provide portable evidence. Without pre-execution enforcement, receipts can document decisions but cannot prevent unsafe actions.
+Receipts without enforcement document decisions but do not prevent actions. Enforcement without receipts can refuse actions but produces no portable evidence.
 
-## Example Architecture
+## Example flow
 
 ```text
 Agent or automation
-  -> tool request
-  -> Execution Firewall decision API
-      -> ALLOW: executor runs tool
-      -> REFUSE: executor returns denied result
-  -> receipt stored for audit and replay
+  -> proposes a tool call
+  -> authorization decision API
+      -> ALLOW: executor runs the tool
+      -> REFUSE: executor returns a denied result
+  -> receipt stored for later verification
 ```
 
-The agent does not need direct access to protected systems. The executor or tool wrapper is responsible for calling the Execution Firewall before performing work.
+The executor or tool wrapper is responsible for calling the authorization API before performing work.
 
-## Reference Implementation: MNDe
+## MNDe implementation
 
-MNDe is one implementation of the Execution Firewall model.
+MNDe implements this model with:
 
-The implementation details described in this section are not normative requirements of ERS v1.
-
-MNDe implements the Execution Firewall model with:
-
-- a local sidecar decision service
+- a local decision service (the sidecar)
 - deterministic request canonicalization
-- policy and runtime decision layers
+- policy and runtime decision stages
 - `ALLOW` and `REFUSE` decisions
-- signed execution receipts
+- signed receipts
 - authority-manifest verification
 - offline receipt verification
 - replay verification
 
-MNDe receipts are intended to make the decision independently inspectable. A verifier does not need to trust the dashboard, operator, server, or receipt-provided key material. It verifies the receipt against the trusted authority bundle and recomputes the deterministic decision path.
+A verifier checks a receipt against a trusted authority bundle and recomputes the deterministic decision path. It does not need to trust the operator, server, or key material embedded in the receipt.
+
+## Limitations
+
+- The bundled policy is small and illustrative. It is not a complete policy for a specific deployment.
+- Enforcement is cooperative: it applies only to actions the caller routes through MNDe. It is not OS-level.
+- Verification in this repository chains to a locally generated test authority; a published authority bundle does not exist yet.
+
+See [production-readiness.md](production-readiness.md) for the full list of what the public test does and does not demonstrate, and [execution-receipt-spec-v1.md](execution-receipt-spec-v1.md) for the receipt format and its non-goals.
+
+## Roadmap
+
+- Operator-defined and argument-level policy.
+- Authenticated approval for actions that require a human in the loop.
+- A published authority bundle with documented key rotation.
+- Centralized policy and audit management.

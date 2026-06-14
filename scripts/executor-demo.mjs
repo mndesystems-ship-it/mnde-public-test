@@ -1,4 +1,4 @@
-// MNDe Executor Demo — the one-command proof that MNDe sits between intent and execution.
+// MNDe Executor Demo — authorize, run on ALLOW, refuse otherwise, verify receipts.
 //
 //   npm run executor-demo
 //

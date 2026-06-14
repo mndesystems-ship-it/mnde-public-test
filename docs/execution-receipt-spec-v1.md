@@ -366,7 +366,7 @@ Long-term audit retention SHOULD include preservation of historical authority ma
 
 ## 14. MNDe Profile for ERS v1
 
-MNDe is one implementation of the Execution Firewall model.
+MNDe is one implementation of a pre-execution authorization layer that produces ERS receipts.
 
 The implementation details described in this section are not normative requirements of ERS v1.
 

@@ -1,8 +1,8 @@
 # MNDe Shell Authorization (deny-by-default)
 
-The verticalized proof for the highest-risk MCP category: shell / SSH / infra tools.
+Deny-by-default authorization for shell / SSH / infra tools exposed over MCP.
 
-MNDe does **not** try to understand every dangerous command. It does the opposite: a command runs only if it is explicitly allowed. Unknown commands are not inspected — they are refused.
+A command runs only if it is explicitly allowed. Unknown commands are not inspected — they are refused. The aim is not to recognize every dangerous command; it is to refuse anything not on the allowlist.
 
 ```bash
 npm run shell-demo     # the four cases below, each with a verifiable receipt

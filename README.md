@@ -2,21 +2,27 @@
 
 MNDe is a local pre-execution authority layer. Tools, agents, and automation ask MNDe before they execute. MNDe returns `ALLOW` or `REFUSE` and writes a signed receipt that can be verified later.
 
-## What Problem Does It Solve?
+## What It Does
 
-AI agents and automation can perform useful work, but they can also take unsafe shortcuts. MNDe places an execution boundary before the action runs. A reviewer can inspect the decision, receipt, policy hash, signature, and replay result.
+A caller submits a proposed action before executing it. MNDe evaluates the action against a policy and returns `ALLOW` or `REFUSE`, and writes a signed receipt. The decision, receipt, policy hash, signature, and replay result can all be inspected after the fact.
 
-## Enforcement Wedge
+## What It Does Not Do
 
-**MNDe sits between agent intent and tool execution. If MNDe refuses, the tool call is not forwarded.**
+- It does not run actions itself. The caller executes only after an `ALLOW`.
+- It does not prevent an action that is never submitted to it. Enforcement is cooperative (see [Limitations](#limitations)).
+- The bundled policy is small and illustrative, not a complete policy for a specific deployment.
 
-Three layers turn that claim into code anyone can drop in:
+## Components
 
-- **`@mnde/executor`** ([executor/](executor/)) — wrap any risky function; `ALLOW` runs it once, `REFUSE` never does. `npm run executor-demo`, `npm run test:executor`.
-- **MNDe MCP server** ([mcp/](mcp/)) — expose guarded tools over the Model Context Protocol; every `tools/call` is authorized first. `npm run mcp-demo`, `npm run test:mcp`.
-- **MNDe MCP proxy** ([mcp/mnde-mcp-proxy.mjs](mcp/mnde-mcp-proxy.mjs)) — put MNDe in front of *any existing* MCP server; tool calls now require authority before execution, with zero changes to the upstream. `npm run mcp-proxy-demo`, `npm run test:mcp-proxy`.
+MNDe sits between the caller's intent and the action. If MNDe returns `REFUSE`, the action is not executed (and, in the proxy, not forwarded).
 
-In every layer there is no code path where `REFUSE` executes (or, in the proxy, forwards) the call — proven by tests, including across process boundaries via a destruction marker.
+Three integration paths share the same decision and receipt flow:
+
+- **`@mnde/executor`** ([executor/](executor/)) — wrap a function; `ALLOW` runs it once, `REFUSE` does not. `npm run executor-demo`, `npm run test:executor`.
+- **MNDe MCP server** ([mcp/](mcp/)) — expose tools over the Model Context Protocol; each `tools/call` is authorized first. `npm run mcp-demo`, `npm run test:mcp`.
+- **MNDe MCP proxy** ([mcp/mnde-mcp-proxy.mjs](mcp/mnde-mcp-proxy.mjs)) — place MNDe in front of an existing MCP server; `tools/call` is authorized before execution, with no changes to the upstream. `npm run mcp-proxy-demo`, `npm run test:mcp-proxy`.
+
+The tests assert that no code path executes (or, in the proxy, forwards) a `REFUSE`d call. The MCP tests check this across process boundaries using a marker file written only when the underlying tool actually runs.
 
 ## Quick Start
 
@@ -99,7 +105,9 @@ The reviewer kit is the supported one-command proof path. It starts MNDe, runs t
 npm run reviewer-kit:windows
 ```
 
-## Known Reviewer Claims Now Proven
+## Verified Behaviors
+
+Each item below is exercised by an automated test or demo script in this repository:
 
 - Fresh clone install
 - Tester init
@@ -221,6 +229,26 @@ Send:
 - What happened
 
 See [docs/feedback-workflow.md](docs/feedback-workflow.md).
+
+## Limitations
+
+- The bundled decision policy is small and illustrative: a denylist of patterns plus cost and runtime-drift checks, and a deny-by-default list for the shell example. It is not a complete policy for any specific deployment. See [docs/production-readiness.md](docs/production-readiness.md).
+- The manual-approval threshold and the shell `APPROVAL_REQUIRED` decision are gated on a request field (`hold_state`) supplied by the caller. There is no authenticated approver binding yet.
+- The `orbit_intent.signatures` field is shape-validated but not cryptographically verified.
+- Verification in this repository chains to a locally generated test authority. A published authority bundle for use outside this repository does not exist yet.
+- Enforcement is cooperative: MNDe evaluates an action only when the caller routes it through MNDe (executor, MCP server, or proxy). It is not OS-level and does not stop a process that bypasses it.
+
+See [docs/execution-receipt-spec-v1.md](docs/execution-receipt-spec-v1.md), sections 3 and 5, for what the receipt format does and does not guarantee.
+
+## Roadmap
+
+These exist as architecture or concepts in the repository but are not claimed as complete:
+
+- Argument-level shell policy and operator-defined allowlists.
+- Authenticated approval (signed approval tokens) for `APPROVAL_REQUIRED`.
+- A published authority bundle with documented key rotation.
+- Centralized policy and audit management.
+- Identity-aware authorization for multi-user deployments.
 
 ## More Docs
 

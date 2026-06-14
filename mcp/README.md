@@ -2,11 +2,11 @@
 
 An [MCP](https://modelcontextprotocol.io) server that puts MNDe between an agent and its tools.
 
-Every `tools/call` is routed through MNDe first: **ALLOW runs the tool, REFUSE never does**, and the response carries a signed, offline-verifiable receipt. It speaks newline-delimited JSON-RPC over stdio with **zero dependencies**, so it works with any MCP client — Claude Desktop, Cursor, MCP Inspector — and ships clean.
+Every `tools/call` is routed through MNDe first: ALLOW runs the tool, REFUSE does not, and the response carries a signed receipt that can be verified offline. It speaks newline-delimited JSON-RPC over stdio with no third-party dependencies, so it works with MCP clients such as Claude Desktop, Cursor, and MCP Inspector.
 
-## Why this is the wedge
+## What it is for
 
-Agent builders are wiring tools into MCP right now. This server makes MNDe a one-line drop-in: point your MCP client at it, and every tool call your agent makes is authorized before execution and produces a receipt you can verify with no MNDe process running. No SDK, no rewrite of the agent.
+Point an MCP client at this server instead of (or in front of) a tool server, and each `tools/call` is authorized before execution and produces a receipt that can be verified without a running MNDe process. It does not require an SDK or changes to the agent.
 
 ```
 Agent (MCP client)
@@ -92,3 +92,10 @@ Register it like the hosted server, but point it at your upstream:
 ```
 
 Pass-through methods (`initialize`, `tools/list`, `resources/*`, `prompts/*`, `ping`, …) are relayed verbatim; only `tools/call` is gated.
+
+## Limitations
+
+- The decision comes from the MNDe sidecar's bundled policy, which is small and illustrative (see [docs/production-readiness.md](../docs/production-readiness.md)).
+- The sidecar must be reachable at `MNDE_SIDECAR_URL`. If it is not, calls fail closed (REFUSE), they do not run.
+- Enforcement applies only to calls that pass through this server or proxy. A client that talks to the upstream directly is not gated.
+- Receipts verify against the locally generated test authority in this repository; there is no published authority bundle yet.

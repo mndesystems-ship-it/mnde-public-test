@@ -2,8 +2,8 @@
 //
 //   npm run test:mcp
 //
-// Proves the wedge: a tool exposed over MCP and guarded by MNDe has no code path
-// where REFUSE executes — verified across process boundaries via a marker file.
+// Checks that a tool exposed over MCP and gated by MNDe has no code path where a
+// REFUSE decision executes — verified across process boundaries via a marker file.
 
 import assert from "node:assert/strict";
 import { existsSync, rmSync } from "node:fs";

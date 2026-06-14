@@ -1,4 +1,4 @@
-// Example: wrap an agent's tools with MNDe. This is the sales moment.
+// Example: wrap an agent's tools with MNDe.
 //
 //   node examples/executor-wrapper/agent-tool-wrapper.js
 //

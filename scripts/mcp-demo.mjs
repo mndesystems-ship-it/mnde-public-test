@@ -1,4 +1,4 @@
-// MNDe MCP Server Demo — the wedge, end to end over a real MCP stdio transport.
+// MNDe MCP Server Demo — end to end over a real MCP stdio transport.
 //
 //   npm run mcp-demo
 //

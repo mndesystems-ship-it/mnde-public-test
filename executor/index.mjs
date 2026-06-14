@@ -1,4 +1,4 @@
-// @mnde/executor — the layer between intent and execution.
+// @mnde/executor — authorize a function call through MNDe before running it.
 //
 // A developer wraps a risky action. MNDe is asked first. ALLOW runs it once;
 // REFUSE (or anything ambiguous) never runs it.

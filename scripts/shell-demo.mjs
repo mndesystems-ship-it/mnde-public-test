@@ -1,4 +1,4 @@
-// MNDe Shell Demo — the verticalized proof for shell / SSH / infra MCP servers.
+// MNDe Shell Demo — deny-by-default authorization for a run_command tool.
 //
 //   npm run shell-demo
 //

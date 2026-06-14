@@ -3,7 +3,7 @@
 Start here:
 
 - `first-tester-onboarding.md`
-- `execution-firewall-overview.md`
+- `execution-firewall-overview.md` — pre-execution authorization layer overview
 - `execution-receipt-spec-v1.md`
 - `independent-verification.md`
 - `integration-guide.md`

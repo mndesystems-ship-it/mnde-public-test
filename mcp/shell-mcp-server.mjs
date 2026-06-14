@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// MNDe Shell MCP Server — a verticalized proof: a run_command tool that is
-// authorized deny-by-default before execution, with a signed receipt per call.
+// MNDe Shell MCP Server — a run_command tool that is authorized deny-by-default
+// before execution, with a signed receipt per call.
 //
 // Speaks newline-delimited JSON-RPC over stdio (zero dependencies). On each
 // tools/call the shell policy decides ALLOW / APPROVAL_REQUIRED / REFUSE; the

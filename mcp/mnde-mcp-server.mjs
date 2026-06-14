@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-// MNDe MCP Server — the distribution wedge.
+// MNDe MCP Server.
 //
-// A Model Context Protocol server (newline-delimited JSON-RPC over stdio, zero
-// dependencies) that exposes guarded tools. Every `tools/call` is routed through
-// MNDe first: ALLOW runs the tool, REFUSE never does, and the response carries a
-// signed receipt. Works with any MCP client (Claude Desktop, Cursor, MCP Inspector).
+// A Model Context Protocol server (newline-delimited JSON-RPC over stdio, no
+// third-party dependencies) that exposes tools gated by MNDe. Every `tools/call`
+// is routed through MNDe first: ALLOW runs the tool, REFUSE does not, and the
+// response carries a signed receipt. Works with MCP clients such as Claude
+// Desktop, Cursor, and MCP Inspector.
 //
 // Run standalone:   MNDE_SIDECAR_URL=http://127.0.0.1:8787 node mcp/mnde-mcp-server.mjs
 // (stdout is protocol traffic only; logs go to stderr.)
