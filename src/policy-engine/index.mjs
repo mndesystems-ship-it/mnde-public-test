@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 
 import { canonicalizeJson } from "../../shared/json.ts";
+import { verifyPolicyTrust, verifyAuthorityGrant } from "./trust.mjs";
 
 const REQUIRED_REQUEST_FIELDS = [
   "schema_version",
@@ -227,11 +228,11 @@ function evaluateExpression(expr, request, depth = 0, maxDepth = 8) {
   return evaluateLeaf(expr, request);
 }
 
-function authorityStatus(requiredIds, authorities, now) {
+function authorityStatus(requiredIds, authorities, now, rejectedById = {}) {
   if (!Array.isArray(requiredIds) || requiredIds.length === 0) return { ok: true };
   for (const id of requiredIds) {
     const authority = authorities.find((candidate) => candidate?.authority_id === id);
-    if (!authority) return { ok: false, reason: "AUTHORITY_REQUIRED" };
+    if (!authority) return { ok: false, reason: rejectedById[id] ?? "AUTHORITY_REQUIRED" };
     if (!isValidTimestamp(authority.valid_from) || !isValidTimestamp(authority.valid_until) || !isValidTimestamp(now)) {
       return { ok: false, reason: "AUTHORITY_EXPIRED" };
     }
@@ -263,6 +264,25 @@ export function evaluatePolicyRequest(request, policy, options = {}) {
     const decisionContext = { ...context, requestHash, policyHash, authorityChainHash };
     const maxDepth = Number.isSafeInteger(policy?.limits?.max_depth) ? policy.limits.max_depth : 8;
 
+    // Optional cryptographic authority chain. When trust anchors are supplied,
+    // the policy must be signed by a trusted policy key, and only grants with a
+    // valid signature from a trusted authority key count toward authority_required.
+    // Trust anchors are provided by the verifier out of band, never read from the
+    // policy or request. With no trust anchors this block is inert.
+    const trustAnchors = options.trustAnchors;
+    let effectiveAuthorities = authorities;
+    const rejectedById = {};
+    if (trustAnchors) {
+      const policyTrust = verifyPolicyTrust(policy, trustAnchors);
+      if (!policyTrust.ok) return buildDecision("REFUSE", policyTrust.reason, decisionContext);
+      effectiveAuthorities = [];
+      for (const grant of authorities) {
+        const grantTrust = verifyAuthorityGrant(grant, trustAnchors, now);
+        if (grantTrust.ok) effectiveAuthorities.push(grant);
+        else if (typeof grant?.authority_id === "string") rejectedById[grant.authority_id] = grantTrust.reason;
+      }
+    }
+
     const matchingRules = [];
     for (const rule of policy.rules) {
       if (evaluateExpression(rule.match, request, 0, maxDepth)) matchingRules.push(rule);
@@ -279,7 +299,7 @@ export function evaluatePolicyRequest(request, policy, options = {}) {
 
     let lastAuthorityFailure = null;
     for (const rule of allowRules) {
-      const status = authorityStatus(rule.authority_required, authorities, now);
+      const status = authorityStatus(rule.authority_required, effectiveAuthorities, now, rejectedById);
       if (status.ok) return buildDecision("ALLOW", "OK_ALLOW", decisionContext);
       lastAuthorityFailure = status.reason;
     }

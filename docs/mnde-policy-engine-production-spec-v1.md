@@ -1189,3 +1189,22 @@ This unifies the trust surface: the policy engine and the receipt/verification
 system share one authority chain and one verifier. The legacy pipeline receipts
 remain verifiable unchanged; the policy engine is the canonical decision producer
 going forward.
+
+## Cryptographic authority chain
+
+When the caller supplies trust anchors, MNDe PE requires cryptographic proof of authority, not just validity windows:
+
+- the **policy** must carry an Ed25519 signature from a key in `trust_anchors.policy_keys`;
+- each **authority grant** counted toward `authority_required` must carry an Ed25519 signature from a key in `trust_anchors.authority_keys` (and within the issuer key's validity window, if set).
+
+Trust anchors are supplied by the verifier out of band — never read from the policy, request, or receipt. Distinct fail-closed reason codes: `POLICY_UNSIGNED`, `POLICY_UNTRUSTED_ISSUER`, `POLICY_SIGNATURE_INVALID`, `AUTHORITY_UNSIGNED`, `AUTHORITY_UNTRUSTED_ISSUER`, `AUTHORITY_SIGNATURE_INVALID`.
+
+```bash
+# Sign a policy / grant with policy-engine signing helpers (src/policy-engine/trust.mjs),
+# then evaluate and verify under a trust anchor set:
+mnde decide --request request.json --policy signed-policy.json \
+  --authorities signed-grants.json --trust-anchors trust-anchors.json --out receipt.json
+npm run verify receipt.json --trust-anchors trust-anchors.json
+```
+
+A receipt produced under a trust anchor set is `trust_enforced: true` and can only be verified by a verifier that supplies trust anchors; a verifier with the wrong anchors does not accept it. Without trust anchors the engine behaves as a pure rule evaluator (unchanged), so existing behavior and tests are byte-for-byte preserved.

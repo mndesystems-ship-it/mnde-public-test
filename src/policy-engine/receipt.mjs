@@ -30,13 +30,15 @@ function canonicalPayloadWithoutSignature(receiptLike) {
 // Build a signed receipt for a policy-engine decision.
 export function buildPolicyReceipt(request, policy, options = {}) {
   const authorities = Array.isArray(options.authorities) ? options.authorities : [];
-  const decision = evaluatePolicyRequest(request, policy, { authorities, now: options.now });
+  const trustAnchors = options.trustAnchors;
+  const decision = evaluatePolicyRequest(request, policy, { authorities, now: options.now, trustAnchors });
 
   const payload = {
     schema_version: SCHEMA,
     canonical_request: canonicalizeJson(request),
     canonical_policy: canonicalizeJson(policy),
     authorities,
+    trust_enforced: Boolean(trustAnchors),
     request_hash: decision.request_hash,
     policy_hash: decision.policy_hash,
     authority_chain_hash: decision.authority_chain_hash,
@@ -62,17 +64,24 @@ export function buildPolicyReceipt(request, policy, options = {}) {
 }
 
 // Verify a policy-engine receipt: replay the decision and check the signature.
-export function verifyPolicyReceipt(receipt) {
+export function verifyPolicyReceipt(receipt, options = {}) {
   if (!receipt || receipt.schema_version !== SCHEMA) return { verified: false, reason: "unsupported schema" };
 
   const parsedRequest = parseStrictJson(receipt.canonical_request);
   const parsedPolicy = parseStrictJson(receipt.canonical_policy);
   if (!parsedRequest.ok || !parsedPolicy.ok) return { verified: false, reason: "canonical request/policy parse failed" };
 
+  // A receipt issued under a cryptographic authority chain can only be verified
+  // with trust anchors the verifier supplies out of band.
+  if (receipt.trust_enforced && !options.trustAnchors) {
+    return { verified: false, reason: "trust anchors required to verify a trust-enforced receipt" };
+  }
+
   const original = receipt.decision_output ?? {};
   const replay = evaluatePolicyRequest(parsedRequest.value, parsedPolicy.value, {
     authorities: Array.isArray(receipt.authorities) ? receipt.authorities : [],
-    now: original.evaluated_at
+    now: original.evaluated_at,
+    trustAnchors: receipt.trust_enforced ? options.trustAnchors : undefined
   });
 
   for (const field of ["decision", "reason_code", "request_hash", "policy_hash", "authority_chain_hash", "decision_hash"]) {

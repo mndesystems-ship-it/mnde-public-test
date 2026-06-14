@@ -17,7 +17,7 @@ import { pathToFileURL } from "node:url";
 import { verifyReceiptFile, verificationPassed } from "./verify-receipt.mjs";
 import { verifyPolicyReceipt, POLICY_RECEIPT_SCHEMA } from "../src/policy-engine/receipt.mjs";
 
-export function verifyAnyReceiptFile(filePath) {
+export function verifyAnyReceiptFile(filePath, options = {}) {
   let receipt;
   try {
     receipt = JSON.parse(readFileSync(filePath, "utf8").replace(/^﻿/, ""));
@@ -26,7 +26,7 @@ export function verifyAnyReceiptFile(filePath) {
   }
 
   if (receipt?.schema_version === POLICY_RECEIPT_SCHEMA) {
-    const result = verifyPolicyReceipt(receipt);
+    const result = verifyPolicyReceipt(receipt, { trustAnchors: options.trustAnchors });
     return { kind: "policy-engine", verified: result.verified, reason: result.reason, decision: result.decision };
   }
 
@@ -35,12 +35,16 @@ export function verifyAnyReceiptFile(filePath) {
 }
 
 function main() {
-  const filePath = process.argv[2];
+  const args = process.argv.slice(2);
+  const taIndex = args.indexOf("--trust-anchors");
+  const trustAnchorsPath = taIndex >= 0 ? args[taIndex + 1] : undefined;
+  const filePath = args.find((a) => !a.startsWith("--") && a !== trustAnchorsPath);
   if (!filePath) {
-    process.stderr.write("Usage: node tools/verify.mjs <receipt.json>\n");
+    process.stderr.write("Usage: node tools/verify.mjs <receipt.json> [--trust-anchors <anchors.json>]\n");
     process.exit(2);
   }
-  const result = verifyAnyReceiptFile(filePath);
+  const trustAnchors = trustAnchorsPath ? JSON.parse(readFileSync(trustAnchorsPath, "utf8")) : undefined;
+  const result = verifyAnyReceiptFile(filePath, { trustAnchors });
   process.stdout.write("========================================\n");
   process.stdout.write("MNDe Receipt Verification (unified)\n");
   process.stdout.write("========================================\n");

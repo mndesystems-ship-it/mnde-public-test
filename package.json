@@ -20,6 +20,7 @@
     "verify-receipt": "node ./tools/verify-receipt.mjs",
     "verify": "node ./tools/verify.mjs",
     "test:policy-receipt": "node ./tests/test_policy_receipt.mjs",
+    "test:policy-trust": "node ./tests/test_policy_trust.mjs",
     "sidecar": "node ./scripts/start-sidecar.mjs",
     "test:sidecar": "node ./tests/test_sidecar_launcher.mjs",
     "test:feline": "node ./tests/test_feline_input.mjs",
