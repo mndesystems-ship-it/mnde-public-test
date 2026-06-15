@@ -1,0 +1,8 @@
+<svg width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MNDe">
+  <rect width="64" height="64" rx="14" fill="#0E1318"/>
+  <g stroke-width="6" stroke-linecap="butt">
+    <line x1="6" y1="32" x2="30" y2="32" stroke="#1D9BF0"/>
+    <line x1="34" y1="22" x2="34" y2="42" stroke="#FFFFFF"/>
+    <line x1="40" y1="32" x2="58" y2="32" stroke="#FFFFFF"/>
+  </g>
+</svg>

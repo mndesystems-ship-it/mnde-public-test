@@ -1,3 +1,5 @@
+<p align="left"><img src="brand/mnde-wordmark.svg" alt="MNDe — Execution Firewall" height="80"></p>
+
 # MNDe Public Test
 
 MNDe is a local pre-execution authority layer. Tools, agents, and automation ask MNDe before they execute. MNDe returns `ALLOW` or `REFUSE` and writes a signed receipt that can be verified later.

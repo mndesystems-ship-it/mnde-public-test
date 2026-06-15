@@ -1,0 +1,13 @@
+<svg width="512" height="512" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MNDe">
+  <!-- Transparent background. White strokes use currentColor so the mark adapts
+       to light or dark surfaces; the blue execution line stays brand blue.
+       Set `color:#0E1318` on light backgrounds, `color:#FFFFFF` on dark. -->
+  <g fill="none" stroke-width="30" stroke-linecap="butt">
+    <line x1="0" y1="512" x2="470" y2="512" stroke="#1D9BF0"/>
+    <path d="M366 402 H404 V622 H366" stroke="currentColor"/>
+    <path d="M538 402 H500 V622 H538" stroke="currentColor"/>
+    <line x1="470" y1="512" x2="600" y2="512" stroke="currentColor"/>
+    <rect x="600" y="402" width="100" height="220" stroke="currentColor"/>
+    <line x1="700" y1="512" x2="864" y2="512" stroke="currentColor"/>
+  </g>
+</svg>

@@ -1,0 +1,14 @@
+<svg width="940" height="320" viewBox="0 0 1880 640" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MNDe — Execution Firewall">
+  <!-- Horizontal lockup on transparent background. Glyph + wordmark use
+       currentColor (default dark); the execution line and tagline stay brand blue. -->
+  <g fill="none" stroke-width="26" stroke-linecap="butt" transform="translate(40,70) scale(0.49)">
+    <line x1="0" y1="512" x2="470" y2="512" stroke="#1D9BF0"/>
+    <path d="M366 402 H404 V622 H366" stroke="currentColor"/>
+    <path d="M538 402 H500 V622 H538" stroke="currentColor"/>
+    <line x1="470" y1="512" x2="600" y2="512" stroke="currentColor"/>
+    <rect x="600" y="402" width="100" height="220" stroke="currentColor"/>
+    <line x1="700" y1="512" x2="864" y2="512" stroke="currentColor"/>
+  </g>
+  <text x="540" y="345" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="240" font-weight="700" letter-spacing="6" fill="currentColor">MNDe</text>
+  <text x="546" y="430" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="62" font-weight="500" letter-spacing="14" fill="#1D9BF0">EXECUTION FIREWALL</text>
+</svg>
