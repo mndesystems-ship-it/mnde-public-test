@@ -29,6 +29,8 @@
     "test:production-signing": "node ./tests/test_production_signing.mjs",
     "test:dashboard": "node ./tests/test_dashboard.mjs",
     "test:trust-root": "node ./tests/test_trust_root_preflight.mjs",
+    "test:custody-lifecycle": "node ./tests/test_custody_lifecycle.mjs",
+    "authority": "node ./bin/mnde-authority.mjs",
     "dashboard": "node ./scripts/start-sidecar.mjs",
     "authority-bundle:export": "node ./scripts/export-authority-bundle.mjs",
     "reviewer-kit:pe": "node ./scripts/reviewer-kit-pe.mjs",
