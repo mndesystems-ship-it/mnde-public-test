@@ -246,6 +246,24 @@ function receiptPathForWorker(basePath) {
   return join(parsed.dir, `${parsed.name}.worker-${cluster.worker.id}${parsed.ext || ".jsonl"}`);
 }
 
+// ── Trust-root pre-flight (S-02 / P-01) ──────────────────────────────────────
+// Single deterministic gate before anything serves traffic. In MNDE_PROFILE=
+// production, MNDe refuses to start unless an explicit, valid production custody
+// provider is configured and no demo/dev key material is in use. Runs in the
+// primary BEFORE forking so a misconfiguration fails fast (no worker crash-loop).
+// In MNDE_PROFILE=local (default) this is a no-op and custody is not loaded.
+{
+  const { assertTrustRoot } = await import("./src/authority-signing/preflight.mjs");
+  const trust = await assertTrustRoot(process.env, { repoRoot: REPO_ROOT });
+  if (!trust.ok) {
+    process.stderr.write(`\nMNDe refused to start — trust-root pre-flight failed.\n  reason_code: ${trust.reason_code}\n  ${trust.detail}\n\n`);
+    process.exit(1);
+  }
+  if (trust.profile === "production") {
+    process.stdout.write(`MNDe trust-root: production custody verified (authority '${trust.authority_id || "?"}')\n`);
+  }
+}
+
 if (cluster.isPrimary && CLUSTER_MODE) {
   for (let i = 0; i < CLUSTER_WORKERS; i += 1) cluster.fork();
   cluster.on("exit", (worker, code) => {

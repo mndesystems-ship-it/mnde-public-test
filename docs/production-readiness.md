@@ -42,6 +42,15 @@ The repository contains two authority paths:
 
 Production deployments require a stable published authority bundle distributed through a trusted channel. Independent verification depends on the verifier having that trusted root public key and signed authority manifest.
 
+### Runtime profile and trust-root pre-flight (`MNDE_PROFILE`)
+
+MNDe will not enter live enforcement while signing with development keys. A deterministic pre-flight (`src/authority-signing/preflight.mjs`) runs once before the decision server accepts traffic:
+
+- `MNDE_PROFILE` unset or `local` (default): demo/local mode — legacy signing or `local-demo` custody allowed; behavior unchanged; custody is not loaded.
+- `MNDE_PROFILE=production`: MNDe **refuses to start** unless `MNDE_RECEIPT_SIGNING_MODE=custody`, `MNDE_KEY_CUSTODY=file-backed-production`, a valid published authority bundle + signing key are configured, and no demo/dev key material is detected. Failures are fail-closed with distinct `ERR_TRUST_ROOT_*` reason codes and an actionable message; there is no automatic downgrade to legacy/dev-key signing.
+
+Required production environment and reason codes are documented in [Key Custody](key-custody.md). Verified by `npm run test:trust-root`.
+
 ## Executor Integration Model
 
 MNDe does not execute arbitrary tools by itself. An integrated executor or tool wrapper must:

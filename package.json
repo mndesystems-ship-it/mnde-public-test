@@ -27,6 +27,7 @@
     "test:proxy-auth": "node ./tests/test_proxy_auth.mjs",
     "test:custody": "node ./tests/test_custody.mjs",
     "test:production-signing": "node ./tests/test_production_signing.mjs",
+    "test:trust-root": "node ./tests/test_trust_root_preflight.mjs",
     "authority-bundle:export": "node ./scripts/export-authority-bundle.mjs",
     "reviewer-kit:pe": "node ./scripts/reviewer-kit-pe.mjs",
     "sidecar": "node ./scripts/start-sidecar.mjs",

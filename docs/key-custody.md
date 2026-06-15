@@ -78,6 +78,39 @@ Loads a published bundle plus role private keys from the filesystem — keys liv
 
 Missing, malformed, or non-matching configuration **fails closed** — `createCustody()` returns `{ ok: false, reason }` and never silently falls back to demo keys.
 
+## Production trust-root pre-flight (`MNDE_PROFILE`)
+
+MNDe must never enter live enforcement while signing with development keys. A deterministic pre-flight runs once before the decision server accepts traffic (`src/authority-signing/preflight.mjs`, `assertTrustRoot`).
+
+| `MNDE_PROFILE` | Behavior |
+| --- | --- |
+| unset / `local` (default) | Local/demo mode. Legacy signing or `local-demo` custody allowed. Existing behavior unchanged; custody is not loaded. |
+| `production` | Live enforcement. MNDe **refuses to start** unless a valid production custody provider is configured and no demo/dev key material is in use. |
+
+In `production` the pre-flight fails closed — with a human-readable, actionable message — when:
+
+| Reason code | Condition |
+| --- | --- |
+| `ERR_TRUST_ROOT_REQUIRES_CUSTODY` | `MNDE_RECEIPT_SIGNING_MODE` is not `custody` (legacy signing uses dev keys) |
+| `ERR_TRUST_ROOT_DEMO_CUSTODY` | `MNDE_KEY_CUSTODY` is not `file-backed-production` (e.g. `local-demo`) |
+| `ERR_TRUST_ROOT_DEV_KEY` | a configured key/bundle path points at repo dev material (`shared/receipt_keys/`, `.mnde-test/`, `authority/`, `*receipt_signing_private.pem`, `demo`/`local-demo` paths), or the bundle is a demo bundle (`mnde-local-*` authority) |
+| `ERR_CUSTODY_*` | the configured custody provider does not load/verify (missing/malformed/stale bundle, missing/expired key) — see table above |
+
+There is **no automatic downgrade**: if production is selected and custody is unusable, MNDe exits non-zero rather than signing with fallback keys.
+
+### Required environment for production
+
+```bash
+MNDE_PROFILE=production
+MNDE_RECEIPT_SIGNING_MODE=custody
+MNDE_KEY_CUSTODY=file-backed-production
+MNDE_AUTHORITY_BUNDLE=/etc/mnde/authority.bundle.json   # published, signed, NOT in the repo
+MNDE_RECEIPT_SIGNING_KEY=/etc/mnde/receipt-signing.key.pem
+MNDE_RECEIPT_KEY_ID=<receipt key id present in the bundle>   # optional; defaults to first
+```
+
+Verified by `npm run test:trust-root` (production-without-custody refuses; production-with-demo refuses; dev-key path refuses; demo bundle refuses; valid custody starts and serves; local mode unchanged).
+
 ### Future provider slots (not implemented)
 
 `aws-kms`, `azure-key-vault`, `gcp-kms`, `hsm-pkcs11`. Each implements the same four-method interface — `signReceipt`, `signPolicy`, `signApproval`, `getPublicBundle` — so the private key never leaves the managed boundary. Verification does not change: it still runs offline against the public bundle.
