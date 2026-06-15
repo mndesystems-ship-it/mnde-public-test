@@ -864,6 +864,28 @@ async function handleVerify(req, res) {
   }
 }
 
+// Local operational dashboard (no login, no account, no cloud). It is a static
+// page that reads only the unauthenticated local status endpoints, so a fresh
+// user reaches "is execution protected right now?" immediately on launch.
+const DASHBOARD_PATH = join(REPO_ROOT, "desktop", "dashboard.html");
+function serveDashboard(req, res) {
+  let html;
+  try {
+    html = readFileSync(DASHBOARD_PATH);
+  } catch {
+    response(res, 404, { schema_version: "mnde.api.response.v1", reason_code: "ERR_DASHBOARD_UNAVAILABLE" });
+    return;
+  }
+  res.writeHead(200, {
+    ...corsHeadersForOrigin(req.headers.origin),
+    "cache-control": "no-store",
+    "connection": "close",
+    "content-length": html.byteLength,
+    "content-type": "text/html; charset=utf-8"
+  });
+  res.end(html);
+}
+
 function currentPolicyResponse() {
   return {
     status: "ACTIVE",
@@ -1150,6 +1172,10 @@ const server = http.createServer(async (req, res) => {
       auditAuthority(pathname, authz, "REFUSE", "audit.bundle", null, error instanceof Error ? error.message : "audit bundle failed");
       response(res, 200, { status: "FAIL", bundle_path: null, created_at: new Date().toISOString(), files: [], reason: error instanceof Error ? error.message : "audit bundle failed" });
     }
+    return;
+  }
+  if (req.method === "GET" && (pathname === "/" || pathname === "/dashboard")) {
+    serveDashboard(req, res);
     return;
   }
   if (req.method === "GET" && pathname === "/capabilities") {
