@@ -60,6 +60,9 @@ export async function startMndeSidecar({
 
   return {
     url,
+    getStderr() {
+      return stderr;
+    },
     async stop() {
       if (child.exitCode !== null) return;
       child.kill();

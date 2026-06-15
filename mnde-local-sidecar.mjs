@@ -288,6 +288,37 @@ if (DECISION_ENGINE === "policy-engine") {
   }
 }
 
+// Optional, opt-in live receipt signing. Default "legacy" keeps receipt bytes
+// unchanged. The custody signing adapter is dynamically imported ONLY in custody
+// mode, so legacy mode never loads custody and stays byte-for-byte identical.
+// Signing is applied as a separate step AFTER the receipt is built — decision
+// engines never sign and never import custody.
+const SIGNING_MODE = process.env.MNDE_RECEIPT_SIGNING_MODE === "custody" ? "custody" : "legacy";
+let signingConfig = { ok: true, mode: "legacy" };
+let signReceiptAdapter = (receipt) => ({ ok: true, receipt });
+let signingConfigError = null;
+if (SIGNING_MODE === "custody") {
+  try {
+    const mod = await import("./src/authority-signing/index.mjs");
+    signingConfig = mod.loadSigningConfig(process.env);
+    signReceiptAdapter = mod.signReceiptForDelivery;
+    if (!signingConfig.ok) signingConfigError = signingConfig.reason_code;
+    process.stdout.write(`MNDe receipt signing: custody${signingConfigError ? ` (CONFIG ERROR: ${signingConfigError})` : ""}\n`);
+  } catch (error) {
+    signingConfigError = "ERR_CUSTODY_UNAVAILABLE";
+    process.stderr.write(`MNDe custody signing failed to load: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
+}
+
+// Sign a built receipt for delivery. Legacy mode is a pass-through; custody mode
+// returns a signed envelope or fails closed with a distinct reason code. No
+// automatic downgrade to legacy when custody is selected.
+function signForDelivery(receipt) {
+  if (SIGNING_MODE !== "custody") return { ok: true, receipt };
+  if (signingConfigError) return { ok: false, reason_code: signingConfigError };
+  return signReceiptAdapter(receipt, signingConfig, { now: new Date().toISOString() });
+}
+
 function testTimingHeaders(timings) {
   if (!TEST_HARNESS_ENABLED) return {};
   return {
@@ -401,6 +432,20 @@ async function fail(res, reason_code, status = 200, extra = {}, timings = {}) {
     decision_hash: persisted.receipt?.decision_output?.decision_hash ?? extra.decision_hash ?? null,
     receipt: persisted.ok ? persisted.receipt : null,
     receipt_persisted: persisted.ok,
+    ...publicExtra
+  }, timings);
+}
+
+function failWithoutReceipt(res, reason_code, status = 200, extra = {}, timings = {}) {
+  const { raw_body: _rawBody, ...publicExtra } = extra;
+  response(res, status, {
+    schema_version: "mnde.api.response.v1",
+    decision: "REFUSE",
+    reason_code,
+    request_hash: extra.request_hash ?? null,
+    decision_hash: extra.decision_hash ?? null,
+    receipt: null,
+    receipt_persisted: false,
     ...publicExtra
   }, timings);
 }
@@ -532,7 +577,16 @@ async function respondPolicyEngine(res, request, timings, totalStarted, caller) 
     await fail(res, "ERR_PE_DECISION_FAILED", 200, { policy_engine_error: error instanceof Error ? error.message : String(error) }, timings);
     return;
   }
-  const queued = await receiptQueue.enqueue(outcome.receipt);
+  // Custody signing (opt-in) is applied to the built receipt before delivery and
+  // fails closed: if custody is selected and signing fails, the request fails.
+  const signed = signForDelivery(outcome.receipt);
+  if (!signed.ok) {
+    timings.total_server_ms = Math.max(0, Math.round(performance.now() - totalStarted));
+    recordTimings(timings);
+    failWithoutReceipt(res, signed.reason_code, 200, {}, timings);
+    return;
+  }
+  const queued = await receiptQueue.enqueue(signed.receipt);
   if (!queued.ok) {
     counters.refused_overload += 1;
     counters.receipt_refusals += 1;
@@ -557,8 +611,9 @@ async function respondPolicyEngine(res, request, timings, totalStarted, caller) 
     decision_hash: outcome.receipt.decision_output.decision_hash,
     trust_enforced: Boolean(outcome.receipt.trust_enforced),
     approval_enforced: Boolean(outcome.receipt.approval_enforced),
+    ...(SIGNING_MODE === "custody" ? { receipt_signing: "custody" } : {}),
     ...(caller ? { authenticated_caller: caller.id } : {}),
-    receipt: outcome.receipt,
+    receipt: signed.receipt,
     timings
   }, timings);
 }
@@ -716,8 +771,20 @@ async function handleDecide(req, res) {
       await fail(res, "ERR_RECEIPT_SIGNATURE_INVALID", 200, { timings, raw_body: raw }, timings);
       return;
     }
+    // Custody signing (opt-in), applied to the built receipt before delivery.
+    // Fails closed: custody selected + signing failure => the request fails.
+    const signed = signForDelivery(result.receipt);
+    if (!signed.ok) {
+      timings.total_server_ms = Math.max(0, Math.round(performance.now() - totalStarted));
+      recordTimings(timings);
+      failWithoutReceipt(res, signed.reason_code, 200, {
+        request_hash: result.receipt.request_hash,
+        decision_hash: result.receipt.decision_output.decision_hash
+      }, timings);
+      return;
+    }
     const queueStarted = performance.now();
-    const queued = await receiptQueue.enqueue(result.receipt);
+    const queued = await receiptQueue.enqueue(signed.receipt);
     timings.receipt_enqueue_ms = Math.max(0, Math.round(performance.now() - queueStarted));
     if (!queued.ok) {
       counters.refused_overload += 1;
@@ -739,7 +806,10 @@ async function handleDecide(req, res) {
     }
     timings.total_server_ms = Math.max(0, Math.round(performance.now() - totalStarted));
     recordTimings(timings);
-    response(res, 200, { ...apiResponseFromReceipt(result.receipt), ...(req._mndeCaller ? { authenticated_caller: req._mndeCaller.id } : {}), timings }, timings);
+    const apiBody = apiResponseFromReceipt(result.receipt);
+    // Deliver the custody-signed envelope in place of the inner receipt.
+    if (apiBody.receipt && signed.receipt !== result.receipt) apiBody.receipt = signed.receipt;
+    response(res, 200, { ...apiBody, ...(SIGNING_MODE === "custody" ? { receipt_signing: "custody" } : {}), ...(req._mndeCaller ? { authenticated_caller: req._mndeCaller.id } : {}), timings }, timings);
   } catch (error) {
     if (error?.message?.startsWith("ERR_RECEIPT_FLUSH_FAILED")) counters.flush_failures += 1;
     if (error?.message === WORKER_TIMEOUT) counters.request_timeout_refusals += 1;

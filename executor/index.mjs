@@ -14,7 +14,7 @@
 //   If a tool is wrapped with MNDe, there is no code path where REFUSE executes.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { reviewerRequest } from "../scripts/reviewer-request.mjs";
@@ -37,6 +37,15 @@ function deepMerge(base, override) {
     out[key] = isPlainObject(value) && isPlainObject(base[key]) ? deepMerge(base[key], value) : value;
   }
   return out;
+}
+
+function loadVerifyBundle(pathOrUndefined) {
+  if (!pathOrUndefined) return undefined;
+  try {
+    return JSON.parse(readFileSync(pathOrUndefined, "utf8"));
+  } catch {
+    return undefined;
+  }
 }
 
 let sequence = 0;
@@ -70,6 +79,9 @@ export function createMndeExecutor(config = {}) {
   const verify = config.verify !== false;
   // Sent only when configured (env MNDE_SIDECAR_BEARER_TOKEN or config.bearerToken).
   const bearerToken = resolveBearerToken(config.bearerToken);
+  // Optional published authority bundle for offline verification of custody-signed
+  // receipts. Unset by default; legacy/PE receipts verify without it.
+  const verifyAuthorityBundle = loadVerifyBundle(config.verifyAuthorityBundle ?? process.env.MNDE_VERIFY_AUTHORITY_BUNDLE);
 
   mkdirSync(receiptsDir, { recursive: true });
 
@@ -82,9 +94,10 @@ export function createMndeExecutor(config = {}) {
   function offlineVerify(receiptPath) {
     if (!verify) return null;
     try {
-      // Unified verifier handles both legacy pipeline receipts and policy-engine
-      // receipts; legacy receipts verify identically to before.
-      return verifyAnyReceiptFile(receiptPath).verified;
+      // Unified verifier handles legacy pipeline, policy-engine, and custody-signed
+      // receipts; legacy/PE receipts verify identically to before. A custody
+      // envelope additionally needs the published authority bundle.
+      return verifyAnyReceiptFile(receiptPath, { authorityBundle: verifyAuthorityBundle }).verified;
     } catch {
       return false;
     }

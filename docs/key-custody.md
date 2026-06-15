@@ -100,6 +100,8 @@ Writes only public material and prints the **root fingerprint** to distribute as
 
 ### Out of scope (today)
 
-- Custody does not yet sign live sidecar receipts — wiring the provider into the live receipt path is a separate, gated step; existing receipts and the existing verifier are unchanged.
+- Live sidecar receipts can be custody-signed when `MNDE_RECEIPT_SIGNING_MODE=custody` and `MNDE_KEY_CUSTODY=file-backed-production` are set. Legacy mode remains the default.
 - No automated rotation scheduler, transparency log, or distributed revocation propagation.
 - Managed-KMS/HSM providers are interface slots, not implementations.
+
+See [Live Receipt Signing](live-receipt-signing.md) for the sidecar integration path.
