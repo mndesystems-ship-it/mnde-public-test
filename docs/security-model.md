@@ -68,3 +68,15 @@ Auto-wiring currently supports known MCP config formats. Unknown tools and unsup
 The generated policy draft is not production policy. It requires human review before use.
 
 Production deployments still need authority operations such as key custody, rotation, revocation, identity binding, approval signing, and audit retention.
+
+## Key Custody and Production Trust Roots
+
+Signing material has to live somewhere. MNDe separates *where keys live* (custody) from *how evidence is verified* (the authority bundle), so verification never depends on the signer's environment.
+
+- **Custody is pluggable and opt-in.** `MNDE_KEY_CUSTODY` selects the provider. Unset or `local-demo` (the default) uses ephemeral in-process keys for development and demos. `file-backed-production` is an opt-in mode that loads a published bundle plus role private keys from outside the codebase. Documented future slots — AWS KMS, Azure Key Vault, GCP KMS, HSM/PKCS#11 — implement the same interface so the private key never leaves the custody boundary.
+- **Local-demo is not production custody.** Demo keys are ephemeral, self-asserted, and non-durable. They exist to exercise the sign/verify loop, not to anchor production trust.
+- **Verification depends on the public authority bundle, not on custody.** A verifier holds the trusted root fingerprint out of band, confirms the `mnde.authority.bundle.v1` root matches it, checks the root-signed bundle signature, rejects a stale bundle, and looks up signing keys honoring validity windows and revocation. This is fully offline and identical regardless of which custody provider produced the signatures.
+- **Private keys never need to leave the custody provider.** Bundles and receipts carry only public material. Private keys, tokens, and signing material are never written to receipts and never appear in logs or error messages — fail-closed errors reference paths and reasons only.
+- **Fail closed.** Missing, malformed, unsigned, stale, or unverifiable custody configuration refuses rather than degrading to demo keys.
+
+See [Key Custody](key-custody.md) for formats, configuration, and the threat model.
