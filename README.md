@@ -302,6 +302,7 @@ These exist as architecture or concepts in the repository but are not claimed as
 - [First tester onboarding](docs/first-tester-onboarding.md)
 - [Independent receipt verification](docs/independent-verification.md)
 - [Minimal agent integration](docs/integration-guide.md)
+- [MNDe Guard for OpenClaw spec](docs/openclaw-integration-spec.md)
 - [Onboarding](docs/onboarding.md)
 - [Discovery](docs/discovery.md)
 - [Wiring](docs/wiring.md)

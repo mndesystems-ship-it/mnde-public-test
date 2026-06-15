@@ -9,6 +9,7 @@ Start here:
 - `production-readiness.md` - includes current Policy Engine implementation slice coverage
 - `independent-verification.md`
 - `integration-guide.md`
+- `openclaw-integration-spec.md`
 - `demo-scenarios.md`
 - `tester-id-implementation.md`
 - `feedback-workflow.md`
