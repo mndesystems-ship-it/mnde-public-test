@@ -128,7 +128,7 @@
 
       <div class="step" id="step-3">
         <div class="head"><div class="num">3</div><h4>Make your first real REFUSE decision</h4></div>
-        <div class="body">Submit a destructive action (<code>recursive_delete</code> running <code>rm -rf</code>). The policy forbids it, so MNDe returns <code>REFUSE</code> <b>before</b> anything runs — and still signs a receipt as evidence.</div>
+        <div class="body">Submit an action whose parameters contain a destructive command (<code>recursive_delete</code> with <code>script: "rm -rf …"</code>). The active policy refuses it for <b>what it does</b> — the destructive parameter, not the tool name — so MNDe returns <code>REFUSE</code> (<code>ERR_FORBIDDEN_ACTION_IN_PARAMETERS</code>) <b>before</b> anything runs, and still signs a receipt as evidence.</div>
         <div class="row" style="margin-top:10px"><button class="act danger" onclick="App.run('refuse', 'step-3')">Run REFUSE decision</button></div>
         <div class="result" id="r-step-3"></div>
       </div>

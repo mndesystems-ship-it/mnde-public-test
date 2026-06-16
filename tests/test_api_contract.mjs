@@ -13,6 +13,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { startMndeSidecar } from "../executor/sidecar-harness.mjs";
+import { reviewerRequest } from "../scripts/reviewer-request.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = "8790";
@@ -29,10 +30,17 @@ async function test(name, fn) {
   catch (error) { results.push(false); console.log(`  [FAIL] ${name}: ${error.message}`); }
 }
 
+async function decide(req) {
+  const r = await fetch(`${URL}/v1/decisions`, { method: "POST", headers: { "content-type": "application/json", origin: URL }, body: JSON.stringify(req) });
+  assert.equal(r.status, 200, `HTTP ${r.status}`);
+  return r.json();
+}
+
 async function main() {
-  console.log("MNDe API contract (drift)\n");
+  console.log("MNDe API contract (drift + mechanism)\n");
   const sc = await startMndeSidecar({ url: URL, env: { MNDE_BIND_PORT: PORT } });
   try {
+    // 1) The committed documented examples produce the documented decisions.
     for (const c of cases) {
       await test(`documented example ${c.file} -> ${c.expect}`, async () => {
         const body = readFileSync(join(repoRoot, "examples", "decisions", c.file), "utf8");
@@ -42,6 +50,27 @@ async function main() {
         assert.equal(json.decision, c.expect, `decision was ${json.decision} (${json.reason_code})`);
       });
     }
+
+    // 2) Prove the REFUSE MECHANISM, not just the example outcome. The active
+    //    policy is limits-based + destructive-parameter detection, NOT a
+    //    tool-name denylist. Same tool, opposite results based on parameters.
+    await test("recursive_delete WITHOUT destructive params -> ALLOW (no tool-name denylist)", async () => {
+      const json = await decide(reviewerRequest({ requestId: "mech-allow", tool: "recursive_delete" }));
+      assert.equal(json.decision, "ALLOW", `expected ALLOW, got ${json.decision} (${json.reason_code})`);
+    });
+
+    await test("recursive_delete WITH rm -rf params -> REFUSE via destructive-parameter detection", async () => {
+      const json = await decide(reviewerRequest({ requestId: "mech-refuse", tool: "recursive_delete", parameters: { script: "rm -rf /tmp/workspace" } }));
+      assert.equal(json.decision, "REFUSE", `expected REFUSE, got ${json.decision}`);
+      assert.equal(json.reason_code, "ERR_FORBIDDEN_ACTION_IN_PARAMETERS", `REFUSE reason was ${json.reason_code} — destructive-parameter detection path expected`);
+    });
+
+    await test("a tool name on the sample-policies denylist is NOT refused by name", async () => {
+      // delete_backups appears under `refuses` in sample-policies/*, which are
+      // examples only and not the active policy.
+      const json = await decide(reviewerRequest({ requestId: "mech-sample", tool: "delete_backups" }));
+      assert.equal(json.decision, "ALLOW", `sample-policy denylist must not affect default behavior; got ${json.decision}`);
+    });
   } finally {
     await sc.stop();
   }

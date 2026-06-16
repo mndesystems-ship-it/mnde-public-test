@@ -22,7 +22,9 @@ The Start tab walks you through six real steps. Each one acts against the live s
 Click **Run ALLOW decision**. The console submits a benign action (`read_status`). The active policy permits it, so MNDe returns **ALLOW** and signs an Execution Receipt. You'll see the green `ALLOW` verdict and the decision hash.
 
 ### First successful REFUSE
-Click **Run REFUSE decision**. The console submits a destructive action (`recursive_delete` running `rm -rf`). The policy forbids it, so MNDe returns **REFUSE** *before anything runs* — and still records a signed receipt as evidence. This is the core guarantee: a refused action never executes.
+Click **Run REFUSE decision**. The console submits an action whose parameters contain a destructive command (`recursive_delete` with `script: "rm -rf ..."`). The active policy refuses it **because of what it does** — the destructive parameter — returning **REFUSE** (`ERR_FORBIDDEN_ACTION_IN_PARAMETERS`) *before anything runs*, and still records a signed receipt as evidence. This is the core guarantee: a refused action never executes.
+
+> The active policy is **limits-based** (cost, GPU count, hours, manual-approval threshold) plus destructive-parameter detection — **not** a tool-name denylist. The same `recursive_delete` tool **without** a destructive parameter may ALLOW. The tool-name lists in `sample-policies/` are examples only and are not the active default policy.
 
 ## 3. Receipts (the **Receipts** tab)
 

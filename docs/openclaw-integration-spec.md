@@ -218,36 +218,48 @@ Endpoint:
 POST http://127.0.0.1:8787/v1/decisions
 ```
 
-Request shape:
+**The request is the canonical MNDe execution-request envelope** — the same one every other MNDe caller uses. It is documented and drift-tested in [API Contract](api-contract.md), with runnable copies in [`examples/decisions/`](../examples/decisions/). OpenClaw does **not** invent its own body shape; it maps its proposed action into the envelope:
+
+| OpenClaw | MNDe envelope field |
+| --- | --- |
+| action id | `execution_request.request_id` |
+| tool name | `execution_request.tool_calls[0].tool` |
+| command / args | `execution_request.tool_calls[0].parameters` (e.g. `{ "script": "rm -rf ./project" }`) |
+| integration id | `execution_request.parameters.installation_id` |
+
+Request (the OpenClaw guard builds this and POSTs it):
 
 ```json
 {
-  "agent": "openclaw",
-  "integration": "mnde-openclaw-guard",
-  "action": "recursive_delete",
-  "tool": "shell",
-  "args": {
-    "command": "rm -rf ./project"
+  "execution_request": {
+    "request_id": "openclaw-rmrf",
+    "actor": { "user_id": "openclaw" },
+    "parameters": { "tester_id": "openclaw", "installation_id": "mnde-openclaw-guard" },
+    "tool_calls": [ { "tool": "recursive_delete", "priority": 1, "parameters": { "script": "rm -rf ./project" } } ],
+    "release_request": { "execution_id": "openclaw-rmrf", "hold_state": "APPROVED", "already_consumed": false }
+    /* ...resources, execution, orbit_intent, runtime_observation — see API Contract... */
   },
-  "risk_category": "recursive_delete",
-  "workspace": "/Users/name/project",
-  "user_intent": "clean the project",
-  "requires_execution": true
+  "pricing_data": { "gpu_hour_cents": 500 }
 }
 ```
 
-Response shape:
+Response (the real fields MNDe returns):
 
 ```json
 {
   "decision": "REFUSE",
-  "reason_code": "DESTRUCTIVE_RECURSIVE_DELETE",
-  "human_reason": "MNDe refused a recursive delete against the active workspace.",
-  "receipt_id": "rcpt_01...",
-  "receipt_path": "~/.mnde/receipts/rcpt_01.json",
-  "replay_supported": true
+  "reason_code": "ERR_FORBIDDEN_ACTION_IN_PARAMETERS",
+  "request_hash": "…",
+  "decision_hash": "…",
+  "receipt": { "schema_version": "ecs.receipt.v2", "...": "..." }
 }
 ```
+
+> The decision is about **what the action does**: `recursive_delete` carrying `rm -rf` is REFUSED via destructive-parameter detection (`ERR_FORBIDDEN_ACTION_IN_PARAMETERS`); the same tool with no destructive parameters may ALLOW. The active policy is limits-based plus destructive-parameter detection — not a tool-name denylist.
+
+ALLOW returns an inline signed receipt; REFUSE persists one (visible at `GET /receipts/recent`). Verify any receipt with `POST /console/verify` (or `node tools/verify.mjs <file>` offline) and replay with `POST /console/replay`.
+
+This integration is proven end-to-end against a live sidecar by `npm run test:openclaw` (real ALLOW, real REFUSE, receipt verification, deterministic replay, and rejection of the older flat request shape).
 
 ## OpenClaw Behavior Examples
 

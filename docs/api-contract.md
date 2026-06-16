@@ -44,10 +44,13 @@ Shape:
 }
 ```
 
-The **decision is driven by the tool name** in `tool_calls[].tool`, matched against the active policy:
+The decision is driven by the **active policy** evaluated over the whole request — not by a tool-name denylist. The default active policy (`mnde-release-package/sidecar-local/policy.v1.signed.json`) is **limits-based** (cost, GPU count, hours, manual-approval threshold, retry count) and additionally refuses requests whose **parameters contain a destructive command**.
 
-- A permitted tool (e.g. `read_status`) → **ALLOW**.
-- A forbidden tool (default policy refuses `recursive_delete`, `delete_backups`, `export_customer_data`, `stop_database`) → **REFUSE**, before anything runs.
+- A benign action (e.g. `read_status`) → **ALLOW**.
+- A destructive action — e.g. a tool whose `parameters` include a command like `rm -rf` — → **REFUSE** with reason `ERR_FORBIDDEN_ACTION_IN_PARAMETERS`, before anything runs.
+- The same tool **without** destructive parameters may **ALLOW**: under the default policy, `recursive_delete` with no dangerous parameters returns `ALLOW`, while `recursive_delete` with `parameters.script = "rm -rf ..."` returns `REFUSE`. The refusal is about *what the action does*, not its name.
+
+> The files in [`sample-policies/`](../sample-policies/) (which list tool names under `refuses`) are **examples only**. They are **not** the active default policy and do not affect default behavior.
 
 Build a request programmatically with `reviewerRequest({ requestId, tool, parameters })` from [`scripts/reviewer-request.mjs`](../scripts/reviewer-request.mjs) — the same builder the Authority Console and tests use.
 
