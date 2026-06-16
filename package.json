@@ -30,6 +30,8 @@
     "test:dashboard": "node ./tests/test_dashboard.mjs",
     "test:trust-root": "node ./tests/test_trust_root_preflight.mjs",
     "test:custody-lifecycle": "node ./tests/test_custody_lifecycle.mjs",
+    "test:first-user": "node ./tests/test_first_user_flow.mjs",
+    "test:api-contract": "node ./tests/test_api_contract.mjs",
     "authority": "node ./bin/mnde-authority.mjs",
     "dashboard": "node ./scripts/start-sidecar.mjs",
     "authority-bundle:export": "node ./scripts/export-authority-bundle.mjs",

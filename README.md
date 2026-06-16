@@ -34,19 +34,22 @@ The tests assert that no code path executes (or, in the proxy, forwards) a `REFU
    npm run sidecar
    ```
 
-2. Run a protected tool demo (in a second terminal):
+2. Open the **Authority Console** in a browser:
 
-   ```bash
-   npm run mcp-proxy-demo
-   ```
+   **http://127.0.0.1:8787/**
+
+The console's **Start** tab guides a complete evaluation against the live system — make a real ALLOW decision, a real REFUSE decision, then inspect, verify, export, and replay the signed receipts, and review the authority/trust state. No login, no account, no cloud, and **no terminal or manual API calls needed to evaluate**. See the [Evaluator Guide](docs/evaluator-guide.md).
+
+Prefer the command line? `npm run reviewer-kit` runs the same ALLOW/REFUSE/receipt/replay proof headlessly, and `npm run mcp-proxy-demo` shows MNDe gating an MCP server.
 
 Expected result:
 
-- ALLOW actions execute.
-- REFUSE actions do not execute.
-- Receipts verify offline.
+- ALLOW actions execute; REFUSE actions do not.
+- Every decision emits a signed receipt that verifies offline.
 
-`npm run sidecar` is a foreground service: it bootstraps local authority keys if needed, validates the environment, prints a `Status: READY` banner, and streams logs until you press Ctrl+C. No manual setup steps are required on a fresh clone.
+`npm run sidecar` is a foreground service: it bootstraps local authority keys if needed, validates the environment, prints a `Status: READY` banner, serves the console at `/`, and streams logs until you press Ctrl+C. No manual setup steps are required on a fresh clone.
+
+The exact request the API accepts is documented and drift-tested in the [API Contract](docs/api-contract.md), with runnable examples in [`examples/decisions/`](examples/decisions/).
 
 ## Install
 

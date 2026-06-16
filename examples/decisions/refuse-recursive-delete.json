@@ -1,0 +1,70 @@
+{
+  "execution_request": {
+    "request_id": "refuse-recursive-delete",
+    "submitted_region": "us-west-2",
+    "actor": {
+      "user_id": "evaluator"
+    },
+    "parameters": {
+      "tester_id": "evaluator",
+      "installation_id": "console"
+    },
+    "resources": {
+      "gpu_type": "a10g",
+      "gpu_count": 1,
+      "hours": 1
+    },
+    "execution": {
+      "auto_scale": false,
+      "max_scale_multiplier": 1,
+      "retry_on_fail": false,
+      "max_retries": 0
+    },
+    "tool_calls": [
+      {
+        "tool": "recursive_delete",
+        "priority": 1,
+        "parameters": {
+          "script": "rm -rf /tmp/workspace"
+        }
+      }
+    ],
+    "orbit_intent": {
+      "orbit_version": "2.0",
+      "action": "execute",
+      "boundary": "reviewer-kit",
+      "payload": {
+        "tool_calls": [
+          {
+            "tool": "recursive_delete",
+            "priority": 1,
+            "parameters": {
+              "script": "rm -rf /tmp/workspace"
+            }
+          }
+        ]
+      },
+      "lifecycle_state": "ARMED",
+      "signatures": [
+        {
+          "alg": "hmac-sha256",
+          "sig": "reviewer-kit"
+        }
+      ]
+    },
+    "release_request": {
+      "execution_id": "refuse-recursive-delete",
+      "hold_state": "APPROVED",
+      "already_consumed": false
+    },
+    "runtime_observation": {
+      "kill_switch_active": false,
+      "actual_gpu_count": 1,
+      "actual_hours": 1,
+      "actual_total_cost_cents": 500
+    }
+  },
+  "pricing_data": {
+    "gpu_hour_cents": 500
+  }
+}

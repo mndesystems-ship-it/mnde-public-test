@@ -56,8 +56,8 @@ async function main() {
       }
     });
 
-    await test("navigation is reduced to Status / Decisions / Policy / Audit / Settings", () => {
-      for (const nav of [">Status<", ">Decisions<", ">Policy<", ">Audit<", ">Settings<"]) {
+    await test("navigation is operational: Start / Status / Decisions / Receipts / Authority / Settings", () => {
+      for (const nav of [">Start<", ">Status<", ">Decisions<", ">Receipts<", ">Authority<", ">Settings<"]) {
         assert.ok(html.includes(nav), `missing nav item: ${nav}`);
       }
       // No SaaS / marketing nav.

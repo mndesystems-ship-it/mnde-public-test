@@ -886,6 +886,39 @@ function serveDashboard(req, res) {
   res.end(html);
 }
 
+// Public authority/trust state for the local console. No private key material.
+function authorityStateForApi() {
+  const base = {
+    schema_version: "mnde.authority_state.v1",
+    signing_mode: SIGNING_MODE,
+    profile: process.env.MNDE_PROFILE === "production" ? "production" : "local",
+    policy_version: policy.policy_version,
+    policy_hash,
+    started_at_ms: Math.round(performance.timeOrigin)
+  };
+  if (SIGNING_MODE === "custody" && signingConfig?.provider) {
+    const bundle = signingConfig.provider.getPublicBundle();
+    return {
+      ...base,
+      authority_id: bundle.authority_id ?? null,
+      root_fingerprint: bundle.root_key?.fingerprint ?? null,
+      bundle_not_after: bundle.not_after ?? null,
+      receipt_keys: (bundle.keys?.receipt ?? []).map((k) => ({ key_id: k.key_id, valid_from: k.valid_from, valid_until: k.valid_until })),
+      revocation: Array.isArray(bundle.revocation) ? bundle.revocation : [],
+      trust_chain: signingConfigError ? "ERROR" : "VERIFIED",
+      custody_error: signingConfigError ?? null
+    };
+  }
+  return {
+    ...base,
+    authority_id: "local-dev",
+    root_fingerprint: null,
+    trust_chain: "LOCAL_DEV",
+    custody_error: null,
+    note: "Local development signing root. Production custody is opt-in (MNDE_PROFILE=production with file-backed-production custody)."
+  };
+}
+
 function currentPolicyResponse() {
   return {
     status: "ACTIVE",
@@ -1051,7 +1084,12 @@ const server = http.createServer(async (req, res) => {
   watchdog.heartbeat("request");
   socketRegistry.markRequest(req.socket);
   const pathname = new URL(req.url, `http://${HOST}:${PORT}`).pathname;
-  if (!isAllowedCorsOrigin(req.headers.origin)) {
+  // Same-origin requests from the local Authority Console (served by this sidecar
+  // at "/") carry the sidecar's own Origin. Allow them so the console can POST
+  // decisions and read-only console calls without extra configuration.
+  const reqOrigin = req.headers.origin;
+  const selfOrigin = reqOrigin === `http://${HOST}:${PORT}` || reqOrigin === `http://localhost:${PORT}`;
+  if (!selfOrigin && !isAllowedCorsOrigin(reqOrigin)) {
     response(res, 403, {
       schema_version: "mnde.api.response.v1",
       decision: "REFUSE",
@@ -1176,6 +1214,36 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.method === "GET" && (pathname === "/" || pathname === "/dashboard")) {
     serveDashboard(req, res);
+    return;
+  }
+  // Read-only authority/trust state for the local console. Public material only.
+  if (req.method === "GET" && pathname === "/authority") {
+    response(res, 200, authorityStateForApi());
+    return;
+  }
+  // Read-only console verify/replay. These reuse the same verification logic as
+  // the authority-gated /verify and /replay/recent, but are ungated because they
+  // only return verdicts over receipts that /receipts/recent already exposes on
+  // this local endpoint — they reveal nothing new and mutate nothing. The gated
+  // /verify and /replay/recent are unchanged for remote/authority callers.
+  if (req.method === "POST" && pathname === "/console/verify") {
+    try {
+      const input = await readStrictObject(req, {});
+      response(res, 200, verifyReceiptContract(input.value, verifySignedReceipt));
+    } catch (error) {
+      response(res, 200, { status: "INVALID", receipt_id: null, request_hash: null, decision_hash: null, policy_hash: null, reason: error.message?.startsWith("ERR_") ? error.message : "ERR_RECEIPT_VERIFY_FAILED" });
+    }
+    return;
+  }
+  if (req.method === "POST" && pathname === "/console/replay") {
+    let limit = 100;
+    try {
+      const input = await readStrictObject(req, {});
+      if (Number.isFinite(input.value?.limit)) limit = input.value.limit;
+    } catch {
+      /* default limit */
+    }
+    response(res, 200, replayRecentForApi(limit));
     return;
   }
   if (req.method === "GET" && pathname === "/capabilities") {
