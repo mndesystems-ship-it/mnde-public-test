@@ -148,6 +148,22 @@ Verified by `npm run test:trust-root` (production-without-custody refuses; produ
 
 Use **external-signer custody** (above) to keep the private key in an HSM or PKCS#11 device — that is the supported, vendor-neutral path today, and it does not require a vendor SDK in MNDe. Dedicated in-process providers (`aws-kms`, `azure-key-vault`, `gcp-kms`) remain possible behind the same four-method interface (`signReceipt`, `signPolicy`, `signApproval`, `getPublicBundle`), but note most cloud KMS do not sign Ed25519; the external-signer command is how you bridge to whatever holds your key.
 
+## Bootstrapping the trust root
+
+To create a production trust root:
+
+```bash
+npm run authority:init -- --out /secure/path/outside/the/repo --authority-id your-org-prod
+```
+
+This generates the long-lived **root** key and the first **receipt signing** key, builds a root-signed `mnde.authority.bundle.v1`, verifies it, and writes four files (private keys `0600`). It refuses to write inside the repository, refuses to overwrite, and refuses a `demo`/`local` authority id.
+
+- `root.key.pem` — the root private key. It signs the bundle and key rotations only; it is **not** needed on the serving host. Move it offline / into an HSM or escrow.
+- `receipt-signing.key.pem` — the only secret the sidecar needs.
+- `authority.bundle.json` — publish this; have verifiers pin its **root fingerprint** out of band.
+
+The command prints the root fingerprint and the exact `MNDE_PROFILE=production` environment to run the sidecar. Rotate and revoke afterward with `npm run authority -- rotate|revoke`.
+
 ## Publishing the public bundle
 
 ```bash

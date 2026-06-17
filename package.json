@@ -31,6 +31,8 @@
     "test:trust-root": "node ./tests/test_trust_root_preflight.mjs",
     "test:custody-lifecycle": "node ./tests/test_custody_lifecycle.mjs",
     "authority": "node ./bin/mnde-authority.mjs",
+    "authority:init": "node ./scripts/init-production-authority.mjs",
+    "test:authority-init": "node ./tests/test_authority_init.mjs",
     "test:external-signer": "node ./tests/test_external_signer.mjs",
     "dashboard": "node ./scripts/start-sidecar.mjs",
     "authority-bundle:export": "node ./scripts/export-authority-bundle.mjs",
