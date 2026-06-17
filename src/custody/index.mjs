@@ -38,8 +38,9 @@ import {
 } from "./bundle.mjs";
 
 export * from "./bundle.mjs";
+export { createExternalSignerCustody } from "./external-signer.mjs";
 
-export const KNOWN_PROVIDERS = Object.freeze(["local-demo", "file-backed-production"]);
+export const KNOWN_PROVIDERS = Object.freeze(["local-demo", "file-backed-production", "external-signer"]);
 export const FUTURE_PROVIDERS = Object.freeze(["aws-kms", "azure-key-vault", "gcp-kms", "hsm-pkcs11"]);
 
 const FAR_FUTURE = "2999-01-01T00:00:00.000Z";

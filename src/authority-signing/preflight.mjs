@@ -28,7 +28,8 @@ export function detectDevKeyPath(env = process.env, repoRoot) {
     env.MNDE_AUTHORITY_BUNDLE,
     env.MNDE_RECEIPT_SIGNING_KEY,
     env.MNDE_POLICY_SIGNING_KEY,
-    env.MNDE_APPROVAL_SIGNING_KEY
+    env.MNDE_APPROVAL_SIGNING_KEY,
+    env.MNDE_EXTERNAL_SIGNER_PUBLIC_KEY
   ].filter((p) => typeof p === "string" && p.length > 0);
 
   const devDirs = repoRoot
@@ -51,18 +52,22 @@ export async function assertTrustRoot(env = process.env, options = {}) {
   if (profile !== "production") return { ok: true, profile: "local" };
 
   // 1) Production must sign through custody — legacy signing uses dev keys.
-  if (env.MNDE_RECEIPT_SIGNING_MODE !== "custody") {
+  //    Accepts "custody" (file-backed) or "external-signer" (HSM / PKCS#11).
+  const signingMode = env.MNDE_RECEIPT_SIGNING_MODE;
+  if (signingMode !== "custody" && signingMode !== "external-signer") {
     return fail(
       "ERR_TRUST_ROOT_REQUIRES_CUSTODY",
-      "MNDE_PROFILE=production requires MNDE_RECEIPT_SIGNING_MODE=custody. Legacy signing uses development keys and cannot anchor production trust. Set MNDE_RECEIPT_SIGNING_MODE=custody and configure a production custody provider, or run with MNDE_PROFILE=local for demo use."
+      "MNDE_PROFILE=production requires MNDE_RECEIPT_SIGNING_MODE=custody or external-signer. Legacy signing uses development keys and cannot anchor production trust. Configure a production custody provider, or run with MNDE_PROFILE=local for demo use."
     );
   }
 
-  // 2) Custody provider must be the production (file-backed) provider.
-  if (env.MNDE_KEY_CUSTODY !== "file-backed-production") {
+  // 2) For file-backed custody, the provider must be the production one (not
+  //    the ephemeral local-demo). External-signer carries no local private key,
+  //    so this check does not apply to it.
+  if (signingMode === "custody" && env.MNDE_KEY_CUSTODY !== "file-backed-production") {
     return fail(
       "ERR_TRUST_ROOT_DEMO_CUSTODY",
-      "MNDE_PROFILE=production requires MNDE_KEY_CUSTODY=file-backed-production. local-demo custody uses ephemeral, self-asserted development keys and must not anchor production trust. Provision a published authority bundle and signing key, then set MNDE_KEY_CUSTODY=file-backed-production."
+      "MNDE_PROFILE=production with MNDE_RECEIPT_SIGNING_MODE=custody requires MNDE_KEY_CUSTODY=file-backed-production. local-demo custody uses ephemeral, self-asserted development keys and must not anchor production trust."
     );
   }
 
@@ -71,22 +76,37 @@ export async function assertTrustRoot(env = process.env, options = {}) {
   if (devPath) {
     return fail(
       "ERR_TRUST_ROOT_DEV_KEY",
-      `MNDE_PROFILE=production refuses development key material: ${devPath}. Point MNDE_AUTHORITY_BUNDLE / MNDE_RECEIPT_SIGNING_KEY at production keys stored outside the repository.`
+      `MNDE_PROFILE=production refuses development key material: ${devPath}. Point bundle and key paths at production material stored outside the repository.`
     );
   }
 
-  // 4) The custody provider must load and self-verify (valid bundle + key).
+  // 4) The custody provider must load and self-verify. For external-signer this
+  //    validates the bundle, that the key id exists, is active, is not revoked,
+  //    and that the configured public key matches the bundle key.
   //    Imported lazily so local profile never loads the custody subsystem.
   const { loadSigningConfig } = await import("./index.mjs");
   const signing = loadSigningConfig(env);
   if (!signing.ok) {
     return fail(
       signing.reason_code ?? "ERR_CUSTODY_UNAVAILABLE",
-      `MNDE_PROFILE=production custody is not usable (${signing.reason_code ?? "unknown"}: ${signing.detail ?? "no detail"}). Configure a valid published authority bundle (MNDE_AUTHORITY_BUNDLE) and signing key (MNDE_RECEIPT_SIGNING_KEY).`
+      `MNDE_PROFILE=production custody is not usable (${signing.reason_code ?? "unknown"}: ${signing.detail ?? "no detail"}).`
     );
   }
 
-  // 5) Guard against pointing file-backed custody at an exported demo bundle.
+  // 4b) External-signer: run a real self-test signature through the command and
+  //     verify it before accepting the trust root.
+  if (signing.signer_mode === "external-signer") {
+    try {
+      signing.provider.selfTest();
+    } catch (error) {
+      return fail(
+        "ERR_TRUST_ROOT_SIGNER_SELFTEST",
+        `MNDE_PROFILE=production external signer self-test failed: ${error instanceof Error ? error.message : String(error)}.`
+      );
+    }
+  }
+
+  // 5) Guard against pointing custody at an exported demo bundle.
   const bundle = signing.provider.getPublicBundle();
   const authorityId = String(bundle?.authority_id ?? "");
   const rootKeyId = String(bundle?.root_key?.key_id ?? "");

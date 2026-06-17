@@ -25,7 +25,8 @@ import {
   createCustody,
   findBundleKey,
   verifyAgainstBundle,
-  verifyAuthorityBundle
+  verifyAuthorityBundle,
+  createExternalSignerCustody
 } from "../custody/index.mjs";
 
 export const SIGNED_RECEIPT_SCHEMA = "mnde.signed-receipt.v1";
@@ -49,7 +50,11 @@ function custodyConfigCode(reason) {
   const text = String(reason ?? "");
   if (/cannot read MNDE_AUTHORITY_BUNDLE|MNDE_AUTHORITY_BUNDLE not configured/.test(text)) return "ERR_CUSTODY_BUNDLE_MISSING";
   if (/not valid JSON|not an mnde\.authority\.bundle/.test(text)) return "ERR_CUSTODY_BUNDLE_INVALID";
-  if (/SIGNING_KEY|no published .* key|not configured/.test(text)) return "ERR_CUSTODY_KEY_MISSING";
+  if (/revoked|KEY_REVOKED/.test(text)) return "ERR_CUSTODY_KEY_REVOKED";
+  if (/KEY_EXPIRED|not usable/.test(text)) return "ERR_CUSTODY_KEY_EXPIRED";
+  if (/fingerprint mismatch|does not match the bundle key/.test(text)) return "ERR_CUSTODY_KEY_MISMATCH";
+  if (/EXTERNAL_SIGNER_CMD|external signer/.test(text)) return "ERR_CUSTODY_SIGNER_UNAVAILABLE";
+  if (/SIGNING_KEY|EXTERNAL_SIGNER_PUBLIC_KEY|no published .* key|not configured|not a valid public key/.test(text)) return "ERR_CUSTODY_KEY_MISSING";
   if (/unknown MNDE_KEY_CUSTODY/.test(text)) return "ERR_CUSTODY_MISCONFIGURED";
   return "ERR_CUSTODY_MISCONFIGURED";
 }
@@ -65,17 +70,32 @@ function keyCode(reason) {
 // Resolve signing configuration. Default legacy; custody is opt-in and fails
 // closed — a misconfiguration never silently downgrades to legacy.
 export function loadSigningConfig(env = process.env) {
-  const mode = env.MNDE_RECEIPT_SIGNING_MODE === "custody" ? "custody" : "legacy";
-  if (mode === "legacy") return { ok: true, mode: "legacy" };
+  const requested = env.MNDE_RECEIPT_SIGNING_MODE;
+  // Both "custody" (local-demo / file-backed-production) and "external-signer"
+  // engage custody signing. Anything else is legacy pass-through.
+  if (requested !== "custody" && requested !== "external-signer") return { ok: true, mode: "legacy" };
 
-  const custody = createCustody(env);
-  if (!custody.ok) return { ok: false, mode: "custody", reason_code: custodyConfigCode(custody.reason), detail: custody.reason };
+  let provider;
+  if (requested === "external-signer") {
+    try {
+      provider = createExternalSignerCustody(env);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return { ok: false, mode: "custody", reason_code: custodyConfigCode(detail), detail };
+    }
+  } else {
+    const custody = createCustody(env);
+    if (!custody.ok) return { ok: false, mode: "custody", reason_code: custodyConfigCode(custody.reason), detail: custody.reason };
+    provider = custody.provider;
+  }
 
-  const bundle = custody.provider.getPublicBundle();
-  const check = verifyAuthorityBundle(bundle, { trustedRootFingerprint: custody.provider.trustedRootFingerprint });
+  const bundle = provider.getPublicBundle();
+  const check = verifyAuthorityBundle(bundle, { trustedRootFingerprint: provider.trustedRootFingerprint });
   if (!check.ok) return { ok: false, mode: "custody", reason_code: bundleCode(check.reason), detail: check.reason };
 
-  return { ok: true, mode: "custody", provider: custody.provider, fingerprint: custody.provider.trustedRootFingerprint };
+  // mode is normalized to "custody" so signReceiptForDelivery engages; signer_mode
+  // records which provider (custody | external-signer) is in use.
+  return { ok: true, mode: "custody", signer_mode: provider.mode, provider, fingerprint: provider.trustedRootFingerprint };
 }
 
 // Sign a built receipt for delivery. Legacy mode is a pass-through. Custody mode

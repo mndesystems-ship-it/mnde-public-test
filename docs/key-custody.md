@@ -78,6 +78,38 @@ Loads a published bundle plus role private keys from the filesystem — keys liv
 
 Missing, malformed, or non-matching configuration **fails closed** — `createCustody()` returns `{ ok: false, reason }` and never silently falls back to demo keys.
 
+## Tier 2: external-signer custody
+
+`file-backed-production` keeps the receipt signing key on disk. For real production you usually want the private key in hardware — an HSM — where it can't be copied. External-signer custody does that **without a vendor SDK and without leaving Ed25519**: MNDe delegates signing to a command you supply.
+
+Enable it with:
+
+```bash
+MNDE_RECEIPT_SIGNING_MODE=external-signer
+MNDE_AUTHORITY_BUNDLE=/etc/mnde/authority.bundle.json
+MNDE_EXTERNAL_SIGNER_CMD='["/usr/bin/your-signer","--slot","0"]'   # JSON array = no shell, no injection
+MNDE_EXTERNAL_SIGNER_KEY_ID=receipt-1                              # must exist in the bundle
+MNDE_EXTERNAL_SIGNER_PUBLIC_KEY=/etc/mnde/receipt.pub.pem          # must match the bundle key
+# optional:
+MNDE_EXTERNAL_SIGNER_TIMEOUT_MS=5000                              # default 5000
+```
+
+**Signer contract** — your command:
+
+- reads the **exact canonical bytes to sign on stdin**,
+- writes a **64-byte Ed25519 signature, hex-encoded, on stdout**,
+- exits `0` on success; any nonzero exit means failure.
+
+MNDe runs the command with argv parsing (never a shell), and **verifies every returned signature against the configured public key before accepting it**. It fails closed on timeout, nonzero exit, stderr-only failure, invalid hex, wrong length, or a signature that does not verify. The private key never enters the MNDe process.
+
+The command is the integration point for any HSM — examples, none hardcoded:
+
+- **PKCS#11 HSM** (YubiHSM2, Thales Luna): a small wrapper around `pkcs11-tool` / your HSM CLI that signs with the on-device Ed25519 key.
+- **SoftHSM**: the same wrapper against a software token, for testing the path without hardware.
+- **Any custom signer** that meets the contract above.
+
+In `MNDE_PROFILE=production`, external-signer is accepted only after the pre-flight confirms the signer command runs, the key id is present, active, and not revoked in the bundle, the configured public key matches the bundle key, and a **live self-test signature verifies**.
+
 ## Production trust-root pre-flight (`MNDE_PROFILE`)
 
 MNDe must never enter live enforcement while signing with development keys. A deterministic pre-flight runs once before the decision server accepts traffic (`src/authority-signing/preflight.mjs`, `assertTrustRoot`).
@@ -91,10 +123,11 @@ In `production` the pre-flight fails closed — with a human-readable, actionabl
 
 | Reason code | Condition |
 | --- | --- |
-| `ERR_TRUST_ROOT_REQUIRES_CUSTODY` | `MNDE_RECEIPT_SIGNING_MODE` is not `custody` (legacy signing uses dev keys) |
-| `ERR_TRUST_ROOT_DEMO_CUSTODY` | `MNDE_KEY_CUSTODY` is not `file-backed-production` (e.g. `local-demo`) |
+| `ERR_TRUST_ROOT_REQUIRES_CUSTODY` | `MNDE_RECEIPT_SIGNING_MODE` is not `custody` or `external-signer` (legacy signing uses dev keys) |
+| `ERR_TRUST_ROOT_DEMO_CUSTODY` | with `MNDE_RECEIPT_SIGNING_MODE=custody`, `MNDE_KEY_CUSTODY` is not `file-backed-production` (e.g. `local-demo`) |
 | `ERR_TRUST_ROOT_DEV_KEY` | a configured key/bundle path points at repo dev material (`shared/receipt_keys/`, `.mnde-test/`, `authority/`, `*receipt_signing_private.pem`, `demo`/`local-demo` paths), or the bundle is a demo bundle (`mnde-local-*` authority) |
-| `ERR_CUSTODY_*` | the configured custody provider does not load/verify (missing/malformed/stale bundle, missing/expired key) — see table above |
+| `ERR_TRUST_ROOT_SIGNER_SELFTEST` | with `MNDE_RECEIPT_SIGNING_MODE=external-signer`, the live self-test signature did not verify |
+| `ERR_CUSTODY_*` | the configured custody provider does not load/verify (missing/malformed/stale bundle, missing/expired/revoked key, key/public-key mismatch, signer unavailable) — see table above |
 
 There is **no automatic downgrade**: if production is selected and custody is unusable, MNDe exits non-zero rather than signing with fallback keys.
 
@@ -111,9 +144,9 @@ MNDE_RECEIPT_KEY_ID=<receipt key id present in the bundle>   # optional; default
 
 Verified by `npm run test:trust-root` (production-without-custody refuses; production-with-demo refuses; dev-key path refuses; demo bundle refuses; valid custody starts and serves; local mode unchanged).
 
-### Future provider slots (not implemented)
+### Hardware / KMS signing
 
-`aws-kms`, `azure-key-vault`, `gcp-kms`, `hsm-pkcs11`. Each implements the same four-method interface — `signReceipt`, `signPolicy`, `signApproval`, `getPublicBundle` — so the private key never leaves the managed boundary. Verification does not change: it still runs offline against the public bundle.
+Use **external-signer custody** (above) to keep the private key in an HSM or PKCS#11 device — that is the supported, vendor-neutral path today, and it does not require a vendor SDK in MNDe. Dedicated in-process providers (`aws-kms`, `azure-key-vault`, `gcp-kms`) remain possible behind the same four-method interface (`signReceipt`, `signPolicy`, `signApproval`, `getPublicBundle`), but note most cloud KMS do not sign Ed25519; the external-signer command is how you bridge to whatever holds your key.
 
 ## Publishing the public bundle
 

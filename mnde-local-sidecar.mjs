@@ -311,7 +311,7 @@ if (DECISION_ENGINE === "policy-engine") {
 // mode, so legacy mode never loads custody and stays byte-for-byte identical.
 // Signing is applied as a separate step AFTER the receipt is built — decision
 // engines never sign and never import custody.
-const SIGNING_MODE = process.env.MNDE_RECEIPT_SIGNING_MODE === "custody" ? "custody" : "legacy";
+const SIGNING_MODE = (process.env.MNDE_RECEIPT_SIGNING_MODE === "custody" || process.env.MNDE_RECEIPT_SIGNING_MODE === "external-signer") ? "custody" : "legacy";
 let signingConfig = { ok: true, mode: "legacy" };
 let signReceiptAdapter = (receipt) => ({ ok: true, receipt });
 let signingConfigError = null;
