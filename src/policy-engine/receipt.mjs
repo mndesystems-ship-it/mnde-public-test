@@ -18,6 +18,7 @@ import { canonicalizeJson, parseStrictJson } from "../../shared/json.ts";
 import { RECEIPT_SIGNATURE_ALGORITHM, signReceiptPayload, verifyReceiptPayloadSignature } from "../../shared/index.ts";
 import { findAuthorityReceiptKey, loadAuthorityBundle, loadAuthorityBundleForReceipt } from "../../shared/authority-manifest.mjs";
 import { evaluatePolicyRequest } from "./index.mjs";
+import { verifyHistoricalPolicyBundleProvenance } from "../policy-bundles/index.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SCHEMA = "mnde.pe.receipt.v1";
@@ -25,6 +26,18 @@ const SCHEMA = "mnde.pe.receipt.v1";
 function canonicalPayloadWithoutSignature(receiptLike) {
   const { verifiable_signature: _omit, ...payload } = receiptLike;
   return canonicalizeJson(payload);
+}
+
+function isBundleProvenance(value, policyHash) {
+  return value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && typeof value.bundle_id === "string" && value.bundle_id.length > 0
+    && Number.isSafeInteger(value.serial) && value.serial > 0
+    && value.policy_hash === policyHash
+    && typeof value.signer_key_id === "string" && value.signer_key_id.length > 0
+    && value.activation_mode === "enforce"
+    && (value.rollback_authorization_id === null || typeof value.rollback_authorization_id === "string");
 }
 
 // Build a signed receipt for a policy-engine decision.
@@ -35,6 +48,10 @@ export function buildPolicyReceipt(request, policy, options = {}) {
   const approvalEnforced = Boolean(approvalTrustAnchors);
   const approvals = Array.isArray(options.approvals) ? options.approvals : [];
   const decision = evaluatePolicyRequest(request, policy, { authorities, now: options.now, trustAnchors, approvals, approvalTrustAnchors });
+  const policyBundleProvenance = options.policyBundleProvenance;
+  if (policyBundleProvenance !== undefined && !isBundleProvenance(policyBundleProvenance, decision.policy_hash)) {
+    throw new Error("ERR_POLICY_BUNDLE_PROVENANCE_INVALID");
+  }
 
   const payload = {
     schema_version: SCHEMA,
@@ -48,6 +65,7 @@ export function buildPolicyReceipt(request, policy, options = {}) {
     request_hash: decision.request_hash,
     policy_hash: decision.policy_hash,
     authority_chain_hash: decision.authority_chain_hash,
+    ...(policyBundleProvenance ? { policy_bundle_provenance: structuredClone(policyBundleProvenance) } : {}),
     decision_output: decision
   };
 
@@ -101,6 +119,20 @@ export function verifyPolicyReceipt(receipt, options = {}) {
   if (receipt.request_hash !== original.request_hash || receipt.policy_hash !== original.policy_hash || receipt.authority_chain_hash !== original.authority_chain_hash) {
     return { verified: false, reason: "receipt header hashes do not match decision" };
   }
+  if (receipt.policy_bundle_provenance !== undefined && !isBundleProvenance(receipt.policy_bundle_provenance, replay.policy_hash)) {
+    return { verified: false, reason: "policy bundle provenance contradicts replayed policy state" };
+  }
+  if (options.historicalPolicyBundle !== undefined) {
+    if (!receipt.policy_bundle_provenance) return { verified: false, reason: "historical policy bundle supplied but receipt has no bundle provenance" };
+    const historical = verifyHistoricalPolicyBundleProvenance({
+      bundle: options.historicalPolicyBundle,
+      provenance: receipt.policy_bundle_provenance,
+      policy: parsedPolicy.value,
+      authorityBundle: options.policyAuthorityBundle,
+      trustedRootFingerprint: options.policyTrustedRootFingerprint
+    });
+    if (!historical.ok) return { verified: false, reason: historical.reason };
+  }
 
   const signature = receipt.verifiable_signature;
   if (!signature) return { verified: false, reason: "missing signature" };
@@ -112,7 +144,13 @@ export function verifyPolicyReceipt(receipt, options = {}) {
 
   const ok = verifyReceiptPayloadSignature(canonicalPayloadWithoutSignature(receipt), signature.value, keyResult.key.public_key);
   return ok
-    ? { verified: true, reason: null, decision: original.decision, reason_code: original.reason_code }
+    ? {
+      verified: true,
+      reason: null,
+      decision: original.decision,
+      reason_code: original.reason_code,
+      ...(receipt.policy_bundle_provenance ? { policy_bundle_provenance: structuredClone(receipt.policy_bundle_provenance) } : {})
+    }
     : { verified: false, reason: "signature invalid" };
 }
 

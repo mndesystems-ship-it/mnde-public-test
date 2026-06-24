@@ -2,6 +2,8 @@
 // Unified MNDe receipt verifier.
 //
 //   node tools/verify.mjs <receipt.json> [--authority-bundle <bundle.json>]
+//     [--policy-bundle <bundle.json> --policy-authority-bundle <bundle.json>
+//      --policy-root-fingerprint <hex>]
 //
 // One command verifies any MNDe receipt, regardless of which engine produced it
 // or whether it carries a production custody attestation:
@@ -30,7 +32,13 @@ export function verifyAnyReceiptObject(receipt, options = {}) {
       return verifySignedEnvelope(receipt, options);
     }
     if (receipt?.schema_version === POLICY_RECEIPT_SCHEMA) {
-      const result = verifyPolicyReceipt(receipt, { trustAnchors: options.trustAnchors, approvalTrustAnchors: options.approvalTrustAnchors });
+      const result = verifyPolicyReceipt(receipt, {
+        trustAnchors: options.trustAnchors,
+        approvalTrustAnchors: options.approvalTrustAnchors,
+        historicalPolicyBundle: options.historicalPolicyBundle,
+        policyAuthorityBundle: options.policyAuthorityBundle,
+        policyTrustedRootFingerprint: options.policyTrustedRootFingerprint
+      });
       return { kind: "policy-engine", verified: result.verified, reason: result.reason, decision: result.decision };
     }
     // Legacy pipeline verifier is file-based; round-trip the object through a temp file.
@@ -93,16 +101,29 @@ function main() {
   const approvalAnchorsPath = valueOf("--approval-trust-anchors");
   const authorityBundlePath = valueOf("--authority-bundle");
   const rootFingerprint = valueOf("--root-fingerprint");
-  const flagValues = new Set([trustAnchorsPath, approvalAnchorsPath, authorityBundlePath, rootFingerprint].filter(Boolean));
+  const historicalPolicyBundlePath = valueOf("--policy-bundle");
+  const policyAuthorityBundlePath = valueOf("--policy-authority-bundle");
+  const policyRootFingerprint = valueOf("--policy-root-fingerprint");
+  const flagValues = new Set([trustAnchorsPath, approvalAnchorsPath, authorityBundlePath, rootFingerprint, historicalPolicyBundlePath, policyAuthorityBundlePath, policyRootFingerprint].filter(Boolean));
   const filePath = args.find((a) => !a.startsWith("--") && !flagValues.has(a));
   if (!filePath) {
-    process.stderr.write("Usage: node tools/verify.mjs <receipt.json> [--authority-bundle <f>] [--root-fingerprint <hex>] [--trust-anchors <f>] [--approval-trust-anchors <f>]\n");
+    process.stderr.write("Usage: node tools/verify.mjs <receipt.json> [--authority-bundle <f>] [--root-fingerprint <hex>] [--policy-bundle <f> --policy-authority-bundle <f> --policy-root-fingerprint <hex>] [--trust-anchors <f>] [--approval-trust-anchors <f>]\n");
     process.exit(2);
   }
   const trustAnchors = trustAnchorsPath ? JSON.parse(readFileSync(trustAnchorsPath, "utf8")) : undefined;
   const approvalTrustAnchors = approvalAnchorsPath ? JSON.parse(readFileSync(approvalAnchorsPath, "utf8")) : undefined;
   const authorityBundle = authorityBundlePath ? JSON.parse(readFileSync(authorityBundlePath, "utf8")) : undefined;
-  const result = verifyAnyReceiptFile(filePath, { trustAnchors, approvalTrustAnchors, authorityBundle, trustedRootFingerprint: rootFingerprint });
+  const historicalPolicyBundle = historicalPolicyBundlePath ? JSON.parse(readFileSync(historicalPolicyBundlePath, "utf8")) : undefined;
+  const policyAuthorityBundle = policyAuthorityBundlePath ? JSON.parse(readFileSync(policyAuthorityBundlePath, "utf8")) : undefined;
+  const result = verifyAnyReceiptFile(filePath, {
+    trustAnchors,
+    approvalTrustAnchors,
+    authorityBundle,
+    trustedRootFingerprint: rootFingerprint,
+    historicalPolicyBundle,
+    policyAuthorityBundle,
+    policyTrustedRootFingerprint: policyRootFingerprint
+  });
   process.stdout.write("========================================\n");
   process.stdout.write("MNDe Receipt Verification (unified)\n");
   process.stdout.write("========================================\n");

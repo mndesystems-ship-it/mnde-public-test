@@ -11,6 +11,7 @@
 import { readFileSync } from "node:fs";
 
 import { buildPolicyReceipt } from "./receipt.mjs";
+import { loadSignedPolicyBundleConfig } from "../policy-bundles/index.mjs";
 
 function loadJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
@@ -19,6 +20,18 @@ function loadJson(path) {
 // Load decision-engine config. Fails closed (ok:false) on any malformed/missing
 // configured file, so the sidecar can refuse rather than silently run unprotected.
 export function loadPolicyEngineConfig(env) {
+  // Signed bundles are opt-in. The legacy MNDE_PE_POLICY path stays unchanged
+  // unless an operator explicitly supplies a bundle path.
+  if (env.MNDE_PE_POLICY_BUNDLE) {
+    const signed = loadSignedPolicyBundleConfig(env);
+    if (!signed.ok) return signed;
+    return {
+      ok: true,
+      policy: signed.policy,
+      signedPolicyBundle: signed.signedPolicyBundle,
+      policyBundleProvenance: signed.policyBundleProvenance
+    };
+  }
   const policyPath = env.MNDE_PE_POLICY;
   if (!policyPath) return { ok: false, reason: "MNDE_PE_POLICY is required when MNDE_DECISION_ENGINE=policy-engine" };
   let policy;
@@ -82,6 +95,7 @@ export function decidePolicyEngine(body, config, options = {}) {
     trustAnchors: config.trustAnchors,
     approvals,
     approvalTrustAnchors: config.approvalTrustAnchors,
+    policyBundleProvenance: config.policyBundleProvenance,
     now
   });
   return {
