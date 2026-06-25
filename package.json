@@ -7,6 +7,11 @@
     "mnde": "./bin/mnde.mjs"
   },
   "scripts": {
+    "test": "node ./scripts/run-all-tests.mjs",
+    "ci": "node ./scripts/run-ci.mjs",
+    "check:whitespace": "node ./scripts/check-whitespace.mjs",
+    "test:ci-contract": "node ./tests/test_ci_contract.mjs",
+    "test:replay": "node ./scripts/test-replay-verification.mjs",
     "mnde": "node ./bin/mnde.mjs",
     "test:onboarding": "node ./tests/test_onboarding.mjs",
     "test:policy-engine": "node ./tests/test_policy_engine.mjs",

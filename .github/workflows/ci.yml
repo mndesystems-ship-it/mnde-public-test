@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  guardrails:
+    name: Guardrails
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Existing test suites
+        run: npm test
+
+      - name: Reviewer kit
+        run: npm run reviewer-kit
+
+      - name: Whitespace
+        run: npm run check:whitespace
+
+      - name: Replay verification
+        run: npm run test:replay
