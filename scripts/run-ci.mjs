@@ -8,7 +8,8 @@ const steps = [
   ["test"],
   ["run", "reviewer-kit"],
   ["run", "check:whitespace"],
-  ["run", "test:replay"]
+  ["run", "test:replay"],
+  ["run", "test:conformance"]
 ];
 
 for (const args of steps) {

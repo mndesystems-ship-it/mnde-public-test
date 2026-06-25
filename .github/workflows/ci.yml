@@ -37,3 +37,6 @@ jobs:
 
       - name: Replay verification
         run: npm run test:replay
+
+      - name: Conformance freeze
+        run: npm run test:conformance

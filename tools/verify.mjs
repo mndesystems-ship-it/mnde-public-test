@@ -37,7 +37,10 @@ export function verifyAnyReceiptObject(receipt, options = {}) {
         approvalTrustAnchors: options.approvalTrustAnchors,
         historicalPolicyBundle: options.historicalPolicyBundle,
         policyAuthorityBundle: options.policyAuthorityBundle,
-        policyTrustedRootFingerprint: options.policyTrustedRootFingerprint
+        policyTrustedRootFingerprint: options.policyTrustedRootFingerprint,
+        authorityBundle: options.authorityBundle,
+        trustedRootFingerprint: options.trustedRootFingerprint,
+        now: options.now
       });
       return { kind: "policy-engine", verified: result.verified, reason: result.reason, decision: result.decision };
     }

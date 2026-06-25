@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { canonicalizeJson, parseStrictJson } from "../../shared/json.ts";
 import { RECEIPT_SIGNATURE_ALGORITHM, signReceiptPayload, verifyReceiptPayloadSignature } from "../../shared/index.ts";
 import { findAuthorityReceiptKey, loadAuthorityBundle, loadAuthorityBundleForReceipt } from "../../shared/authority-manifest.mjs";
+import { findBundleKey, fingerprintOf, verifyAuthorityBundle } from "../custody/index.mjs";
 import { evaluatePolicyRequest } from "./index.mjs";
 import { verifyHistoricalPolicyBundleProvenance } from "../policy-bundles/index.mjs";
 
@@ -38,6 +39,29 @@ function isBundleProvenance(value, policyHash) {
     && typeof value.signer_key_id === "string" && value.signer_key_id.length > 0
     && value.activation_mode === "enforce"
     && (value.rollback_authorization_id === null || typeof value.rollback_authorization_id === "string");
+}
+
+function verifyReceiptSignatureWithAuthorityBundle(receipt, signature, options = {}) {
+  const authorityBundle = options.authorityBundle;
+  if (!authorityBundle) return null;
+  if (authorityBundle.authority_id !== signature.authority_id) {
+    return null;
+  }
+  const authority = verifyAuthorityBundle(authorityBundle, {
+    trustedRootFingerprint: options.trustedRootFingerprint,
+    now: options.now ?? signature.signed_at
+  });
+  if (!authority.ok) return { verified: false, reason: `authority bundle: ${authority.reason}` };
+
+  const keyResult = findBundleKey(authorityBundle, "receipt", signature.key_id, signature.signed_at);
+  if (!keyResult.ok) return { verified: false, reason: keyResult.reason };
+  if (signature.public_key_fingerprint !== fingerprintOf(keyResult.publicKey)) {
+    return { verified: false, reason: "fingerprint mismatch" };
+  }
+  const ok = verifyReceiptPayloadSignature(canonicalPayloadWithoutSignature(receipt), signature.value, keyResult.publicKey);
+  return ok
+    ? { verified: true, reason: null }
+    : { verified: false, reason: "signature invalid" };
 }
 
 // Build a signed receipt for a policy-engine decision.
@@ -136,6 +160,18 @@ export function verifyPolicyReceipt(receipt, options = {}) {
 
   const signature = receipt.verifiable_signature;
   if (!signature) return { verified: false, reason: "missing signature" };
+  const authorityBundleSignature = verifyReceiptSignatureWithAuthorityBundle(receipt, signature, options);
+  if (authorityBundleSignature) {
+    return authorityBundleSignature.verified
+      ? {
+        verified: true,
+        reason: null,
+        decision: original.decision,
+        reason_code: original.reason_code,
+        ...(receipt.policy_bundle_provenance ? { policy_bundle_provenance: structuredClone(receipt.policy_bundle_provenance) } : {})
+      }
+      : authorityBundleSignature;
+  }
   const bundle = loadAuthorityBundleForReceipt(repoRoot, signature.authority_id);
   if (!bundle.ok) return { verified: false, reason: bundle.reason };
   const keyResult = findAuthorityReceiptKey(bundle.manifest, { authorityId: signature.authority_id, keyId: signature.key_id, signedAt: signature.signed_at });

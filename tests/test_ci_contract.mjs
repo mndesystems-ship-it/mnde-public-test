@@ -12,6 +12,7 @@ assert.equal(packageJson.scripts.test, "node ./scripts/run-all-tests.mjs");
 assert.equal(packageJson.scripts.ci, "node ./scripts/run-ci.mjs");
 assert.equal(packageJson.scripts["check:whitespace"], "node ./scripts/check-whitespace.mjs");
 assert.equal(packageJson.scripts["test:replay"], "node ./scripts/test-replay-verification.mjs");
+assert.equal(packageJson.scripts["test:conformance"], "node ./tests/test_conformance_vectors.mjs");
 
 for (const file of [
   workflowPath,
@@ -29,7 +30,8 @@ for (const snippet of [
   "npm test",
   "npm run reviewer-kit",
   "npm run check:whitespace",
-  "npm run test:replay"
+  "npm run test:replay",
+  "npm run test:conformance"
 ]) {
   assert.match(workflow, new RegExp(snippet.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 }
