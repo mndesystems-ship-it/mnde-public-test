@@ -9,10 +9,14 @@
 // endpoints. The decision/receipt/replay/authority/policy paths are untouched.
 
 import assert from "node:assert/strict";
-import { dirname, resolve } from "node:path";
+import { generateKeyPairSync, sign } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { startMndeSidecar } from "../executor/sidecar-harness.mjs";
+import { buildAuthorityBundle, generateAuthorityKeyPair } from "../src/custody/index.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -26,6 +30,52 @@ async function test(name, fn) {
     results.push(false);
     console.log(`  [FAIL] ${name}: ${error.message}`);
   }
+}
+
+function writeProductionCustody(dir) {
+  const root = { keyId: "prod-root", ...generateAuthorityKeyPair() };
+  const receipt = { keyId: "prod-receipt-1", ...generateAuthorityKeyPair() };
+  const bundle = buildAuthorityBundle({
+    authorityId: "acme-prod-dashboard",
+    issuedAt: "2026-06-14T00:00:00.000Z",
+    notAfter: "2099-01-01T00:00:00.000Z",
+    root,
+    receiptKeys: [{ keyId: receipt.keyId, publicPem: receipt.publicPem, validFrom: "2020-01-01T00:00:00.000Z", validUntil: "2099-01-01T00:00:00.000Z" }]
+  });
+  const bundlePath = join(dir, "authority.bundle.json");
+  const keyPath = join(dir, "receipt.key.pem");
+  writeFileSync(bundlePath, JSON.stringify(bundle), "utf8");
+  writeFileSync(keyPath, receipt.privatePem, "utf8");
+  return {
+    MNDE_PROFILE: "production",
+    MNDE_RECEIPT_SIGNING_MODE: "custody",
+    MNDE_KEY_CUSTODY: "file-backed-production",
+    MNDE_AUTHORITY_BUNDLE: bundlePath,
+    MNDE_RECEIPT_SIGNING_KEY: keyPath,
+    MNDE_RECEIPT_KEY_ID: receipt.keyId
+  };
+}
+
+function authorityAssertion(privateKey, overrides = {}) {
+  const now = Date.now();
+  const nonce = `nonce-${now}-${Math.random().toString(36).slice(2).padEnd(24, "x")}`;
+  const payload = {
+    issuer: "mnde-desktop",
+    audience: "mnde-sidecar",
+    subject: "auditor-1",
+    nonce,
+    session_id: `session-${nonce}`,
+    issued_at: now - 1000,
+    expires_at: now + 60_000,
+    roles: ["AUDITOR"],
+    capabilities: ["inspect_receipts", "replay_decisions", "export_audit", "view_dashboard"],
+    display_name: "Auditor",
+    provider: "test",
+    ...overrides
+  };
+  const payloadPart = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  const signaturePart = sign(null, Buffer.from(payloadPart, "utf8"), privateKey).toString("base64url");
+  return `${payloadPart}.${signaturePart}`;
 }
 
 async function main() {
@@ -98,6 +148,56 @@ async function main() {
     });
   } finally {
     await sc.stop();
+  }
+
+  const prodDir = mkdtempSync(join(tmpdir(), "mnde-dashboard-prod-"));
+  let prod = null;
+  try {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const publicDer = publicKey.export({ format: "der", type: "spki" });
+    const auditLog = join(prodDir, "auth-audit.jsonl");
+    prod = await startMndeSidecar({
+      url: "http://127.0.0.1:8796",
+      env: {
+        ...writeProductionCustody(prodDir),
+        MNDE_BIND_PORT: "8796",
+        MNDE_AUTH_ASSERTION_PUBLIC_KEY_B64: Buffer.from(publicDer).subarray(-32).toString("base64url"),
+        MNDE_AUTH_AUDIT_LOG: auditLog,
+        MNDE_AUTH_NONCE_CACHE: join(prodDir, "auth-nonces.json")
+      }
+    });
+
+    await test("production keeps health and readiness open", async () => {
+      for (const ep of ["/healthz", "/readyz"]) {
+        const res = await fetch(`${prod.url}${ep}`);
+        assert.equal(res.status, 200, `${ep} should stay open`);
+      }
+    });
+
+    await test("production read endpoints require authority assertion and create audit evidence", async () => {
+      const sensitiveReads = ["/", "/dashboard", "/identity", "/metrics", "/receipts/recent", "/policy/current", "/capabilities"];
+      for (const ep of sensitiveReads) {
+        const res = await fetch(`${prod.url}${ep}`);
+        assert.equal(res.status, 403, `${ep} must reject unauthenticated production reads`);
+      }
+      const lines = readFileSync(auditLog, "utf8").trim().split(/\n/).filter(Boolean).map((line) => JSON.parse(line));
+      assert.ok(lines.length >= sensitiveReads.length, "unauthorized production reads must be audited");
+      for (const record of lines.slice(-sensitiveReads.length)) {
+        assert.equal(record.result, "REFUSE");
+        assert.equal(record.reason, "ERR_AUTH_REQUIRED");
+      }
+    });
+
+    await test("production read endpoint accepts valid authority assertion", async () => {
+      const assertion = authorityAssertion(privateKey, { capabilities: ["view_runtime"], roles: ["OPERATOR"] });
+      const res = await fetch(`${prod.url}/identity`, { headers: { "x-mnde-authority-assertion": assertion } });
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.schema_version, "mnde.sidecar_identity.v1");
+    });
+  } finally {
+    if (prod) await prod.stop();
+    rmSync(prodDir, { recursive: true, force: true });
   }
 
   const failed = results.filter((ok) => !ok).length;

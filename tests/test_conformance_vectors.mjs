@@ -14,6 +14,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const conformanceRoot = join(repoRoot, "conformance");
 const manifestPath = join(conformanceRoot, "manifest.json");
 const manifestLockPath = join(conformanceRoot, "manifest.lock.json");
+const attributesPath = join(repoRoot, ".gitattributes");
 const requiredSchemas = new Set([
   "ecs.receipt.v2",
   "mnde.pe.receipt.v1",
@@ -27,6 +28,11 @@ function sha256Hex(raw) {
 }
 
 assert.equal(existsSync(manifestPath), true, "conformance/manifest.json is missing");
+assert.equal(existsSync(attributesPath), true, ".gitattributes is missing");
+const attributes = readFileSync(attributesPath, "utf8");
+assert.match(attributes, /^\*\s+text=auto\s+eol=lf$/m, ".gitattributes must force LF for text files");
+assert.match(attributes, /^conformance\/\*\*\s+text\s+eol=lf$/m, ".gitattributes must force LF for conformance files");
+
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 assert.equal(manifest.schema_version, "mnde.conformance.manifest.v1");
 assert.ok(Array.isArray(manifest.vectors), "manifest.vectors must be an array");
@@ -61,6 +67,10 @@ for (const vector of manifest.vectors) {
   assert.equal(existsSync(filePath), true, `${vector.path} is missing`);
   const raw = readFileSync(filePath, "utf8");
   assert.equal(sha256Hex(raw), vector.sha256, `${vector.path} hash drifted`);
+  assert.equal(raw.includes("\r\n"), false, `${vector.path} must be LF-only in the working tree`);
+  if (raw.includes("\n")) {
+    assert.notEqual(sha256Hex(raw.replaceAll("\n", "\r\n")), vector.sha256, `${vector.path} CRLF drift must be detected`);
+  }
 
   const parsed = JSON.parse(raw);
   assert.equal(parsed.schema_version, vector.schema_version, `${vector.path} schema mismatch`);

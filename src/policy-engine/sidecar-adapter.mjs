@@ -17,29 +17,7 @@ function loadJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
-// Load decision-engine config. Fails closed (ok:false) on any malformed/missing
-// configured file, so the sidecar can refuse rather than silently run unprotected.
-export function loadPolicyEngineConfig(env) {
-  // Signed bundles are opt-in. The legacy MNDE_PE_POLICY path stays unchanged
-  // unless an operator explicitly supplies a bundle path.
-  if (env.MNDE_PE_POLICY_BUNDLE) {
-    const signed = loadSignedPolicyBundleConfig(env);
-    if (!signed.ok) return signed;
-    return {
-      ok: true,
-      policy: signed.policy,
-      signedPolicyBundle: signed.signedPolicyBundle,
-      policyBundleProvenance: signed.policyBundleProvenance
-    };
-  }
-  const policyPath = env.MNDE_PE_POLICY;
-  if (!policyPath) return { ok: false, reason: "MNDE_PE_POLICY is required when MNDE_DECISION_ENGINE=policy-engine" };
-  let policy;
-  try {
-    policy = loadJson(policyPath);
-  } catch (error) {
-    return { ok: false, reason: `policy load failed: ${error?.message ?? String(error)}` };
-  }
+function loadOptionalTrustConfig(env) {
   let trustAnchors;
   if (env.MNDE_PE_TRUST_ANCHORS) {
     try {
@@ -56,7 +34,42 @@ export function loadPolicyEngineConfig(env) {
       return { ok: false, reason: `approval trust anchors load failed: ${error?.message ?? String(error)}` };
     }
   }
-  return { ok: true, policy, trustAnchors, approvalTrustAnchors };
+  return { ok: true, trustAnchors, approvalTrustAnchors };
+}
+
+// Load decision-engine config. Fails closed (ok:false) on any malformed/missing
+// configured file, so the sidecar can refuse rather than silently run unprotected.
+export function loadPolicyEngineConfig(env) {
+  const production = env.MNDE_PROFILE === "production";
+  // Signed bundles are opt-in. The legacy MNDE_PE_POLICY path stays unchanged
+  // unless an operator explicitly supplies a bundle path.
+  if (env.MNDE_PE_POLICY_BUNDLE) {
+    const signed = loadSignedPolicyBundleConfig(env);
+    if (!signed.ok) return signed;
+    const trustConfig = loadOptionalTrustConfig(env);
+    if (!trustConfig.ok) return trustConfig;
+    return {
+      ok: true,
+      production,
+      policy: signed.policy,
+      signedPolicyBundle: signed.signedPolicyBundle,
+      policyBundleProvenance: signed.policyBundleProvenance,
+      trustAnchors: trustConfig.trustAnchors,
+      approvalTrustAnchors: trustConfig.approvalTrustAnchors
+    };
+  }
+  if (production) return { ok: false, reason: "ERR_PE_PRODUCTION_REQUIRES_SIGNED_POLICY_BUNDLE" };
+  const policyPath = env.MNDE_PE_POLICY;
+  if (!policyPath) return { ok: false, reason: "MNDE_PE_POLICY is required when MNDE_DECISION_ENGINE=policy-engine" };
+  let policy;
+  try {
+    policy = loadJson(policyPath);
+  } catch (error) {
+    return { ok: false, reason: `policy load failed: ${error?.message ?? String(error)}` };
+  }
+  const trustConfig = loadOptionalTrustConfig(env);
+  if (!trustConfig.ok) return trustConfig;
+  return { ok: true, production, policy, trustAnchors: trustConfig.trustAnchors, approvalTrustAnchors: trustConfig.approvalTrustAnchors };
 }
 
 // Accept either a native policy-engine request or the legacy decision envelope.
@@ -93,6 +106,7 @@ export function decidePolicyEngine(body, config, options = {}) {
   const receipt = buildPolicyReceipt(request, config.policy, {
     authorities,
     trustAnchors: config.trustAnchors,
+    rejectLegacyAuthorities: config.production,
     approvals,
     approvalTrustAnchors: config.approvalTrustAnchors,
     policyBundleProvenance: config.policyBundleProvenance,

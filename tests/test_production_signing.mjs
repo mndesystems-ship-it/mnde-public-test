@@ -109,25 +109,36 @@ async function main() {
   await test("custody receipt verifies successfully against its bundle (attestation)", () => {
     const { provider, bundle } = makeProvider();
     const out = signReceiptForDelivery(sampleInner(), { mode: "custody", provider }, { now: NOW });
-    const v = verifyCustodyAttestation(out.receipt, { authorityBundle: bundle, now: NOW });
+    const v = verifyCustodyAttestation(out.receipt, { authorityBundle: bundle, trustedRootFingerprint: bundle.root_key.fingerprint, now: NOW });
     assert.equal(v.ok, true);
     assert.equal(v.signing_key_id, "prod-receipt-1");
+  });
+
+  await test("custody verification without a trusted root pin fails closed", () => {
+    const { provider, bundle } = makeProvider();
+    const out = signReceiptForDelivery(realPolicyReceipt(), { mode: "custody", provider }, { now: NOW });
+    const v = verifyAnyReceiptObject(out.receipt, { authorityBundle: bundle, now: NOW });
+    assert.equal(v.kind, "custody-signed");
+    assert.equal(v.verified, false);
+    assert.match(v.reason, /MISSING_TRUSTED_ROOT/);
+    assert.notEqual(v.custody.trust_chain, "VALID");
   });
 
   await test("full custody envelope (real PE inner) verifies through the unified verifier", () => {
     const { provider, bundle } = makeProvider();
     const out = signReceiptForDelivery(realPolicyReceipt(), { mode: "custody", provider }, { now: NOW });
-    const v = verifyAnyReceiptObject(out.receipt, { authorityBundle: bundle, now: NOW });
+    const v = verifyAnyReceiptObject(out.receipt, { authorityBundle: bundle, trustedRootFingerprint: bundle.root_key.fingerprint, now: NOW });
     assert.equal(v.kind, "custody-signed");
     assert.equal(v.verified, true, v.reason ?? "");
     assert.equal(v.custody.trust_chain, "VALID");
+    assert.equal(v.custody.trust_source, "ROOT_PINNED_AUTHORITY_BUNDLE");
   });
 
   await test("receipt verifies against the exported published bundle", () => {
     const { provider } = makeProvider();
     const exported = provider.getPublicBundle(); // what `authority-bundle:export` writes
     const out = signReceiptForDelivery(sampleInner(), { mode: "custody", provider }, { now: NOW });
-    assert.equal(verifyCustodyAttestation(out.receipt, { authorityBundle: exported, now: NOW }).ok, true);
+    assert.equal(verifyCustodyAttestation(out.receipt, { authorityBundle: exported, trustedRootFingerprint: exported.root_key.fingerprint, now: NOW }).ok, true);
   });
 
   // ── failure matrix ─────────────────────────────────────────────────────────
@@ -135,7 +146,7 @@ async function main() {
     const { provider } = makeProvider();
     const other = makeProvider().bundle;
     const out = signReceiptForDelivery(sampleInner(), { mode: "custody", provider }, { now: NOW });
-    const v = verifyCustodyAttestation(out.receipt, { authorityBundle: other, now: NOW });
+    const v = verifyCustodyAttestation(out.receipt, { authorityBundle: other, trustedRootFingerprint: other.root_key.fingerprint, now: NOW });
     assert.equal(v.ok, false);
     assert.match(v.reason, /fingerprint mismatch|UNKNOWN_KEY|bundle:/);
   });
@@ -157,7 +168,7 @@ async function main() {
       receiptKeys: [{ keyId: receipt.keyId, publicPem: receipt.publicPem, validFrom: "2026-01-01T00:00:00.000Z", validUntil: "2027-01-01T00:00:00.000Z" }],
       revocation: [good.receipt.custody_attestation.signing_key_id]
     });
-    assert.equal(verifyCustodyAttestation(good.receipt, { authorityBundle: revokedBundle, now: NOW }).reason, "KEY_REVOKED");
+    assert.equal(verifyCustodyAttestation(good.receipt, { authorityBundle: revokedBundle, trustedRootFingerprint: revokedBundle.root_key.fingerprint, now: NOW }).reason, "KEY_REVOKED");
   });
 
   await test("receipt fails against an expired key", () => {
@@ -179,7 +190,7 @@ async function main() {
     const out = signReceiptForDelivery(sampleInner(), { mode: "custody", provider }, { now: NOW });
     const tampered = structuredClone(bundle);
     tampered.authority_id = "attacker";
-    const v = verifyCustodyAttestation(out.receipt, { authorityBundle: tampered, now: NOW });
+    const v = verifyCustodyAttestation(out.receipt, { authorityBundle: tampered, trustedRootFingerprint: bundle.root_key.fingerprint, now: NOW });
     assert.equal(v.ok, false);
     assert.match(v.reason, /BUNDLE_SIGNATURE_INVALID/);
   });
@@ -188,14 +199,14 @@ async function main() {
     const { provider, bundle } = makeProvider();
     const out = signReceiptForDelivery(sampleInner(), { mode: "custody", provider }, { now: NOW });
     out.receipt.custody_attestation.signature.value = out.receipt.custody_attestation.signature.value.replace(/^../, "00");
-    assert.equal(verifyCustodyAttestation(out.receipt, { authorityBundle: bundle, now: NOW }).reason, "SIGNATURE_INVALID");
+    assert.equal(verifyCustodyAttestation(out.receipt, { authorityBundle: bundle, trustedRootFingerprint: bundle.root_key.fingerprint, now: NOW }).reason, "SIGNATURE_INVALID");
   });
 
   await test("receipt fails when the inner receipt is tampered (hash mismatch)", () => {
     const { provider, bundle } = makeProvider();
     const out = signReceiptForDelivery(sampleInner(), { mode: "custody", provider }, { now: NOW });
     out.receipt.receipt.request_hash = "tampered";
-    assert.equal(verifyCustodyAttestation(out.receipt, { authorityBundle: bundle, now: NOW }).reason, "receipt hash mismatch");
+    assert.equal(verifyCustodyAttestation(out.receipt, { authorityBundle: bundle, trustedRootFingerprint: bundle.root_key.fingerprint, now: NOW }).reason, "receipt hash mismatch");
   });
 
   // ── fail closed on config ──────────────────────────────────────────────────
@@ -236,7 +247,7 @@ async function main() {
   await test("custody envelope with malformed inner receipt fails closed", () => {
     const { provider, bundle } = makeProvider();
     const out = signReceiptForDelivery(sampleInner(), { mode: "custody", provider }, { now: NOW });
-    const v = verifyAnyReceiptObject(out.receipt, { authorityBundle: bundle, now: NOW });
+    const v = verifyAnyReceiptObject(out.receipt, { authorityBundle: bundle, trustedRootFingerprint: bundle.root_key.fingerprint, now: NOW });
     assert.equal(v.kind, "custody-signed");
     assert.equal(v.verified, false);
     assert.match(v.reason, /inner receipt: verification error/);
@@ -290,7 +301,7 @@ async function main() {
         // Verify offline against the published bundle (as a third party would).
         const rPath = join(dir, "live-receipt.json");
         writeFileSync(rPath, JSON.stringify(body.receipt), "utf8");
-        const v = verifyAnyReceiptFile(rPath, { authorityBundle: bundle });
+        const v = verifyAnyReceiptFile(rPath, { authorityBundle: bundle, trustedRootFingerprint: bundle.root_key.fingerprint });
         assert.equal(v.kind, "custody-signed");
         assert.equal(v.verified, true, v.reason ?? "");
 

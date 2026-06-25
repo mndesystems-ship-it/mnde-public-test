@@ -193,6 +193,7 @@ export function verifyCustodyAttestation(envelope, options = {}) {
     decision: attestation.decision,
     signing_key_id,
     authority_fingerprint: attestation.authority_bundle_fingerprint,
+    trust_source: "ROOT_PINNED_AUTHORITY_BUNDLE",
     signed_at: attestation.signed_at,
     receipt_hash: attestation.receipt_hash
   };

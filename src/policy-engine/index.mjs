@@ -276,6 +276,9 @@ export function evaluatePolicyRequest(request, policy, options = {}) {
     const trustAnchors = options.trustAnchors;
     let effectiveAuthorities = authorities;
     const rejectedById = {};
+    if (options.rejectLegacyAuthorities && authorities.length > 0 && !trustAnchors) {
+      return buildDecision("REFUSE", "ERR_PE_LEGACY_AUTHORITY_REFUSED", decisionContext);
+    }
     if (trustAnchors) {
       const policyTrust = verifyPolicyTrust(policy, trustAnchors);
       if (!policyTrust.ok) return buildDecision("REFUSE", policyTrust.reason, decisionContext);

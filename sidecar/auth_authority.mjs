@@ -10,6 +10,13 @@ export const ROLE_CAPABILITIES = {
 };
 
 const SENSITIVE_PATHS = new Map([
+  ["/", "view_dashboard"],
+  ["/dashboard", "view_dashboard"],
+  ["/identity", "view_runtime"],
+  ["/metrics", "view_runtime"],
+  ["/policy/current", "view_runtime"],
+  ["/capabilities", "view_runtime"],
+  ["/receipts/recent", "inspect_receipts"],
   ["/policy/activate", "activate_policy"],
   ["/audit/bundle", "export_audit"],
   ["/replay/recent", "replay_decisions"],

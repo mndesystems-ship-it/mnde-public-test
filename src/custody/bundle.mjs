@@ -82,7 +82,8 @@ export function verifyAuthorityBundle(bundle, options = {}) {
   const root = bundle.root_key;
   if (!isObject(root) || typeof root.public_key !== "string" || typeof root.fingerprint !== "string") return { ok: false, reason: "MALFORMED_BUNDLE" };
   if (fingerprintOf(root.public_key) !== root.fingerprint) return { ok: false, reason: "ROOT_FINGERPRINT_MISMATCH" };
-  if (options.trustedRootFingerprint && root.fingerprint !== options.trustedRootFingerprint) return { ok: false, reason: "UNTRUSTED_ROOT" };
+  if (typeof options.trustedRootFingerprint !== "string" || options.trustedRootFingerprint.length === 0) return { ok: false, reason: "MISSING_TRUSTED_ROOT" };
+  if (root.fingerprint !== options.trustedRootFingerprint) return { ok: false, reason: "UNTRUSTED_ROOT" };
 
   const signature = bundle.signature;
   if (!isObject(signature) || signature.algorithm !== "ED25519" || typeof signature.value !== "string") return { ok: false, reason: "UNSIGNED_BUNDLE" };

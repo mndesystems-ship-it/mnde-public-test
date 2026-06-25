@@ -64,7 +64,7 @@ function verifyReceiptSignatureWithAuthorityBundle(receipt, signature, options =
   }
   const ok = verifyReceiptPayloadSignature(canonicalPayloadWithoutSignature(receipt), signature.value, keyResult.publicKey);
   return ok
-    ? { verified: true, reason: null }
+    ? { verified: true, reason: null, trust_source: "ROOT_PINNED_AUTHORITY_BUNDLE" }
     : { verified: false, reason: "signature invalid" };
 }
 
@@ -75,7 +75,7 @@ export function buildPolicyReceipt(request, policy, options = {}) {
   const approvalTrustAnchors = options.approvalTrustAnchors;
   const approvalEnforced = Boolean(approvalTrustAnchors);
   const approvals = Array.isArray(options.approvals) ? options.approvals : [];
-  const decision = evaluatePolicyRequest(request, policy, { authorities, now: options.now, trustAnchors, approvals, approvalTrustAnchors });
+  const decision = evaluatePolicyRequest(request, policy, { authorities, now: options.now, trustAnchors, rejectLegacyAuthorities: options.rejectLegacyAuthorities, approvals, approvalTrustAnchors });
   const policyBundleProvenance = options.policyBundleProvenance;
   if (policyBundleProvenance !== undefined && !isBundleProvenance(policyBundleProvenance, decision.policy_hash)) {
     throw new Error("ERR_POLICY_BUNDLE_PROVENANCE_INVALID");
@@ -170,6 +170,7 @@ export function verifyPolicyReceipt(receipt, options = {}) {
       ? {
         verified: true,
         reason: null,
+        trust_source: authorityBundleSignature.trust_source,
         decision: original.decision,
         reason_code: original.reason_code,
         ...(receipt.policy_bundle_provenance ? { policy_bundle_provenance: structuredClone(receipt.policy_bundle_provenance) } : {})
@@ -187,6 +188,7 @@ export function verifyPolicyReceipt(receipt, options = {}) {
     ? {
       verified: true,
       reason: null,
+      trust_source: "REPO_LOCAL_AUTHORITY",
       decision: original.decision,
       reason_code: original.reason_code,
       ...(receipt.policy_bundle_provenance ? { policy_bundle_provenance: structuredClone(receipt.policy_bundle_provenance) } : {})

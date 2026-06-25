@@ -92,7 +92,7 @@ async function main() {
         assert.equal(cfg.signer_mode, "external-signer");
         const out = signReceiptForDelivery(sampleInner(), cfg, { now: NOW });
         assert.equal(out.ok, true, out.detail);
-        const v = verifyCustodyAttestation(out.receipt, { authorityBundle: fx.bundle, now: NOW });
+        const v = verifyCustodyAttestation(out.receipt, { authorityBundle: fx.bundle, trustedRootFingerprint: fx.bundle.root_key.fingerprint, now: NOW });
         assert.equal(v.ok, true, v.reason);
         assert.equal(v.signing_key_id, "receipt-1");
       });

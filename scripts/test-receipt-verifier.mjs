@@ -1,7 +1,9 @@
 #!/usr/bin/env node
+import assert from "node:assert/strict";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { verifyReceiptPayloadSignature } from "../shared/receipt-signing.ts";
 import { verificationPassed, verifyReceiptFile } from "../tools/verify-receipt.mjs";
 
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -25,5 +27,11 @@ for (const [name, expectedVerified] of cases) {
     process.exit(1);
   }
 }
+
+assert.throws(
+  () => verifyReceiptPayloadSignature("payload", "00"),
+  /ERR_RECEIPT_VERIFICATION_KEY_REQUIRED/,
+  "receipt signature verification must require an explicit public key"
+);
 
 console.log("PASS receipt verifier tests");

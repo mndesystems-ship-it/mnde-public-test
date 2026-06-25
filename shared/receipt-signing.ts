@@ -4,15 +4,9 @@ import { AUTHORITY_ID, RECEIPT_KEY_ID } from "./authority-manifest.mjs";
 
 const PRIVATE_KEY_URL = new URL("./receipt_keys/receipt_signing_private.pem", import.meta.url);
 const PUBLIC_KEY_URL = new URL("./receipt_keys/receipt_signing_public.pem", import.meta.url);
-const FALLBACK_PUBLIC_KEY_PEM = [
-  "-----BEGIN PUBLIC KEY-----",
-  "MCowBQYDK2VwAyEAPa7aWBEmje8lfVbjSpT9eTTYu06z1iXm+Dy8EG5VYzA=",
-  "-----END PUBLIC KEY-----",
-  ""
-].join("\n");
-const PUBLIC_KEY_PEM = existsSync(PUBLIC_KEY_URL) ? readFileSync(PUBLIC_KEY_URL, "utf8") : FALLBACK_PUBLIC_KEY_PEM;
-const PUBLIC_KEY_OBJECT = createPublicKey(PUBLIC_KEY_PEM);
-const PUBLIC_KEY_DER = PUBLIC_KEY_OBJECT.export({ format: "der", type: "spki" });
+const PUBLIC_KEY_PEM = existsSync(PUBLIC_KEY_URL) ? readFileSync(PUBLIC_KEY_URL, "utf8") : "";
+const PUBLIC_KEY_OBJECT = PUBLIC_KEY_PEM ? createPublicKey(PUBLIC_KEY_PEM) : null;
+const PUBLIC_KEY_DER = PUBLIC_KEY_OBJECT?.export({ format: "der", type: "spki" }) ?? Buffer.alloc(0);
 
 export const RECEIPT_PUBLIC_KEY_PEM = PUBLIC_KEY_PEM;
 export const RECEIPT_SIGNATURE_ALGORITHM = "ED25519";
@@ -53,7 +47,10 @@ export function signReceiptPayload(payload: string): string {
   return sign(null, Buffer.from(payload, "utf8"), privateKeyObject).toString("hex");
 }
 
-export function verifyReceiptPayloadSignature(payload: string, signatureHex: string, publicKeyPem = RECEIPT_PUBLIC_KEY_PEM): boolean {
+export function verifyReceiptPayloadSignature(payload: string, signatureHex: string, publicKeyPem?: string): boolean {
+  if (typeof publicKeyPem !== "string" || publicKeyPem.trim().length === 0) {
+    throw new Error("ERR_RECEIPT_VERIFICATION_KEY_REQUIRED");
+  }
   const publicKey = createPublicKey(publicKeyPem);
   return verify(null, Buffer.from(payload, "utf8"), publicKey, Buffer.from(signatureHex, "hex"));
 }

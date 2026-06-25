@@ -42,7 +42,7 @@ export function verifyAnyReceiptObject(receipt, options = {}) {
         trustedRootFingerprint: options.trustedRootFingerprint,
         now: options.now
       });
-      return { kind: "policy-engine", verified: result.verified, reason: result.reason, decision: result.decision };
+      return { kind: "policy-engine", verified: result.verified, reason: result.reason, decision: result.decision, trust_source: result.trust_source };
     }
     // Legacy pipeline verifier is file-based; round-trip the object through a temp file.
     const dir = mkdtempSync(join(tmpdir(), "mnde-verify-"));
@@ -50,7 +50,7 @@ export function verifyAnyReceiptObject(receipt, options = {}) {
       const file = join(dir, "receipt.json");
       writeFileSync(file, `${JSON.stringify(receipt, null, 2)}\n`, "utf8");
       const report = verifyReceiptFile(file);
-      return { kind: "pipeline", verified: verificationPassed(report), report };
+      return { kind: "pipeline", verified: verificationPassed(report), report, trust_source: "REPO_LOCAL_AUTHORITY" };
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -86,9 +86,10 @@ export function verifySignedEnvelope(envelope, options = {}) {
     reason,
     decision: attest.decision,
     custody: attest.ok
-      ? { key_id: attest.signing_key_id, authority_fingerprint: attest.authority_fingerprint, trust_chain: "VALID", revocation: "NOT_REVOKED", signed_at: attest.signed_at }
+      ? { key_id: attest.signing_key_id, authority_fingerprint: attest.authority_fingerprint, trust_chain: "VALID", trust_source: attest.trust_source, revocation: "NOT_REVOKED", signed_at: attest.signed_at }
       : { trust_chain: "INVALID" },
     inner,
+    trust_source: attest.ok ? attest.trust_source : undefined,
     verified_at: new Date().toISOString()
   };
 }
@@ -142,14 +143,18 @@ function main() {
   process.stdout.write(`Receipt:  ${filePath}\n`);
   process.stdout.write(`Type:     ${result.kind}\n`);
   if (result.decision) process.stdout.write(`Decision: ${result.decision}\n`);
+  if (result.trust_source) process.stdout.write(`Trust source: ${result.trust_source}\n`);
   if (result.custody) {
     process.stdout.write(`Key id:      ${result.custody.key_id ?? "-"}\n`);
     process.stdout.write(`Authority:   ${result.custody.authority_fingerprint ?? "-"}\n`);
     process.stdout.write(`Trust chain: ${result.custody.trust_chain}\n`);
+    if (result.custody.trust_source) process.stdout.write(`Custody trust source: ${result.custody.trust_source}\n`);
     process.stdout.write(`Revocation:  ${result.custody.revocation ?? "-"}\n`);
   }
+  if (result.inner?.trust_source) process.stdout.write(`Inner trust source: ${result.inner.trust_source}\n`);
   if (result.verified_at) process.stdout.write(`Verified at: ${result.verified_at}\n`);
-  process.stdout.write(`FINAL VERDICT: ${result.verified ? "VERIFIED" : "FAILED"}${result.reason ? ` (${result.reason})` : ""}\n`);
+  const repoLocalQualifier = result.verified && result.trust_source === "REPO_LOCAL_AUTHORITY" ? " (REPO_LOCAL_TRUST_ONLY)" : "";
+  process.stdout.write(`FINAL VERDICT: ${result.verified ? `VERIFIED${repoLocalQualifier}` : "FAILED"}${result.reason ? ` (${result.reason})` : ""}\n`);
   process.exit(result.verified ? 0 : 1);
 }
 

@@ -283,6 +283,7 @@ const { loadAuthConfig, authenticate } = await import("./src/sidecar-auth/index.
 const AUTH = loadAuthConfig(process.env);
 const AUTH_MODE = AUTH.mode;
 const AUTH_CONFIG_ERROR = AUTH.ok ? null : AUTH.reason;
+const RUNTIME_PROFILE = process.env.MNDE_PROFILE === "production" ? "production" : "local";
 if (AUTH_MODE === "bearer") {
   process.stdout.write(`MNDe caller auth: bearer${AUTH_CONFIG_ERROR ? ` (CONFIG ERROR: ${AUTH_CONFIG_ERROR})` : ` (${AUTH.tokens.size} token(s))`}\n`);
 }
@@ -575,6 +576,17 @@ function authorizeRequest(req, pathname, target = null) {
   const authz = authorizeAuthorityAction(pathname, parseAuthorityAssertion(req.headers));
   if (!authz.ok) auditAuthority(pathname, authz, "REFUSE", target, null, authz.reason);
   return authz;
+}
+
+function authorizeProductionRead(req, res, pathname, target) {
+  if (RUNTIME_PROFILE !== "production") return true;
+  const authz = authorizeRequest(req, pathname, target);
+  if (!authz.ok) {
+    response(res, 403, refusalBody(authz.reason, authz.actor, target));
+    return false;
+  }
+  auditAuthority(pathname, authz, "ALLOW", target, null, null);
+  return true;
 }
 
 // Policy-engine decision path (opt-in). Fails closed on config errors or engine
@@ -1078,6 +1090,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (req.method === "GET" && pathname === "/identity") {
+    if (!authorizeProductionRead(req, res, pathname, "identity")) return;
     response(res, 200, {
       schema_version: "mnde.sidecar_identity.v1",
       repo_root: REPO_ROOT,
@@ -1099,6 +1112,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (req.method === "GET" && pathname === "/metrics") {
+    if (!authorizeProductionRead(req, res, pathname, "metrics")) return;
     const queueMetrics = receiptQueue.metrics();
     const workerMetrics = workerPool.metrics();
     const body = Buffer.from(metricsText(queueMetrics, workerMetrics), "utf8");
@@ -1121,6 +1135,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (req.method === "GET" && pathname === "/receipts/recent") {
+    if (!authorizeProductionRead(req, res, pathname, "receipts.recent")) return;
     response(res, 200, recentReceiptsForApi(new URL(req.url, `http://${HOST}:${PORT}`)));
     return;
   }
@@ -1151,6 +1166,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (req.method === "GET" && pathname === "/policy/current") {
+    if (!authorizeProductionRead(req, res, pathname, "policy.current")) return;
     response(res, 200, currentPolicyResponse());
     return;
   }
@@ -1175,10 +1191,12 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (req.method === "GET" && (pathname === "/" || pathname === "/dashboard")) {
+    if (!authorizeProductionRead(req, res, pathname, "dashboard")) return;
     serveDashboard(req, res);
     return;
   }
   if (req.method === "GET" && pathname === "/capabilities") {
+    if (!authorizeProductionRead(req, res, pathname, "capabilities")) return;
     response(res, 200, buildCapabilityObject({
       health: true,
       ready: true,

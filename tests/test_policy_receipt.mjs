@@ -180,6 +180,7 @@ test("repo-local policy receipt still verifies when no explicit bundle is suppli
   const out = verifyAnyReceiptObject(rec);
   assert.equal(out.kind, "policy-engine");
   assert.equal(out.verified, true, out.reason ?? "");
+  assert.equal(out.trust_source, "REPO_LOCAL_AUTHORITY");
 });
 
 test("explicit PE authority bundle verifies with the matching trusted root pin", () => {
@@ -187,6 +188,7 @@ test("explicit PE authority bundle verifies with the matching trusted root pin",
   const out = verifyAnyReceiptObject(receipt, { authorityBundle, trustedRootFingerprint: rootFingerprint, now: explicitNow });
   assert.equal(out.kind, "policy-engine");
   assert.equal(out.verified, true, out.reason ?? "");
+  assert.equal(out.trust_source, "ROOT_PINNED_AUTHORITY_BUNDLE");
 });
 
 const failed = results.filter((ok) => !ok).length;
