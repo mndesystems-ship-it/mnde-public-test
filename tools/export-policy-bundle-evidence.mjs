@@ -47,6 +47,27 @@ function containsPrivateMaterial(value, path = "$") {
   return null;
 }
 
+// M1: policy_document fields must be explicitly export-safe. This allowlist is
+// the authoritative control for what policy content may be published as evidence;
+// the deep blocklist scan above is defense-in-depth, not the primary gate. The
+// export fails closed on any top-level policy field that is neither a known
+// structural field nor declared in policy_document.export_safe_fields.
+const POLICY_DOCUMENT_BASELINE = new Set(["policy_id", "schema_version", "version", "state", "rules", "export_safe_fields"]);
+
+function assertExportSafePolicyDocument(policyBundle) {
+  const policyDocument = policyBundle?.policy_document;
+  if (!isPlainObject(policyDocument)) fail("policy bundle has no policy_document object");
+  const declared = policyDocument.export_safe_fields;
+  if (declared !== undefined && (!Array.isArray(declared) || declared.some((field) => typeof field !== "string" || field.length === 0))) {
+    fail("policy_document.export_safe_fields must be an array of field names");
+  }
+  const allowed = new Set([...POLICY_DOCUMENT_BASELINE, ...(Array.isArray(declared) ? declared : [])]);
+  const offending = Object.keys(policyDocument).find((key) => !allowed.has(key));
+  if (offending) {
+    fail(`policy_document field '${offending}' is not export-safe; declare it in policy_document.export_safe_fields or remove it before exporting`);
+  }
+}
+
 function serialFloorSnapshot(state) {
   if (!isPlainObject(state) || state.schema_version !== "mnde.policy.bundle.state.v1" || state.mode !== "enforce" || !isPlainObject(state.serial_floors)) {
     fail("state is not a safe enforce-mode policy bundle state");
@@ -82,6 +103,8 @@ for (const [label, value] of [["receipt", receipt], ["policy bundle", policyBund
   const privateAt = containsPrivateMaterial(value);
   if (privateAt) fail(`${label} contains private or credential material at ${privateAt}`);
 }
+// Authoritative policy-content gate (M1): refuse undeclared policy fields.
+assertExportSafePolicyDocument(policyBundle);
 
 const target = resolve(outDir);
 if (existsSync(target)) fail(`output directory already exists: ${target}`);

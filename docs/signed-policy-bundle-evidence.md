@@ -31,3 +31,12 @@ FINAL VERDICT: VERIFIED
 ```
 
 When the optional historical bundle is supplied, verification checks the signed policy bundle, bundle identity, serial, policy hash, policy signing key, and rollback authorization reference. Without the optional bundle arguments, policy receipt verification keeps its existing replay and receipt-signature behavior.
+
+## Export-safe policy fields
+
+The export refuses any top-level `policy_document` field that is not a known structural field (`policy_id`, `schema_version`, `version`, `state`, `rules`) unless the policy author lists it in `policy_document.export_safe_fields`. This is the authoritative control over what policy content is published; the credential/secret scan is defense-in-depth, not the primary gate. Nested values are still deep-scanned for secret-like material.
+
+## Reviewer notes (intentional trust-model trade-offs)
+
+- **Provenance trust without the historical check is issuer-asserted.** A receipt's `policy_bundle_provenance` is included in the receipt's signed payload and is rejected unless its `policy_hash` matches the replayed policy, but it is only tied to an independently signed policy bundle when you run the optional historical verification (`--policy-bundle --policy-authority-bundle --policy-root-fingerprint`, which requires a pinned root fingerprint). Without it, the provenance is as trustworthy as the receipt signer. This is by design — run the historical check for independent assurance.
+- **A rollback authorization binds to `(policy_id, from_serial, to_serial)`, not to a specific bundle digest.** One approval-signed grant authorizes activating any validly policy-key-signed bundle at that serial. This is the intended two-key model: the policy key authenticates the bundle's content, and a separate approval key authenticates the serial rollback. Grants are single-use (a consumed `authorization_id` is recorded in state) and time-bounded.

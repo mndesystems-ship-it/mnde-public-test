@@ -60,7 +60,7 @@ function validateBundleShape(bundle) {
 }
 
 function defaultState() {
-  return { schema_version: POLICY_BUNDLE_STATE_SCHEMA, mode: "enforce", serial_floors: {}, serial_digests: {}, activation_events: [] };
+  return { schema_version: POLICY_BUNDLE_STATE_SCHEMA, mode: "enforce", serial_floors: {}, serial_digests: {}, consumed_rollback_authorizations: [], activation_events: [] };
 }
 
 function loadState(statePath) {
@@ -77,6 +77,13 @@ function loadState(statePath) {
   }
   if (Object.values(state.serial_floors).some((serial) => !Number.isSafeInteger(serial) || serial < 1)) return { ok: false, reason: "POLICY_BUNDLE_STATE_INVALID" };
   if (Object.values(state.serial_digests).some((bySerial) => !isObject(bySerial) || Object.entries(bySerial).some(([serial, digest]) => !/^\d+$/.test(serial) || typeof digest !== "string" || !/^[a-f0-9]{64}$/.test(digest)))) return { ok: false, reason: "POLICY_BUNDLE_STATE_INVALID" };
+  // Migration-safe (L1): older v1 state files predate single-use rollback
+  // tracking. An absent list is treated as empty; a present list must be an
+  // array of non-empty authorization ids.
+  if (state.consumed_rollback_authorizations !== undefined && (!Array.isArray(state.consumed_rollback_authorizations) || state.consumed_rollback_authorizations.some((id) => typeof id !== "string" || id.length === 0))) {
+    return { ok: false, reason: "POLICY_BUNDLE_STATE_INVALID" };
+  }
+  if (!Array.isArray(state.consumed_rollback_authorizations)) state.consumed_rollback_authorizations = [];
   return { ok: true, state };
 }
 
@@ -101,7 +108,7 @@ function writeState(statePath, state) {
 function rollbackAuthorized(bundle, floor, authorityBundle, now) {
   if (bundle.allow_rollback !== true) return { ok: false, reason: "POLICY_BUNDLE_SERIAL_ROLLBACK_REFUSED" };
   const grant = bundle.rollback_authorization;
-  if (!isObject(grant) || !isObject(grant.signature) || typeof grant.signing_key_id !== "string" || !isTimestamp(grant.issued_at) || !isTimestamp(grant.expires_at)) {
+  if (!isObject(grant) || !isObject(grant.signature) || typeof grant.signing_key_id !== "string" || typeof grant.authorization_id !== "string" || grant.authorization_id.length === 0 || !isTimestamp(grant.issued_at) || !isTimestamp(grant.expires_at)) {
     return { ok: false, reason: "POLICY_BUNDLE_ROLLBACK_AUTH_INVALID" };
   }
   if (grant.policy_id !== bundle.policy_id || grant.from_serial !== floor || grant.to_serial !== bundle.serial || Date.parse(grant.issued_at) > Date.parse(now) || Date.parse(grant.expires_at) <= Date.parse(now)) {
@@ -202,10 +209,18 @@ export function activateSignedPolicyBundle({ bundle, authorityBundle, trustedRoo
   if (bundle.serial < floor) {
     const rollback = rollbackAuthorized(bundle, floor, authorityBundle, now);
     if (!rollback.ok) return rollback;
+    // L1: a rollback authorization is single-use. Once consumed it can never
+    // authorize another rollback, even within its validity window.
+    if ((state.consumed_rollback_authorizations ?? []).includes(rollback.authorization_id)) {
+      return { ok: false, reason: "POLICY_BUNDLE_ROLLBACK_AUTH_REUSED" };
+    }
     rollbackAuthorizationId = rollback.authorization_id;
   }
 
   const next = structuredClone(state);
+  if (rollbackAuthorizationId !== null) {
+    next.consumed_rollback_authorizations = [...(next.consumed_rollback_authorizations ?? []), rollbackAuthorizationId];
+  }
   // The high-water mark is monotonic even when an explicitly authorized rollback
   // temporarily activates an older policy.
   next.serial_floors[bundle.policy_id] = Math.max(floor, bundle.serial);

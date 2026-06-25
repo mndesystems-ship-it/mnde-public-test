@@ -220,6 +220,70 @@ test("enforce mode refuses state written by a different mode", () => {
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
+test("a rollback authorization is single-use and cannot be replayed", () => {
+  const f = fixture();
+  try {
+    assert.equal(activate(signedBundle(7, "7.0.0", f), f).ok, true);
+    const grant = signRollbackAuthorization({
+      policy_id: "ops-policy", from_serial: 7, to_serial: 6, issued_at: NOW, expires_at: LATER, authorization_id: "rb-7-to-6"
+    }, { keyId: f.approvalKey.keyId, privateKeyPem: f.approvalKey.privatePem });
+    const rollbackBundle = signPolicyBundle({
+      bundle_id: "ops-policy-6-single-use", policy_id: "ops-policy", serial: 6, issued_at: NOW, allow_rollback: true,
+      policy_document: policy("6.0.0")
+    }, { keyId: f.policyKey.keyId, privateKeyPem: f.policyKey.privatePem });
+
+    const first = activate({ ...rollbackBundle, rollback_authorization: grant }, f);
+    assert.equal(first.ok, true, first.reason);
+    const state = JSON.parse(readFileSync(f.statePath, "utf8"));
+    assert.deepEqual(state.consumed_rollback_authorizations, ["rb-7-to-6"]);
+
+    // Re-presenting the exact same bundle + grant (digest matches, so the
+    // serial-reuse gate passes) is refused by the single-use check.
+    const second = activate({ ...rollbackBundle, rollback_authorization: grant }, f);
+    assert.equal(second.ok, false);
+    assert.equal(second.reason, "POLICY_BUNDLE_ROLLBACK_AUTH_REUSED");
+  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test("pre-existing v1 state without a consumed list migrates safely and supports rollback", () => {
+  const f = fixture();
+  try {
+    // An older v1 state file predates single-use tracking (no consumed list).
+    writeFileSync(f.statePath, JSON.stringify({
+      schema_version: "mnde.policy.bundle.state.v1", mode: "enforce",
+      serial_floors: { "ops-policy": 7 }, serial_digests: { "ops-policy": {} }, activation_events: []
+    }));
+    const grant = signRollbackAuthorization({
+      policy_id: "ops-policy", from_serial: 7, to_serial: 6, issued_at: NOW, expires_at: LATER, authorization_id: "migrated-rb"
+    }, { keyId: f.approvalKey.keyId, privateKeyPem: f.approvalKey.privatePem });
+    const rollbackBundle = signPolicyBundle({
+      bundle_id: "ops-policy-6-migrated", policy_id: "ops-policy", serial: 6, issued_at: NOW, allow_rollback: true,
+      policy_document: policy("6.0.0")
+    }, { keyId: f.policyKey.keyId, privateKeyPem: f.policyKey.privatePem });
+    const result = activate({ ...rollbackBundle, rollback_authorization: grant }, f);
+    assert.equal(result.ok, true, result.reason);
+    const state = JSON.parse(readFileSync(f.statePath, "utf8"));
+    assert.deepEqual(state.consumed_rollback_authorizations, ["migrated-rb"]);
+  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test("legacy bundle-off receipts carry no policy_bundle_provenance", () => {
+  const f = fixture();
+  try {
+    const policyPath = join(f.dir, "legacy-policy.json");
+    writeFileSync(policyPath, JSON.stringify(policy("legacy-9")));
+    const config = loadPolicyEngineConfig({ MNDE_PE_POLICY: policyPath });
+    assert.equal(config.ok, true, config.reason);
+    assert.equal(config.policyBundleProvenance, undefined);
+    const decision = decidePolicyEngine({
+      schema_version: "1.0", request_id: "legacy-receipt", timestamp: NOW,
+      principal: { id: "operator" }, agent: { id: "agent" }, tool: { tool_name: "read_status" },
+      parameters: {}, environment: {}, context: {}
+    }, config, { now: NOW });
+    assert.equal(decision.receipt.policy_bundle_provenance, undefined);
+  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});
+
 const failed = results.filter((ok) => !ok).length;
 console.log("");
 if (failed > 0) {
