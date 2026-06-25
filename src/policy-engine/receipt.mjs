@@ -42,16 +42,20 @@ function isBundleProvenance(value, policyHash) {
 }
 
 function verifyReceiptSignatureWithAuthorityBundle(receipt, signature, options = {}) {
+  const hasExplicitAuthorityBundle = Object.hasOwn(options, "authorityBundle") && options.authorityBundle !== undefined;
+  if (!hasExplicitAuthorityBundle) return null;
   const authorityBundle = options.authorityBundle;
-  if (!authorityBundle) return null;
-  if (authorityBundle.authority_id !== signature.authority_id) {
-    return null;
+  if (typeof options.trustedRootFingerprint !== "string" || options.trustedRootFingerprint.length === 0) {
+    return { verified: false, reason: "MISSING_TRUSTED_ROOT" };
   }
   const authority = verifyAuthorityBundle(authorityBundle, {
     trustedRootFingerprint: options.trustedRootFingerprint,
     now: options.now ?? signature.signed_at
   });
   if (!authority.ok) return { verified: false, reason: `authority bundle: ${authority.reason}` };
+  if (authorityBundle.authority_id !== signature.authority_id) {
+    return { verified: false, reason: "AUTHORITY_BUNDLE_MISMATCH" };
+  }
 
   const keyResult = findBundleKey(authorityBundle, "receipt", signature.key_id, signature.signed_at);
   if (!keyResult.ok) return { verified: false, reason: keyResult.reason };

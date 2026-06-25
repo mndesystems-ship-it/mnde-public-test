@@ -64,11 +64,20 @@ export function verifyAnyReceiptObject(receipt, options = {}) {
   }
 }
 
+function innerEnvelopeOptions(envelope, options = {}) {
+  if (envelope?.receipt?.schema_version !== POLICY_RECEIPT_SCHEMA) return options;
+  if (!Object.hasOwn(options, "authorityBundle") || options.authorityBundle === undefined) return options;
+  const innerAuthority = envelope.receipt?.verifiable_signature?.authority_id;
+  if (options.authorityBundle?.authority_id === innerAuthority) return options;
+  const { authorityBundle: _authorityBundle, trustedRootFingerprint: _trustedRootFingerprint, ...fallbackOptions } = options;
+  return fallbackOptions;
+}
+
 // Verify a custody-signed envelope: BOTH the inner receipt and the production
 // custody attestation must verify. Fails closed if the authority bundle is absent.
 export function verifySignedEnvelope(envelope, options = {}) {
   const attest = verifyCustodyAttestation(envelope, options);
-  const inner = attest.ok || envelope?.receipt ? verifyAnyReceiptObject(envelope?.receipt, options) : { verified: false, reason: "no inner receipt" };
+  const inner = attest.ok || envelope?.receipt ? verifyAnyReceiptObject(envelope?.receipt, innerEnvelopeOptions(envelope, options)) : { verified: false, reason: "no inner receipt" };
   const verified = Boolean(attest.ok) && Boolean(inner.verified);
   const reason = !attest.ok ? `attestation: ${attest.reason}` : (!inner.verified ? `inner receipt: ${inner.reason ?? "failed"}` : null);
   return {

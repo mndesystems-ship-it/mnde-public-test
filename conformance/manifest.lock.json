@@ -1,0 +1,41 @@
+{
+  "schema_version": "mnde.conformance.lock.v1",
+  "approved": {
+    "conformance_authority": "0c221b34dd8774140be53d3f23ffcafc95e418eecdbbc0a0d9ce8496adf49b2a",
+    "vectors": [
+      {
+        "id": "ecs-receipt-v2-allow",
+        "schema_version": "ecs.receipt.v2",
+        "path": "vectors/ecs.receipt.v2.allow.json",
+        "sha256": "55208c573cee660530f0ace28d79d20b262c9847446c349cbe52642734fa0461",
+        "expected_kind": "pipeline"
+      },
+      {
+        "id": "mnde-authority-bundle-v1",
+        "schema_version": "mnde.authority.bundle.v1",
+        "path": "vectors/mnde.authority.bundle.v1.json",
+        "sha256": "a958b555d6cadcbbf2e1ef2b857ba3086716ac428b35b6f92f7a22023f5f47f8"
+      },
+      {
+        "id": "mnde-policy-bundle-v1",
+        "schema_version": "mnde.policy.bundle.v1",
+        "path": "vectors/mnde.policy.bundle.v1.json",
+        "sha256": "292b1c75c8778a9a7b4ca6d5b72aa758e4dc03f25ead8c4ecd8f030b45081166"
+      },
+      {
+        "id": "mnde-pe-receipt-v1-allow",
+        "schema_version": "mnde.pe.receipt.v1",
+        "path": "vectors/mnde.pe.receipt.v1.allow.json",
+        "sha256": "d782dfcef804d22c02aad526cfa874bd36ee48020a7b8e45fb7922f41260d81f",
+        "expected_kind": "policy-engine"
+      },
+      {
+        "id": "mnde-signed-receipt-v1-pe-allow",
+        "schema_version": "mnde.signed-receipt.v1",
+        "path": "vectors/mnde.signed-receipt.v1.pe-allow.json",
+        "sha256": "7e76404608a8ff2bfccf88f8c40bec3f3efa7f4b1de6111859a8d1ba69612405",
+        "expected_kind": "custody-signed"
+      }
+    ]
+  }
+}

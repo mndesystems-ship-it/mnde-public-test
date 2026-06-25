@@ -6,16 +6,36 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packageJson = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
-const testScripts = Object.keys(packageJson.scripts)
+const expectedTestScripts = JSON.parse(readFileSync(join(repoRoot, "tests", "expected-test-scripts.json"), "utf8"));
+const packageTestScripts = Object.keys(packageJson.scripts)
   .filter((name) => name.startsWith("test:"))
   .sort();
 
-if (testScripts.length === 0) {
-  console.error("No test:* scripts found.");
+function fail(message) {
+  console.error(message);
   process.exit(1);
 }
 
-for (const scriptName of testScripts) {
+if (!Array.isArray(expectedTestScripts) || expectedTestScripts.some((name) => typeof name !== "string")) {
+  fail("tests/expected-test-scripts.json must be an array of script names.");
+}
+if (JSON.stringify([...expectedTestScripts].sort()) !== JSON.stringify(expectedTestScripts)) {
+  fail("tests/expected-test-scripts.json must be sorted.");
+}
+if (new Set(expectedTestScripts).size !== expectedTestScripts.length) {
+  fail("tests/expected-test-scripts.json must not contain duplicate scripts.");
+}
+if (JSON.stringify(packageTestScripts) !== JSON.stringify(expectedTestScripts)) {
+  const expected = new Set(expectedTestScripts);
+  const actual = new Set(packageTestScripts);
+  const missing = expectedTestScripts.filter((name) => !actual.has(name));
+  const unexpected = packageTestScripts.filter((name) => !expected.has(name));
+  if (missing.length > 0) console.error(`Missing package scripts: ${missing.join(", ")}`);
+  if (unexpected.length > 0) console.error(`Unexpected package scripts: ${unexpected.join(", ")}`);
+  fail("package.json test:* scripts must match tests/expected-test-scripts.json.");
+}
+
+for (const scriptName of expectedTestScripts) {
   console.log(`\n=== npm run ${scriptName} ===`);
   const result = process.platform === "win32"
     ? spawnSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", "npm", "run", scriptName], { cwd: repoRoot, stdio: "inherit" })
@@ -29,4 +49,4 @@ for (const scriptName of testScripts) {
   }
 }
 
-console.log(`\nPASS all test scripts (${testScripts.length}/${testScripts.length})`);
+console.log(`\nPASS all test scripts (${expectedTestScripts.length}/${expectedTestScripts.length})`);

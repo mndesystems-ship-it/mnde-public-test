@@ -13,6 +13,7 @@ import { verifyAuthorityBundle } from "../src/custody/index.mjs";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const conformanceRoot = join(repoRoot, "conformance");
 const manifestPath = join(conformanceRoot, "manifest.json");
+const manifestLockPath = join(conformanceRoot, "manifest.lock.json");
 const requiredSchemas = new Set([
   "ecs.receipt.v2",
   "mnde.pe.receipt.v1",
@@ -31,6 +32,24 @@ assert.equal(manifest.schema_version, "mnde.conformance.manifest.v1");
 assert.ok(Array.isArray(manifest.vectors), "manifest.vectors must be an array");
 assert.equal(typeof manifest.trust_roots?.conformance_authority, "string");
 assert.match(manifest.trust_roots.conformance_authority, /^[a-f0-9]{64}$/);
+
+assert.equal(existsSync(manifestLockPath), true, "conformance/manifest.lock.json is missing");
+const manifestLock = JSON.parse(readFileSync(manifestLockPath, "utf8"));
+assert.equal(manifestLock.schema_version, "mnde.conformance.lock.v1");
+assert.deepEqual(
+  {
+    conformance_authority: manifest.trust_roots.conformance_authority,
+    vectors: manifest.vectors.map((vector) => ({
+      id: vector.id,
+      schema_version: vector.schema_version,
+      path: vector.path,
+      sha256: vector.sha256,
+      ...(vector.expected_kind ? { expected_kind: vector.expected_kind } : {})
+    }))
+  },
+  manifestLock.approved,
+  "conformance manifest root and vector hashes must match manifest.lock.json"
+);
 
 const bySchema = new Map();
 for (const vector of manifest.vectors) {
