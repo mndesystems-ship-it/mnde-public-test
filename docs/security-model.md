@@ -81,3 +81,15 @@ Signing material has to live somewhere. MNDe separates *where keys live* (custod
 - **Live receipt signing is opt-in.** `MNDE_RECEIPT_SIGNING_MODE=custody` signs live sidecar receipts through the custody provider after the deterministic receipt is built. The decision engines remain separate from custody and do not import signing code. If custody signing cannot complete, the sidecar refuses the request and returns no receipt rather than emitting a legacy-signed receipt.
 
 See [Key Custody](key-custody.md), [Live Receipt Signing](live-receipt-signing.md), and [Authority Bundle](authority-bundle.md) for formats, configuration, and the threat model.
+
+## Trust Root Host-Filesystem Boundary (H1)
+
+**Known trust boundary — not a bug.**
+
+MNDe assumes the pinned trust root on the host filesystem is protected by the operator's machine, OS permissions, and deployment controls. If an attacker can replace the trust root and run MNDe under that altered root, the host is already inside the trust boundary.
+
+Pilot deployments accept this boundary.
+
+Production deployments should support stronger root custody options such as installer-pinned fingerprints, hardware-backed storage, OS keychain binding, or enterprise MDM deployment.
+
+This is a declared scoping decision, not an implementation gap. The production pre-flight (`MNDE_PROFILE=production`) fails closed if dev-key material is detected and requires an explicitly configured external bundle, which reduces but does not eliminate the host-filesystem dependency for the initial trust anchor.
