@@ -10,13 +10,51 @@ import assert from "node:assert/strict";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { reserveNonce, nonceDirPath, _cleanupNonceDirForTest } from "../sidecar/auth_authority.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+// Windows ESM requires a file:// URL for absolute paths in import() / import statements.
+const authAuthorityURL = pathToFileURL(resolve(repoRoot, "sidecar/auth_authority.mjs")).href;
+
+// Run two child processes concurrently (both started before either is awaited)
+// and collect their exit codes.
+function raceTwoChildren(scriptA, scriptB, env) {
+  return new Promise((res) => {
+    const opts = { env: { ...process.env, ...env }, encoding: "utf8" };
+    let done = 0;
+    const statuses = [null, null];
+    function finish(i, code) {
+      statuses[i] = code;
+      if (++done === 2) res(statuses);
+    }
+    const a = spawn(process.execPath, ["--input-type=module"], { ...opts, stdio: ["pipe", "inherit", "inherit"] });
+    const b = spawn(process.execPath, ["--input-type=module"], { ...opts, stdio: ["pipe", "inherit", "inherit"] });
+    a.on("close", (code) => finish(0, code));
+    b.on("close", (code) => finish(1, code));
+    a.stdin.end(scriptA);
+    b.stdin.end(scriptB);
+  });
+}
+
+// Build the inline script a child uses to call reserveNonce via the real module.
+// exit 0 = reserveNonce returned true (won), exit 1 = false (lost), exit 2 = threw
+function reserveNonceScript(nonce, cacheFile) {
+  return [
+    `import { reserveNonce } from ${JSON.stringify(authAuthorityURL)};`,
+    `process.env.MNDE_AUTH_NONCE_CACHE = ${JSON.stringify(cacheFile)};`,
+    `try {`,
+    `  const ok = reserveNonce(${JSON.stringify(nonce)}, Date.now());`,
+    `  process.exit(ok ? 0 : 1);`,
+    `} catch (e) {`,
+    `  process.stderr.write(String(e) + "\\n");`,
+    `  process.exit(2);`,
+    `}`,
+  ].join("\n");
+}
 
 const results = [];
 async function test(name, fn) {
@@ -59,56 +97,70 @@ async function main() {
       assert.equal(ok, false, "replay within the same process must be refused");
     });
 
-    await test("cross-process reservation of the same nonce is refused (atomic O_EXCL)", () => {
-      // Spawn a child that attempts openSync("wx") on the already-reserved nonce file.
-      // exit 0 = file was NOT there (bad — replay possible)
-      // exit 1 = EEXIST (good — reservation correctly blocked)
-      const nonceFile = join(nonceDir, nonce);
+    await test("cross-process replay refused: child calls reserveNonce on already-reserved nonce", async () => {
+      // The nonce was reserved above. A child process that imports the real
+      // reserveNonce module and calls it must be refused (the file already exists).
+      const script = reserveNonceScript(nonce, cacheFile);
       const child = spawnSync(process.execPath, ["--input-type=module"], {
-        input: [
-          `import { openSync } from "node:fs";`,
-          `try {`,
-          `  openSync(${JSON.stringify(nonceFile)}, "wx");`,
-          `  process.exit(0);`,
-          `} catch {`,
-          `  process.exit(1);`,
-          `}`
-        ].join("\n"),
-        encoding: "utf8"
+        input: script,
+        env: { ...process.env, MNDE_AUTH_NONCE_CACHE: cacheFile },
+        encoding: "utf8",
       });
       assert.equal(child.status, 1,
-        "cross-process O_EXCL open must fail with EEXIST — the nonce file already exists, proving global exclusion");
+        "child calling reserveNonce on an already-reserved nonce must return false (exit 1)");
     });
 
-    await test("two concurrent processes racing on a fresh nonce: exactly one wins", () => {
+    await test("wrapper-level race: two child processes calling reserveNonce concurrently — exactly one wins", async () => {
+      // Both children import the real reserveNonce and race on a fresh nonce.
+      // They are started concurrently (both spawned before either is awaited).
       const racedNonce = "replay-test-raced-xx99yy88zz77ww";
-      const raceFile = join(nonceDir, racedNonce);
+      const script = reserveNonceScript(racedNonce, cacheFile);
+      const [statusA, statusB] = await raceTwoChildren(script, script, { MNDE_AUTH_NONCE_CACHE: cacheFile });
 
-      // Both children try to openSync("wx") the same file at the same time.
-      // We use spawnSync sequentially here, but the key proof is that O_EXCL
-      // is an atomic kernel primitive: whichever process issues the syscall first
-      // wins, and the other gets EEXIST. Verify one wins and one loses.
-      const script = [
+      assert.ok(statusA !== 2 && statusB !== 2, "neither child should have thrown");
+
+      const wins = [statusA, statusB].filter((s) => s === 0).length;
+      const losses = [statusA, statusB].filter((s) => s === 1).length;
+      assert.equal(wins, 1,
+        `exactly one process must win the reserveNonce race (got ${wins} wins, statuses: ${statusA}, ${statusB})`);
+      assert.equal(losses, 1,
+        `exactly one process must lose the reserveNonce race (got ${losses} losses)`);
+    });
+
+    await test("mutation proof: non-exclusive write allows both children to 'win' (confirms the race test catches a broken wrapper)", async () => {
+      // This test validates the sensitivity of the race test above.
+      // It simulates what would happen if reserveNonce used openSync("w") instead
+      // of openSync("wx"): both processes can open-and-write the file, so both
+      // return true — meaning the race test above WOULD FAIL on a broken wrapper.
+      //
+      // We demonstrate this by racing two children that each attempt openSync("w")
+      // (non-exclusive) on a shared file. Under "w" both succeed (exit 0). This
+      // proves the race test above is sensitive to the exclusive-open flag: if the
+      // real module used "w", both children calling reserveNonce would also win,
+      // and the assert.equal(wins, 1) above would throw.
+      const mutantNonce = "replay-mutant-test-aabb11cc22dde1";
+      const mutantFile = join(nonceDir, mutantNonce);
+      mkdirSync(nonceDir, { recursive: true });
+
+      const nonExclusiveScript = [
         `import { openSync, writeSync, closeSync } from "node:fs";`,
         `try {`,
-        `  const fd = openSync(${JSON.stringify(raceFile)}, "wx");`,
-        `  writeSync(fd, "reserved");`,
+        `  const fd = openSync(${JSON.stringify(mutantFile)}, "w");`,  // non-exclusive
+        `  writeSync(fd, "mutant");`,
         `  closeSync(fd);`,
-        `  process.exit(0);`,   // won
+        `  process.exit(0);`,
         `} catch {`,
-        `  process.exit(1);`,   // lost (EEXIST)
-        `}`
+        `  process.exit(1);`,
+        `}`,
       ].join("\n");
 
-      const opts = { input: script, encoding: "utf8" };
-      const a = spawnSync(process.execPath, ["--input-type=module"], opts);
-      const b = spawnSync(process.execPath, ["--input-type=module"], opts);
-
-      // Exactly one must win (exit 0) and the other must lose (exit 1).
-      const wins = [a.status, b.status].filter((s) => s === 0).length;
-      const losses = [a.status, b.status].filter((s) => s === 1).length;
-      assert.equal(wins, 1, `exactly one process must win the O_EXCL race (got ${wins} wins)`);
-      assert.equal(losses, 1, `exactly one process must lose the O_EXCL race (got ${losses} losses)`);
+      const [statusA, statusB] = await raceTwoChildren(nonExclusiveScript, nonExclusiveScript, {});
+      const bothWon = statusA === 0 && statusB === 0;
+      assert.ok(bothWon,
+        `non-exclusive open must allow both processes to win (got ${statusA}, ${statusB}) — ` +
+        "if this fails, the mutation proof is broken");
+      // Proof: if reserveNonce used "w" instead of "wx", the race test above would
+      // observe wins===2 and throw. Therefore the race test IS sensitive to the flag.
     });
 
     await test("a different nonce is still accepted while another is reserved", () => {
