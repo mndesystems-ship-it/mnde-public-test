@@ -140,6 +140,9 @@ export function buildReceipt(input: {
   const pipelineAllows = input.orbit.decision === "ALLOW" && input.arm.decision === "ALLOW" && input.ramona.decision === "ALLOW";
   const decision = pipelineAllows ? "ALLOW" : "REFUSE";
   const reasonCode = decision === "ALLOW" ? REASON_CODES.OkAllow : input.ramona.reason_code;
+  const totalCostUsd = formatUsdFromCents(input.arm.projected_total_cost_cents);
+  const allowedCostUsd = formatUsdFromCents(input.arm.allowed_cost_cents);
+  const preventedCostUsd = formatUsdFromCents(input.arm.prevented_cost_cents);
   const decisionHash = createHash("sha256")
     .update(
       canonicalizeJson({
@@ -151,7 +154,11 @@ export function buildReceipt(input: {
         execution_id: input.arm.execution_id,
         projected_total_cost_cents: input.arm.projected_total_cost_cents,
         allowed_cost_cents: input.arm.allowed_cost_cents,
-        prevented_cost_cents: input.arm.prevented_cost_cents
+        prevented_cost_cents: input.arm.prevented_cost_cents,
+        total_cost_usd: totalCostUsd,
+        allowed_cost_usd: allowedCostUsd,
+        prevented_cost_usd: preventedCostUsd,
+        key_set_version: RECEIPT_KEY_SET_VERSION
       } as unknown as JsonValue)
     )
     .digest("hex");
@@ -165,9 +172,9 @@ export function buildReceipt(input: {
       decision_hash: decisionHash,
       request_hash: input.request_hash,
       reason_code: reasonCode,
-      total_cost_usd: formatUsdFromCents(input.arm.projected_total_cost_cents),
-      allowed_cost_usd: formatUsdFromCents(input.arm.allowed_cost_cents),
-      prevented_cost_usd: formatUsdFromCents(input.arm.prevented_cost_cents),
+      total_cost_usd: totalCostUsd,
+      allowed_cost_usd: allowedCostUsd,
+      prevented_cost_usd: preventedCostUsd,
       policy_version: input.policy_version,
       policy_hash: input.policy_hash,
       execution_id: input.arm.execution_id,

@@ -47,14 +47,14 @@
   "signature": {
     "algorithm": "HMAC-SHA256",
     "key_id": "demo-legacy-signature-key",
-    "value": "7c70e3c4ae9591ec53179e1576b6a04278314ccb6d522d828ef92d6851cdc5f0"
+    "value": "be8a5a753de7776db813ce86e9d4220c9da09aecfd670f1221260e9980f8bdd8"
   },
   "verifiable_signature": {
     "algorithm": "ED25519",
     "authority_id": "mnde-public-test-demo",
     "key_id": "receipt-key-local",
-    "public_key_fingerprint": "8e3c9589d557ed6900f619292bc013cce117a50bf01a27f892894ef9b96b941d",
-    "signed_at": "2026-06-11T04:31:28.245Z",
-    "value": "ea2cbccd771dcac8cebee0d6c8d26b176aa6dd6a72b2859940a9bd440201cf144acbc055234a14c01f78b3d274bc32792ce5d9a94c8b0da9642740754e946a00"
+    "public_key_fingerprint": "6f1fb83d326c1a3f8ab5e6a4e67c8bed2121c68810cd6030d4a71ec397f8412f",
+    "signed_at": "2026-06-26T02:23:55.561Z",
+    "value": "329e68df65aa235146758f0e35002e0dfcd61a1a76a2c23816a61aeac63e89590639bb6ed00d85a90fa66f138dbc3a927a5792ad0d5426366e3c5fcd35ed0b07"
   }
 }

@@ -55,10 +55,13 @@ import {
 import {
   appendAuthAuditEvent,
   authorizeAuthorityAction,
+  nonceDirPath,
   parseAuthorityAssertion,
   refusalBody
 } from "./sidecar/auth_authority.mjs";
+import { execIdDirPath, reserveExecutionId } from "./sidecar/execution_id_store.mjs";
 import { replayReceiptDeterministically } from "./sidecar/replay_engine.mjs";
+import { assertStartupDirectoryPermissions } from "./sidecar/startup_checks.mjs";
 
 const HOST = "127.0.0.1";
 const PORT = parseBindPort(process.env.MNDE_BIND_PORT, 8787);
@@ -264,6 +267,18 @@ function receiptPathForWorker(basePath) {
     process.stdout.write(`MNDe trust-root: production custody verified (authority '${trust.authority_id || "?"}')\n`);
   }
 }
+
+// ── Startup directory permission checks ──────────────────────────────────────
+// Verify security-critical directories are not world-writable before forking
+// workers or serving traffic. A world-writable directory lets any local user
+// pre-create or delete nonce/exec-id files, undermining replay protection and
+// audit integrity.
+assertStartupDirectoryPermissions([
+  { name: "nonce cache", dir: nonceDirPath() },
+  { name: "execution ID store", dir: execIdDirPath() },
+  { name: "receipt log", dir: dirname(RECEIPT_LOG_PATH) },
+  { name: "auth audit log", dir: dirname(AUTH_AUDIT_LOG_PATH) }
+]);
 
 if (cluster.isPrimary && CLUSTER_MODE) {
   for (let i = 0; i < CLUSTER_WORKERS; i += 1) cluster.fork();
@@ -762,6 +777,24 @@ async function handleDecide(req, res) {
     }
     const { value: request, raw } = await readStrictObject(req, timings);
     timings.body_read_complete_ms = ms();
+
+    // Durable execution ID dedup: reserve the execution ID globally before any
+    // evaluation work. Uses O_EXCL file creation so the reservation survives
+    // process restart and is atomic across all worker threads. Fail closed if
+    // the ID has already been used or cannot be reserved.
+    const executionId =
+      request?.execution_request?.release_request?.execution_id ??
+      request?.execution_request?.request_id ??
+      request?.request_id;
+    if (typeof executionId === "string" && executionId.length > 0) {
+      if (!reserveExecutionId(executionId)) {
+        timings.total_server_ms = Math.max(0, Math.round(performance.now() - totalStarted));
+        recordTimings(timings);
+        await fail(res, "ERR_EXECUTION_ID_DUPLICATE", 200, { execution_id: executionId, timings }, timings);
+        return;
+      }
+    }
+
     if (DECISION_ENGINE === "policy-engine") {
       await respondPolicyEngine(res, request, timings, totalStarted, req._mndeCaller);
       return;

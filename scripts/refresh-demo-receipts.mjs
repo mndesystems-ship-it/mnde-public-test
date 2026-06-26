@@ -79,6 +79,9 @@ function buildDemoReceipt({ requestId, tool, parameters = {}, receiptPrivateKey,
   const pipelineAllows = orbit.decision === "ALLOW" && arm.decision === "ALLOW" && ramona.decision === "ALLOW";
   const decision = pipelineAllows ? "ALLOW" : "REFUSE";
   const reasonCode = decision === "ALLOW" ? REASON_CODES.OkAllow : ramona.reason_code;
+  const totalCostUsd = formatUsdFromCents(arm.projected_total_cost_cents);
+  const allowedCostUsd = formatUsdFromCents(arm.allowed_cost_cents);
+  const preventedCostUsd = formatUsdFromCents(arm.prevented_cost_cents);
   const decisionHash = sha256(canonicalizeJson({
     request_hash: preflight.request_hash,
     policy_hash: preflight.policy_hash,
@@ -88,7 +91,11 @@ function buildDemoReceipt({ requestId, tool, parameters = {}, receiptPrivateKey,
     execution_id: arm.execution_id,
     projected_total_cost_cents: arm.projected_total_cost_cents,
     allowed_cost_cents: arm.allowed_cost_cents,
-    prevented_cost_cents: arm.prevented_cost_cents
+    prevented_cost_cents: arm.prevented_cost_cents,
+    total_cost_usd: totalCostUsd,
+    allowed_cost_usd: allowedCostUsd,
+    prevented_cost_usd: preventedCostUsd,
+    key_set_version: "receipt-key-set-v1"
   }));
   const payload = {
     schema_version: "ecs.receipt.v2",
@@ -99,9 +106,9 @@ function buildDemoReceipt({ requestId, tool, parameters = {}, receiptPrivateKey,
       decision_hash: decisionHash,
       request_hash: preflight.request_hash,
       reason_code: reasonCode,
-      total_cost_usd: formatUsdFromCents(arm.projected_total_cost_cents),
-      allowed_cost_usd: formatUsdFromCents(arm.allowed_cost_cents),
-      prevented_cost_usd: formatUsdFromCents(arm.prevented_cost_cents),
+      total_cost_usd: totalCostUsd,
+      allowed_cost_usd: allowedCostUsd,
+      prevented_cost_usd: preventedCostUsd,
       policy_version: preflight.parsed_input.policy_document.policy_version,
       policy_hash: preflight.policy_hash,
       execution_id: arm.execution_id,

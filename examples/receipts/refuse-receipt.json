@@ -4,7 +4,7 @@
   "request_hash": "aa016e2d6d1eecd9b1bb391062c008e7f469ee8cf43c59c339e34872c7af5a63",
   "decision_output": {
     "decision": "REFUSE",
-    "decision_hash": "1d3c21e0289643847a4719d797dfed8c0a2090ba0884db8e7a7883c4dbe86b9c",
+    "decision_hash": "f5dabce2a613e9dc818839826c11f6e562eafd94c381cf1cbbedd1454ad883b7",
     "request_hash": "aa016e2d6d1eecd9b1bb391062c008e7f469ee8cf43c59c339e34872c7af5a63",
     "reason_code": "ERR_FORBIDDEN_ACTION_IN_PARAMETERS",
     "total_cost_usd": "5.00",
@@ -47,14 +47,14 @@
   "signature": {
     "algorithm": "HMAC-SHA256",
     "key_id": "demo-legacy-signature-key",
-    "value": "ede7d431ce9253a7f3600f476225ff7490bd71281bdcb49f23650f1b72ad22e9"
+    "value": "53b16703dd368cdf22c2725ef364552c7406c317755fb60df4718459fe3e496e"
   },
   "verifiable_signature": {
     "algorithm": "ED25519",
     "authority_id": "mnde-public-test-demo",
     "key_id": "receipt-key-local",
-    "public_key_fingerprint": "8e3c9589d557ed6900f619292bc013cce117a50bf01a27f892894ef9b96b941d",
-    "signed_at": "2026-06-11T04:31:28.245Z",
-    "value": "d97ee054a00b42fde357fc7b8f863254f3658bdce15374eb1a73cb698bd9889b7d0ed775ec63de2e01a24c16e9cc3fdb476d5bb93578d0b885a981312d419b0e"
+    "public_key_fingerprint": "6f1fb83d326c1a3f8ab5e6a4e67c8bed2121c68810cd6030d4a71ec397f8412f",
+    "signed_at": "2026-06-26T02:23:55.561Z",
+    "value": "1167717193873ae1649df9592001446796172b381c0fa2506f9338417b659ef82ed53c7a567c9d50f98a47801429b5e2c237256f542efd0b31a47450771ffd01"
   }
 }

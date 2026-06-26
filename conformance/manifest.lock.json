@@ -7,7 +7,7 @@
         "id": "ecs-receipt-v2-allow",
         "schema_version": "ecs.receipt.v2",
         "path": "vectors/ecs.receipt.v2.allow.json",
-        "sha256": "55208c573cee660530f0ace28d79d20b262c9847446c349cbe52642734fa0461",
+        "sha256": "03f44ecce5e811d7bac92a588868b5ba4a7351df6be477664d0de1560d057b1a",
         "expected_kind": "pipeline"
       },
       {

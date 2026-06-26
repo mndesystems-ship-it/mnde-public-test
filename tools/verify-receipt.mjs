@@ -100,16 +100,21 @@ function verifyRequestHash(receipt) {
 
 function recomputeDecisionHash(receipt) {
   const arm = receipt.pipeline_trace.arm;
+  const out = receipt.decision_output;
   return sha256Hex(canonicalizeJson({
     request_hash: receipt.request_hash,
-    policy_hash: receipt.decision_output.policy_hash,
-    decision: receipt.decision_output.decision,
-    reason_code: receipt.decision_output.reason_code,
-    policy_version: receipt.decision_output.policy_version,
+    policy_hash: out.policy_hash,
+    decision: out.decision,
+    reason_code: out.reason_code,
+    policy_version: out.policy_version,
     execution_id: arm.execution_id,
     projected_total_cost_cents: arm.projected_total_cost_cents,
     allowed_cost_cents: arm.allowed_cost_cents,
-    prevented_cost_cents: arm.prevented_cost_cents
+    prevented_cost_cents: arm.prevented_cost_cents,
+    total_cost_usd: out.total_cost_usd,
+    allowed_cost_usd: out.allowed_cost_usd,
+    prevented_cost_usd: out.prevented_cost_usd,
+    key_set_version: out.key_set_version
   }));
 }
 
@@ -198,6 +203,10 @@ function verifyReplayDeterminism(receipt) {
     const pipelineAllows = orbit.decision === "ALLOW" && arm.decision === "ALLOW" && ramona.decision === "ALLOW";
     const replayedDecision = pipelineAllows ? "ALLOW" : "REFUSE";
     const replayedReasonCode = pipelineAllows ? REASON_CODES.OkAllow : ramona.reason_code;
+    const formatUsd = (cents) => `${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, "0")}`;
+    const replayedTotalCostUsd = formatUsd(arm.projected_total_cost_cents);
+    const replayedAllowedCostUsd = formatUsd(arm.allowed_cost_cents);
+    const replayedPreventedCostUsd = formatUsd(arm.prevented_cost_cents);
     const replayedDecisionHash = sha256Hex(canonicalizeJson({
       request_hash: preflight.request_hash,
       policy_hash: preflight.policy_hash,
@@ -207,9 +216,12 @@ function verifyReplayDeterminism(receipt) {
       execution_id: arm.execution_id,
       projected_total_cost_cents: arm.projected_total_cost_cents,
       allowed_cost_cents: arm.allowed_cost_cents,
-      prevented_cost_cents: arm.prevented_cost_cents
+      prevented_cost_cents: arm.prevented_cost_cents,
+      total_cost_usd: replayedTotalCostUsd,
+      allowed_cost_usd: replayedAllowedCostUsd,
+      prevented_cost_usd: replayedPreventedCostUsd,
+      key_set_version: receipt.decision_output.key_set_version ?? "receipt-key-set-v1"
     }));
-    const formatUsd = (cents) => `${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, "0")}`;
     const original = receipt.decision_output;
     const checks = [
       ["request_hash", receipt.request_hash, preflight.request_hash],

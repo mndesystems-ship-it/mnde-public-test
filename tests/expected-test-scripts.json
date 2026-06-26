@@ -8,6 +8,7 @@
   "test:custody",
   "test:custody-lifecycle",
   "test:dashboard",
+  "test:execution-id-dedup",
   "test:executor",
   "test:external-signer",
   "test:feline",
@@ -31,6 +32,7 @@
   "test:sidecar",
   "test:sidecar-pe",
   "test:signed-policy-bundle",
+  "test:startup-checks",
   "test:trust-anchor",
   "test:trust-root"
 ]
