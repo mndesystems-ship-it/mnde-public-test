@@ -97,6 +97,14 @@ export function verifyAuthorityBundle(bundle, options = {}) {
 }
 
 // Look up a signing key by role + key id, honoring revocation and validity.
+//
+// Revocation freshness: the revocation list is from the bundle in hand. If the
+// bundle is stale, revocations issued after it will not appear here. Callers
+// that need authoritative revocation status must fetch a fresh bundle. The
+// `revocation_freshness` field on the result always indicates this limitation:
+//   "CURRENT_TO_BUNDLE"  — not revoked per this bundle; staleness unknown
+//   "KEY_REVOKED"        — positively revoked per this bundle (may be stale too,
+//                          but revocation is treated as permanent)
 export function findBundleKey(bundle, role, keyId, signedAt) {
   if (Array.isArray(bundle?.revocation) && bundle.revocation.includes(keyId)) return { ok: false, reason: "KEY_REVOKED" };
   const list = bundle?.keys?.[role];
@@ -106,12 +114,19 @@ export function findBundleKey(bundle, role, keyId, signedAt) {
   const t = Date.parse(signedAt);
   if (isValidTimestamp(key.valid_from) && t < Date.parse(key.valid_from)) return { ok: false, reason: "KEY_EXPIRED" };
   if (isValidTimestamp(key.valid_until) && t >= Date.parse(key.valid_until)) return { ok: false, reason: "KEY_EXPIRED" };
-  return { ok: true, publicKey: key.public_key };
+  // Revocation status is current only as of the bundle's issued_at. A stale
+  // bundle may miss later revocations. We report this honestly rather than
+  // asserting that revocation is globally current.
+  return { ok: true, publicKey: key.public_key, revocation_freshness: "CURRENT_TO_BUNDLE" };
 }
 
 // Verify a signature over a canonical payload against a bundle key (offline).
+// On success, the result includes `revocation_freshness` from findBundleKey to
+// let callers know that revocation status is only current as of the bundle used.
 export function verifyAgainstBundle(canonicalPayload, signatureHex, role, keyId, signedAt, bundle) {
   const key = findBundleKey(bundle, role, keyId, signedAt);
   if (!key.ok) return key;
-  return verifyCanonical(canonicalPayload, signatureHex, key.publicKey) ? { ok: true } : { ok: false, reason: "SIGNATURE_INVALID" };
+  return verifyCanonical(canonicalPayload, signatureHex, key.publicKey)
+    ? { ok: true, revocation_freshness: key.revocation_freshness }
+    : { ok: false, reason: "SIGNATURE_INVALID" };
 }

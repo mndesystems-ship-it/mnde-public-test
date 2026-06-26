@@ -70,6 +70,7 @@
     "test:correctness": "node ./tests/test_correctness_fixes.mjs",
     "test:fresh-setup": "node ./scripts/test-fresh-setup.mjs",
     "test:trust-anchor": "node ./tests/test_trust_anchor.mjs",
-    "test:reviewer-kit": "node ./tests/test_cross_platform_reviewer.mjs"
+    "test:reviewer-kit": "node ./tests/test_cross_platform_reviewer.mjs",
+    "test:audit-remediation": "node ./tests/test_audit_remediation.mjs"
   }
 }

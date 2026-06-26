@@ -1,5 +1,6 @@
 [
   "test:approvals",
+  "test:audit-remediation",
   "test:auth",
   "test:authority-init",
   "test:ci-contract",
