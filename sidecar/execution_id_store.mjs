@@ -42,10 +42,14 @@ export function reserveExecutionId(executionId) {
   if (seenIds.has(executionId)) return false;
 
   const dir = execIdDirPath();
-  if (dir === null) return true; // dedup not configured: pass through
+  // Durable dedup requires a configured persistent store. Without
+  // MNDE_EXEC_ID_CACHE, file-based dedup is impossible (no stable path).
+  // ARM-level in-process dedup still protects within a single process
+  // lifetime. Return true so the request reaches the worker.
+  if (dir === null) return true;
 
   try {
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch {
     return false;
   }
@@ -54,10 +58,11 @@ export function reserveExecutionId(executionId) {
   let fd;
   try {
     fd = openSync(filePath, "wx"); // O_CREAT | O_EXCL: atomic
-  } catch {
-    // EEXIST = already reserved by this or another process; or any other
-    // write failure. Either way, fail closed.
-    seenIds.add(executionId);
+  } catch (error) {
+    // EEXIST: already reserved — add to in-process cache for fast-path future checks.
+    // Any other error (EACCES, ENOSPC, etc.): fail closed but don't poison the cache;
+    // a transient error should not permanently block the ID in this session.
+    if (error.code === "EEXIST") seenIds.add(executionId);
     return false;
   }
   try {

@@ -20,7 +20,7 @@ const IS_POSIX = process.platform !== "win32";
 // (so the check works before first use). Returns { ok, reason } — never throws.
 export function checkDirectoryPermissions(dir) {
   try {
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch (error) {
     return { ok: false, reason: `could not create directory '${dir}': ${error?.message ?? String(error)}` };
   }
