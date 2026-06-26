@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 
 import { buildPolicyReceipt } from "./receipt.mjs";
 import { loadSignedPolicyBundleConfig } from "../policy-bundles/index.mjs";
+import { parseRuntimeProfile } from "../../shared/runtime-profile.mjs";
 
 function loadJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
@@ -40,7 +41,9 @@ function loadOptionalTrustConfig(env) {
 // Load decision-engine config. Fails closed (ok:false) on any malformed/missing
 // configured file, so the sidecar can refuse rather than silently run unprotected.
 export function loadPolicyEngineConfig(env) {
-  const production = env.MNDE_PROFILE === "production";
+  const profileResult = parseRuntimeProfile(env.MNDE_PROFILE);
+  if (!profileResult.ok) return { ok: false, reason: profileResult.detail };
+  const production = profileResult.profile === "production";
   // Signed bundles are opt-in. The legacy MNDE_PE_POLICY path stays unchanged
   // unless an operator explicitly supplies a bundle path.
   if (env.MNDE_PE_POLICY_BUNDLE) {

@@ -1,5 +1,5 @@
 import { createPublicKey, timingSafeEqual, verify } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, openSync, readdirSync, readFileSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export const ROLE_CAPABILITIES = {
@@ -30,7 +30,14 @@ const ASSERTION_MAX_LIFETIME_MS = 120_000;
 const ASSERTION_CLOCK_SKEW_MS = 30_000;
 const NONCE_PATTERN = /^[A-Za-z0-9_-]{24,128}$/;
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
-const seenNonces = new Map();
+
+// In-process dedup cache: O(1) first-pass check so we skip the filesystem for
+// nonces already seen in this process. The file-based store is the global truth.
+const seenNonces = new Map(); // nonce -> expiresAt (ms)
+const MAX_NONCE_CACHE_SIZE = 10_000;
+
+// Rate-limited background cleanup of the nonce directory (once per 60s max).
+let lastDirCleanupMs = 0;
 
 export function requiredCapabilityForPath(pathname) {
   return SENSITIVE_PATHS.get(pathname) ?? null;
@@ -121,6 +128,122 @@ export function sanitizeActor(input) {
   };
 }
 
+// Derive the nonce store directory from the configured (or default) cache path.
+// The directory uses a .d suffix so it is clearly machine-managed and distinct
+// from any pre-existing legacy JSON file at the same base path.
+export function nonceDirPath() {
+  const base = process.env.MNDE_AUTH_NONCE_CACHE ?? join(process.cwd(), "auth-nonce-cache.json");
+  return base.endsWith(".json") ? `${base.slice(0, -5)}.d` : `${base}.d`;
+}
+
+// Reserve a nonce globally. Returns true iff this is the first reservation.
+//
+// Mechanism: one file per nonce under nonceDirPath(). The filename IS the nonce
+// (already URL-safe alphanumeric per NONCE_PATTERN). File creation uses O_EXCL
+// (openSync "wx") which is a single atomic syscall on both POSIX and Windows —
+// it either creates the file exclusively or fails with EEXIST. This means two
+// concurrent workers (separate OS processes) racing on the same nonce can never
+// both succeed: exactly one gets the file, the other gets EEXIST and returns false.
+//
+// The in-process Map is a performance layer only — it avoids a filesystem call
+// for nonces already seen in this process. The file is the global source of truth.
+export function reserveNonce(nonce, now) {
+  // Defense-in-depth: validate the nonce pattern here even though the normal
+  // call path (authorizeAuthorityAction → validateAssertionClaims) already does
+  // so. This prevents path traversal if reserveNonce is ever called directly.
+  if (!NONCE_PATTERN.test(nonce)) return false;
+
+  // Evict expired in-process entries and enforce the size cap.
+  evictExpiredNonces(now);
+  if (seenNonces.size >= MAX_NONCE_CACHE_SIZE) {
+    // More live nonces than the cap — fail closed rather than risk unbounded growth.
+    return false;
+  }
+
+  // Fast path: already reserved in this process.
+  if (seenNonces.has(nonce)) return false;
+
+  // Slow path: attempt atomic file creation (cross-process exclusive reservation).
+  const dir = nonceDirPath();
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch {
+    return false;
+  }
+
+  const expiresAt = now + ASSERTION_MAX_LIFETIME_MS + ASSERTION_CLOCK_SKEW_MS;
+  const filePath = join(dir, nonce);
+  let fd;
+  try {
+    // "wx" = O_WRONLY | O_CREAT | O_EXCL: fails EEXIST if already reserved by ANY process.
+    fd = openSync(filePath, "wx");
+  } catch {
+    // EEXIST (or any other error) = nonce already reserved or unwritable dir → refuse.
+    seenNonces.set(nonce, expiresAt); // cache to avoid future FS hits for this nonce
+    return false;
+  }
+  try {
+    writeSync(fd, String(expiresAt));
+  } finally {
+    closeSync(fd);
+  }
+
+  // Record in-process so future calls skip the filesystem entirely for this nonce.
+  seenNonces.set(nonce, expiresAt);
+
+  // Background cleanup: scan the directory for expired nonce files, rate-limited.
+  scheduleNonceDirCleanup(dir, now);
+
+  return true;
+}
+
+function evictExpiredNonces(now) {
+  for (const [nonce, expiresAt] of seenNonces) {
+    if (expiresAt <= now) seenNonces.delete(nonce);
+  }
+}
+
+function scheduleNonceDirCleanup(dir, now) {
+  if (now - lastDirCleanupMs < 60_000) return;
+  lastDirCleanupMs = now;
+  // Run after the current call returns so it does not block the request path.
+  setImmediate(() => cleanupNonceDir(dir));
+}
+
+// Delete expired nonce files. Bounded scan so a large directory cannot stall
+// the event loop — any remaining expired files are caught on the next cycle.
+//
+// IMPORTANT: empty content must NOT be treated as expiry=0. Number("") === 0,
+// which is finite and always <= now, so the naive check would delete files left
+// by a crashed process (O_EXCL open succeeded, writeSync never ran). Those files
+// represent reservations that were accepted — deleting them reopens replay.
+// The guard `raw.length > 0` preserves them until writeSync has clearly run.
+export function _cleanupNonceDirForTest(dir) { cleanupNonceDir(dir); }
+function cleanupNonceDir(dir) {
+  const now = Date.now();
+  let entries;
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return;
+  }
+  let scanned = 0;
+  for (const entry of entries) {
+    if (scanned++ >= 500) break;
+    if (!NONCE_PATTERN.test(entry)) continue;
+    const filePath = join(dir, entry);
+    try {
+      const raw = readFileSync(filePath, "utf8").trim();
+      const expiresAt = Number(raw);
+      // raw.length === 0 means the file is empty (crash between O_EXCL open and
+      // writeSync). Leave it — the reservation was accepted, the nonce is used.
+      if (raw.length > 0 && Number.isFinite(expiresAt) && expiresAt <= now) unlinkSync(filePath);
+    } catch {
+      // File may have been removed by another worker already — ignore.
+    }
+  }
+}
+
 function verifyAuthoritySignature(publicKeyB64, payloadPart, signature) {
   try {
     const rawPublicKey = Buffer.from(publicKeyB64, "base64url");
@@ -153,60 +276,6 @@ function validateAssertionClaims(payload, now) {
   if (assertedCapabilities.size !== payload.capabilities.length) return { ok: false, reason: "ERR_AUTH_CAPABILITY_INVALID" };
   if ([...assertedCapabilities].some((capability) => !allowedCapabilities.has(capability))) return { ok: false, reason: "ERR_AUTH_CAPABILITY_INVALID" };
   return { ok: true, actor: { ...payload, role: roles[0] }, capabilities: assertedCapabilities };
-}
-
-function reserveNonce(nonce, now) {
-  loadPersistentNonces(now);
-  cleanupNonces(now);
-  if (seenNonces.has(nonce)) return false;
-  seenNonces.set(nonce, now + ASSERTION_MAX_LIFETIME_MS + ASSERTION_CLOCK_SKEW_MS);
-  if (!persistNonces(now)) {
-    seenNonces.delete(nonce);
-    return false;
-  }
-  return true;
-}
-
-function cleanupNonces(now) {
-  let changed = false;
-  for (const [nonce, expiresAt] of seenNonces) {
-    if (expiresAt <= now) {
-      seenNonces.delete(nonce);
-      changed = true;
-    }
-  }
-  if (changed) persistNonces(now);
-}
-
-function nonceCachePath() {
-  return process.env.MNDE_AUTH_NONCE_CACHE ?? join(process.cwd(), "auth-nonce-cache.json");
-}
-
-function loadPersistentNonces(now) {
-  try {
-    const parsed = JSON.parse(readFileSync(nonceCachePath(), "utf8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
-    for (const [nonce, expiresAt] of Object.entries(parsed)) {
-      if (NONCE_PATTERN.test(nonce) && Number.isFinite(expiresAt) && expiresAt > now) {
-        seenNonces.set(nonce, expiresAt);
-      }
-    }
-  } catch {
-    return;
-  }
-}
-
-function persistNonces(now) {
-  try {
-    const entries = {};
-    for (const [nonce, expiresAt] of seenNonces) {
-      if (expiresAt > now) entries[nonce] = expiresAt;
-    }
-    writeFileSync(nonceCachePath(), JSON.stringify(entries), { encoding: "utf8" });
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function constantStringEqual(left, right) {

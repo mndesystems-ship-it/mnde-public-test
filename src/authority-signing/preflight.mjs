@@ -17,6 +17,8 @@
 
 import { resolve, sep } from "node:path";
 
+import { parseRuntimeProfile } from "../../shared/runtime-profile.mjs";
+
 function fail(reason_code, detail) {
   return { ok: false, reason_code, detail };
 }
@@ -48,7 +50,9 @@ export function detectDevKeyPath(env = process.env, repoRoot) {
 // Verify the trust root for the current runtime profile. Returns
 // { ok:true, profile } or { ok:false, reason_code, detail }.
 export async function assertTrustRoot(env = process.env, options = {}) {
-  const profile = env.MNDE_PROFILE === "production" ? "production" : "local";
+  const profileResult = parseRuntimeProfile(env.MNDE_PROFILE);
+  if (!profileResult.ok) return fail(profileResult.reason_code, profileResult.detail);
+  const profile = profileResult.profile;
   if (profile !== "production") return { ok: true, profile: "local" };
 
   // 1) Production must sign through custody — legacy signing uses dev keys.

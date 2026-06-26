@@ -14,6 +14,7 @@ import {
   verifySignedReceipt
 } from "./audit/node_runtime.ts";
 import { boundaryReplayEndpointResponse } from "./shared/receipt-replay.mjs";
+import { parseRuntimeProfile } from "./shared/runtime-profile.mjs";
 import {
   DeterministicWorkerPool,
   WORKER_POOL_SATURATED,
@@ -283,7 +284,12 @@ const { loadAuthConfig, authenticate } = await import("./src/sidecar-auth/index.
 const AUTH = loadAuthConfig(process.env);
 const AUTH_MODE = AUTH.mode;
 const AUTH_CONFIG_ERROR = AUTH.ok ? null : AUTH.reason;
-const RUNTIME_PROFILE = process.env.MNDE_PROFILE === "production" ? "production" : "local";
+const runtimeProfileResult = parseRuntimeProfile(process.env.MNDE_PROFILE);
+if (!runtimeProfileResult.ok) {
+  process.stderr.write(`\nMNDe refused to start — ${runtimeProfileResult.detail}\n`);
+  process.exit(1);
+}
+const RUNTIME_PROFILE = runtimeProfileResult.profile;
 if (AUTH_MODE === "bearer") {
   process.stdout.write(`MNDe caller auth: bearer${AUTH_CONFIG_ERROR ? ` (CONFIG ERROR: ${AUTH_CONFIG_ERROR})` : ` (${AUTH.tokens.size} token(s))`}\n`);
 }

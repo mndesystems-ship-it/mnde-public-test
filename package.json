@@ -59,6 +59,7 @@
     "mcp-proxy": "node ./mcp/mnde-mcp-proxy.mjs",
     "mcp-proxy-demo": "node ./scripts/mcp-proxy-demo.mjs",
     "test:mcp-proxy": "node ./tests/test_mcp_proxy.mjs",
+    "test:nonce-replay": "node ./tests/test_nonce_replay.mjs",
     "shell-mcp-server": "node ./mcp/shell-mcp-server.mjs",
     "shell-demo": "node ./scripts/shell-demo.mjs",
     "test:shell": "node ./tests/test_shell_policy.mjs",
