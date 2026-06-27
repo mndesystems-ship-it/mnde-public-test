@@ -10,6 +10,7 @@
   "test:custody-lifecycle",
   "test:dashboard",
   "test:execution-gate",
+  "test:execution-gate-signing",
   "test:execution-id-dedup",
   "test:executor",
   "test:external-signer",

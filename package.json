@@ -53,6 +53,7 @@
     "test:feline": "node ./tests/test_feline_input.mjs",
     "executor-demo": "node ./scripts/executor-demo.mjs",
     "test:execution-gate": "node ./tests/test_execution_gate.mjs",
+    "test:execution-gate-signing": "node ./tests/test_execution_gate_signing.mjs",
     "test:executor": "node ./tests/test_executor.mjs",
     "mcp-server": "node ./mcp/mnde-mcp-server.mjs",
     "mcp-demo": "node ./scripts/mcp-demo.mjs",

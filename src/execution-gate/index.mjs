@@ -18,10 +18,13 @@
 
 import { validateExecutionRequest, hashRequest } from "./schema.mjs";
 import { buildExecutionGateReceipt } from "./receipt.mjs";
+import { buildSignedExecutionReceipt } from "./signed-receipt.mjs";
 
 export { validateExecutionRequest, hashRequest } from "./schema.mjs";
 export { extractPolicyAttributes } from "./policy-attributes.mjs";
 export { buildExecutionGateReceipt } from "./receipt.mjs";
+export { buildSignedExecutionReceipt, SIGNED_EXECUTION_RECEIPT_SCHEMA } from "./signed-receipt.mjs";
+export { verifySignedExecutionReceipt } from "./verify-signed-receipt.mjs";
 
 // Hard-coded decision gates. Returns { decision, refusalReason? }.
 function applyGates(req) {
@@ -64,6 +67,49 @@ export function evaluateExecutionGate(request) {
 
   const receipt = buildExecutionGateReceipt({ request, requestHash, decision, refusalReason });
   return { ok: true, receipt };
+}
+
+// Signed variant. Calls the existing gate pipeline, then wraps the result in a
+// custody-signed receipt if signing options are present. Falls back to the
+// unsigned receipt path if signing options are absent (backward compatible).
+//
+// options:
+//   authorityBundle        — loaded mnde.authority.bundle.v1
+//   signingKeyId           — key_id of the receipt key to sign with
+//   signingPrivateKeyPem   — Ed25519 private key PEM
+//   policyProvenance       — optional policy bundle provenance object
+//
+// Returns { ok: true, receipt, signed: boolean } or { ok: false, errors }.
+export function authorizeAndSign(request, options = {}) {
+  const validation = validateExecutionRequest(request);
+  if (!validation.ok) {
+    return { ok: false, errors: validation.errors };
+  }
+
+  const { decision, refusalReason } = applyGates(request);
+
+  const { authorityBundle, signingKeyId, signingPrivateKeyPem, policyProvenance } = options;
+  const canSign = authorityBundle && signingKeyId && signingPrivateKeyPem;
+
+  if (canSign) {
+    try {
+      const receipt = buildSignedExecutionReceipt(request, decision, {
+        authorityBundle,
+        signingKeyId,
+        signingPrivateKeyPem,
+        policyProvenance,
+        refusalReason
+      });
+      return { ok: true, receipt, signed: true };
+    } catch (error) {
+      return { ok: false, errors: [error?.message ?? String(error)] };
+    }
+  }
+
+  // Unsigned fallback — preserve existing behavior.
+  const requestHash = hashRequest(request);
+  const receipt = buildExecutionGateReceipt({ request, requestHash, decision, refusalReason });
+  return { ok: true, receipt, signed: false };
 }
 
 // Replay — re-run the gate from the original request, confirm it matches the receipt.
