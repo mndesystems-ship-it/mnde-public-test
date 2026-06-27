@@ -285,6 +285,17 @@ export function verifySignedExecutionResult(envelope, options = {}) {
     check(checks, "signed_receipt", false, "signed execution receipt must be provided for verification");
     return fail(checks, "SIGNED_RESULT_RECEIPT_INVALID", "signedReceipt is required for verification");
   }
+  if (authorityBundle) {
+    const earlyBundleCheck = verifyAuthorityBundle(authorityBundle, { trustedRootFingerprint, now });
+    if (!earlyBundleCheck.ok) {
+      check(checks, "authority_bundle", false, earlyBundleCheck.reason);
+      if (earlyBundleCheck.reason === "KEY_MALFORMED") {
+        return fail(checks, "SIGNED_RESULT_KEY_MALFORMED", "authority bundle contains a malformed signing key");
+      }
+      return fail(checks, "SIGNED_RESULT_AUTHORITY_INVALID", `authority bundle invalid: ${earlyBundleCheck.reason}`);
+    }
+    check(checks, "authority_bundle", true);
+  }
   const receiptCheck = verifySignedExecutionReceipt(signedReceipt, { authorityBundle, trustedRootFingerprint, now });
   if (!receiptCheck.verified) {
     check(checks, "signed_receipt", false, receiptCheck.reason);
@@ -363,6 +374,9 @@ export function verifySignedExecutionResult(envelope, options = {}) {
   const bundleCheck = verifyAuthorityBundle(authorityBundle, { trustedRootFingerprint, now });
   if (!bundleCheck.ok) {
     check(checks, "authority_bundle", false, bundleCheck.reason);
+    if (bundleCheck.reason === "KEY_MALFORMED") {
+      return fail(checks, "SIGNED_RESULT_KEY_MALFORMED", "authority bundle contains a malformed signing key");
+    }
     return fail(checks, "SIGNED_RESULT_AUTHORITY_INVALID", `authority bundle invalid: ${bundleCheck.reason}`);
   }
   if (auth.authority_id !== authorityBundle.authority_id) {

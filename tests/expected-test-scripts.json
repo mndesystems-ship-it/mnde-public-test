@@ -12,6 +12,8 @@
   "test:execution-gate",
   "test:execution-gate-signing",
   "test:execution-id-dedup",
+  "test:execution-ledger",
+  "test:execution-result",
   "test:executor",
   "test:external-signer",
   "test:feline",
@@ -34,7 +36,9 @@
   "test:shell",
   "test:sidecar",
   "test:sidecar-pe",
+  "test:signed-execution-result",
   "test:signed-policy-bundle",
+  "test:signed-result-codes",
   "test:startup-checks",
   "test:trust-anchor",
   "test:trust-root"

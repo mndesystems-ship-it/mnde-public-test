@@ -9,6 +9,8 @@
 //   provider.signReceipt(canonicalPayload)  -> { key_id, value, fingerprint }
 //   provider.signPolicy(canonicalPayload)   -> { key_id, value, fingerprint }
 //   provider.signApproval(canonicalPayload) -> { key_id, value, fingerprint }
+//   provider.signResult(canonicalPayload)   -> { key_id, value, fingerprint }
+//   provider.signLedger(canonicalPayload)   -> { key_id, value, fingerprint }
 //   provider.getPublicBundle()              -> mnde.authority.bundle.v1 (public only)
 //
 // Selection is opt-in and fails closed:
@@ -56,6 +58,8 @@ export function createLocalDemoCustody(options = {}) {
   const receipt = { keyId: "local-demo-receipt", ...generateAuthorityKeyPair() };
   const policy = { keyId: "local-demo-policy", ...generateAuthorityKeyPair() };
   const approval = { keyId: "local-demo-approval", ...generateAuthorityKeyPair() };
+  const result = { keyId: "local-demo-result", ...generateAuthorityKeyPair() };
+  const ledger = { keyId: "local-demo-ledger", ...generateAuthorityKeyPair() };
 
   const bundle = buildAuthorityBundle({
     authorityId: "mnde-local-demo",
@@ -65,6 +69,8 @@ export function createLocalDemoCustody(options = {}) {
     receiptKeys: [{ keyId: receipt.keyId, publicPem: receipt.publicPem, validFrom: EPOCH, validUntil: FAR_FUTURE }],
     policyKeys: [{ keyId: policy.keyId, publicPem: policy.publicPem, validFrom: EPOCH, validUntil: FAR_FUTURE }],
     approvalKeys: [{ keyId: approval.keyId, publicPem: approval.publicPem, validFrom: EPOCH, validUntil: FAR_FUTURE }],
+    resultKeys: [{ keyId: result.keyId, publicPem: result.publicPem, validFrom: EPOCH, validUntil: FAR_FUTURE }],
+    ledgerKeys: [{ keyId: ledger.keyId, publicPem: ledger.publicPem, validFrom: EPOCH, validUntil: FAR_FUTURE }],
     revocation: []
   });
 
@@ -81,6 +87,8 @@ export function createLocalDemoCustody(options = {}) {
     signReceipt: signWith("receipt", receipt),
     signPolicy: signWith("policy", policy),
     signApproval: signWith("approval", approval),
+    signResult: signWith("result", result),
+    signLedger: signWith("ledger", ledger),
     getPublicBundle: () => structuredClone(bundle)
   };
 }
@@ -125,10 +133,12 @@ export function createFileBackedProductionCustody(env = process.env) {
   };
 
   const receipt = roleKey("receipt", "MNDE_RECEIPT_SIGNING_KEY", "MNDE_RECEIPT_KEY_ID");
-  // Policy/approval signing keys are optional for a deploy that only signs receipts.
+  // Policy/approval/result/ledger signing keys are optional for a deploy that only signs receipts.
   const optionalRoleKey = (role, keyEnv, idEnv) => (env[keyEnv] ? roleKey(role, keyEnv, idEnv) : null);
   const policy = optionalRoleKey("policy", "MNDE_POLICY_SIGNING_KEY", "MNDE_POLICY_KEY_ID");
   const approval = optionalRoleKey("approval", "MNDE_APPROVAL_SIGNING_KEY", "MNDE_APPROVAL_KEY_ID");
+  const resultKey = optionalRoleKey("result", "MNDE_RESULT_SIGNING_KEY", "MNDE_RESULT_KEY_ID");
+  const ledgerKey = optionalRoleKey("ledger", "MNDE_LEDGER_SIGNING_KEY", "MNDE_LEDGER_KEY_ID");
 
   const signer = (key, role) => {
     if (!key) return () => { throw new Error(`custody: no ${role} signing key configured`); };
@@ -142,6 +152,8 @@ export function createFileBackedProductionCustody(env = process.env) {
     signReceipt: signer(receipt, "receipt"),
     signPolicy: signer(policy, "policy"),
     signApproval: signer(approval, "approval"),
+    signResult: signer(resultKey, "result"),
+    signLedger: signer(ledgerKey, "ledger"),
     getPublicBundle: () => structuredClone(bundle)
   };
 }

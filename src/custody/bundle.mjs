@@ -15,6 +15,7 @@ import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sig
 import { canonicalizeJson } from "../../shared/json.ts";
 
 export const BUNDLE_SCHEMA = "mnde.authority.bundle.v1";
+export const AUTHORITY_KEY_ROLES = Object.freeze(["receipt", "policy", "approval", "result", "ledger"]);
 
 function isObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -53,23 +54,40 @@ function bundleWithoutSignature(bundle) {
 // Build and root-sign an authority bundle (public material only).
 export function buildAuthorityBundle(input) {
   const mapKeys = (keys) => (keys ?? []).map((k) => ({
-    key_id: k.keyId,
-    public_key: k.publicPem,
-    fingerprint: fingerprintOf(k.publicPem),
-    valid_from: k.validFrom,
-    valid_until: k.validUntil
+    key_id: k.keyId ?? k.key_id,
+    public_key: k.publicPem ?? k.public_key,
+    fingerprint: k.fingerprint ?? fingerprintOf(k.publicPem ?? k.public_key),
+    valid_from: k.validFrom ?? k.valid_from,
+    valid_until: k.validUntil ?? k.valid_until
   }));
+
+  const mappedKeys = {
+    receipt: mapKeys(input.receiptKeys),
+    policy: mapKeys(input.policyKeys),
+    approval: mapKeys(input.approvalKeys),
+    result: mapKeys(input.resultKeys),
+    ledger: mapKeys(input.ledgerKeys)
+  };
+
+  // Reject duplicate key_id or fingerprint across all roles.
+  const seenKeyIds = new Set();
+  const seenFingerprints = new Set();
+  for (const [role, keys] of Object.entries(mappedKeys)) {
+    for (const k of keys) {
+      if (seenKeyIds.has(k.key_id)) throw new Error(`buildAuthorityBundle: duplicate key_id "${k.key_id}" (found again in role "${role}")`);
+      seenKeyIds.add(k.key_id);
+      if (seenFingerprints.has(k.fingerprint)) throw new Error(`buildAuthorityBundle: duplicate key fingerprint in role "${role}" — same public key used in multiple roles`);
+      seenFingerprints.add(k.fingerprint);
+    }
+  }
+
   const body = {
     schema_version: BUNDLE_SCHEMA,
     authority_id: input.authorityId,
     issued_at: input.issuedAt,
     not_after: input.notAfter,
     root_key: { key_id: input.root.keyId, public_key: input.root.publicPem, fingerprint: fingerprintOf(input.root.publicPem) },
-    keys: {
-      receipt: mapKeys(input.receiptKeys),
-      policy: mapKeys(input.policyKeys),
-      approval: mapKeys(input.approvalKeys)
-    },
+    keys: mappedKeys,
     revocation: Array.isArray(input.revocation) ? input.revocation : []
   };
   return { ...body, signature: { algorithm: "ED25519", value: signCanonical(canonicalizeJson(body), input.root.privatePem) } };
@@ -81,13 +99,45 @@ export function verifyAuthorityBundle(bundle, options = {}) {
   if (!isObject(bundle) || bundle.schema_version !== BUNDLE_SCHEMA) return { ok: false, reason: "UNSUPPORTED_BUNDLE" };
   const root = bundle.root_key;
   if (!isObject(root) || typeof root.public_key !== "string" || typeof root.fingerprint !== "string") return { ok: false, reason: "MALFORMED_BUNDLE" };
-  if (fingerprintOf(root.public_key) !== root.fingerprint) return { ok: false, reason: "ROOT_FINGERPRINT_MISMATCH" };
+
+  let derivedRootFp;
+  try {
+    derivedRootFp = fingerprintOf(root.public_key);
+  } catch {
+    return { ok: false, reason: "MALFORMED_ROOT_KEY" };
+  }
+  if (derivedRootFp !== root.fingerprint) return { ok: false, reason: "ROOT_FINGERPRINT_MISMATCH" };
+
   if (typeof options.trustedRootFingerprint !== "string" || options.trustedRootFingerprint.length === 0) return { ok: false, reason: "MISSING_TRUSTED_ROOT" };
   if (root.fingerprint !== options.trustedRootFingerprint) return { ok: false, reason: "UNTRUSTED_ROOT" };
 
   const signature = bundle.signature;
   if (!isObject(signature) || signature.algorithm !== "ED25519" || typeof signature.value !== "string") return { ok: false, reason: "UNSIGNED_BUNDLE" };
   if (!verifyCanonical(canonicalizeJson(bundleWithoutSignature(bundle)), signature.value, root.public_key)) return { ok: false, reason: "BUNDLE_SIGNATURE_INVALID" };
+
+  // Reject duplicate key_id or fingerprint across roles — prevents a key from
+  // acting simultaneously as receipt, policy, approval, or result key.
+  const seenIds = new Set();
+  const seenFps = new Set();
+  for (const role of AUTHORITY_KEY_ROLES) {
+    const roleKeys = Array.isArray(bundle.keys?.[role]) ? bundle.keys[role] : [];
+    for (const k of roleKeys) {
+      if (!isObject(k) || typeof k.key_id !== "string" || typeof k.public_key !== "string" || typeof k.fingerprint !== "string") {
+        return { ok: false, reason: "MALFORMED_BUNDLE_KEY", role };
+      }
+      let derivedFp;
+      try {
+        derivedFp = fingerprintOf(k.public_key);
+      } catch {
+        return { ok: false, reason: "KEY_MALFORMED", role, key_id: k.key_id };
+      }
+      if (derivedFp !== k.fingerprint) return { ok: false, reason: "KEY_FINGERPRINT_MISMATCH", role, key_id: k.key_id };
+      if (seenIds.has(k.key_id)) return { ok: false, reason: "CROSS_ROLE_KEY_ID_CONFLICT", role, key_id: k.key_id };
+      seenIds.add(k.key_id);
+      if (seenFps.has(k.fingerprint)) return { ok: false, reason: "CROSS_ROLE_KEY_FINGERPRINT_CONFLICT", role, key_id: k.key_id };
+      seenFps.add(k.fingerprint);
+    }
+  }
 
   const now = options.now ?? new Date().toISOString();
   if (!isValidTimestamp(now)) return { ok: false, reason: "INVALID_NOW" };
