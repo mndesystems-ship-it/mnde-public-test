@@ -5,7 +5,7 @@
 // throws. Canonicalization delegates to the shared canonicalizeJson utility so
 // request hashes are deterministic across platforms.
 
-import { createHash } from "node:crypto";
+import { sha256 } from "../crypto/provider.mjs";
 
 import { canonicalizeJson } from "../../shared/json.ts";
 
@@ -222,5 +222,5 @@ export function canonicalizeRequest(req) {
 }
 
 export function hashRequest(req) {
-  return createHash("sha256").update(canonicalizeRequest(req), "utf8").digest("hex");
+  return sha256(canonicalizeRequest(req));
 }

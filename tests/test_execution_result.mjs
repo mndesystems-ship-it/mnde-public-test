@@ -5,24 +5,27 @@
 //   npm run test:execution-result
 
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { generateKeyPairSync } from "node:crypto";
 
 import { canonicalizeJson } from "../shared/json.ts";
+import { sha256 } from "../src/crypto/provider.mjs";
 import { fingerprintOf, signCanonical } from "../src/custody/index.mjs";
 import { buildExecutionResult, canonicalResultPayload, computeResultHash, validateExecutionResult } from "../src/execution-gate/result.mjs";
 import { verifyExecutionResult } from "../src/execution-gate/verify-result.mjs";
 
 const results = [];
+let testChain = Promise.resolve();
 function test(name, fn) {
-  try {
-    fn();
-    results.push(true);
-    console.log(`  [PASS] ${name}`);
-  } catch (error) {
-    results.push(false);
-    console.log(`  [FAIL] ${name}: ${error.message}`);
-  }
+  testChain = testChain.then(async () => {
+    try {
+      await fn();
+      results.push(true);
+      console.log(`  [PASS] ${name}`);
+    } catch (error) {
+      results.push(false);
+      console.log(`  [FAIL] ${name}: ${error.message}`);
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -30,7 +33,7 @@ function test(name, fn) {
 // ---------------------------------------------------------------------------
 
 function sha256Hex(obj) {
-  return createHash("sha256").update(canonicalizeJson(obj), "utf8").digest("hex");
+  return sha256(canonicalizeJson(obj));
 }
 
 function minimalResult(overrides = {}) {
@@ -92,9 +95,9 @@ const { privateKey: executorPrivKey, publicKey: executorPubKey } = generateKeyPa
   publicKeyEncoding: { type: "spki", format: "pem" }
 });
 
-function signResult(result, privateKeyPem) {
+async function signResult(result, privateKeyPem) {
   const canonical = canonicalResultPayload(result);
-  const value = signCanonical(canonical, privateKeyPem);
+  const value = await signCanonical(canonical, privateKeyPem);
   return {
     ...result,
     executor_signature: {
@@ -350,39 +353,39 @@ test("ROLLBACK_FAILED with error and rollback is accepted", () => {
 // ---------------------------------------------------------------------------
 console.log("\nHostile — result_hash integrity:");
 
-test("tampered decision field fails result_hash check", () => {
+test("tampered decision field fails result_hash check", async () => {
   const result = minimalResult();
   const tampered = { ...result, decision: "REFUSE", status: "NOT_EXECUTED", effects: [], non_execution_reason: "MANUAL_ABORT" };
   // Re-use original result_hash (not recomputed for tampered content).
-  const r = verifyExecutionResult({ ...tampered, result_hash: result.result_hash });
+  const r = await verifyExecutionResult({ ...tampered, result_hash: result.result_hash });
   assert.strictEqual(r.verified, false);
   assert.ok(r.reason.includes("result_hash"));
 });
 
-test("tampered executor.id fails result_hash check", () => {
+test("tampered executor.id fails result_hash check", async () => {
   const result = minimalResult();
   const tampered = { ...result, executor: { ...result.executor, id: "evil-runner" } };
-  const r = verifyExecutionResult({ ...tampered, result_hash: result.result_hash });
+  const r = await verifyExecutionResult({ ...tampered, result_hash: result.result_hash });
   assert.strictEqual(r.verified, false);
   assert.ok(r.reason.includes("result_hash"));
 });
 
-test("tampered effects array fails result_hash check", () => {
+test("tampered effects array fails result_hash check", async () => {
   const result = minimalResult();
   const tampered = {
     ...result,
     effects: [{ type: "deployment", resource_id: "evil-service", before: null, after: "sha256:" + "f".repeat(64) }]
   };
-  const r = verifyExecutionResult({ ...tampered, result_hash: result.result_hash });
+  const r = await verifyExecutionResult({ ...tampered, result_hash: result.result_hash });
   assert.strictEqual(r.verified, false);
   assert.ok(r.reason.includes("result_hash"));
 });
 
-test("recomputed result_hash over tampered content does not pass structure check", () => {
+test("recomputed result_hash over tampered content does not pass structure check", async () => {
   // Attacker recomputes hash after tampering — but tampered content fails structural validation.
   const result = minimalResult({ decision: "REFUSE", status: "SUCCEEDED" });
   // result_hash is recomputed over the tampered content
-  const r = verifyExecutionResult(result);
+  const r = await verifyExecutionResult(result);
   assert.strictEqual(r.verified, false);
   assert.ok(r.reason.includes("structure") || r.reason.includes("decision_status_consistency"));
 });
@@ -392,25 +395,25 @@ test("recomputed result_hash over tampered content does not pass structure check
 // ---------------------------------------------------------------------------
 console.log("\nHostile — executor_signature:");
 
-test("executor_signature present but no public key provided — fails closed", () => {
-  const result = signResult(minimalResult(), executorPrivKey);
-  const r = verifyExecutionResult(result); // no executorPublicKey
+test("executor_signature present but no public key provided — fails closed", async () => {
+  const result = await signResult(minimalResult(), executorPrivKey);
+  const r = await verifyExecutionResult(result); // no executorPublicKey
   assert.strictEqual(r.verified, false);
   assert.ok(r.reason.includes("executor_signature"));
 });
 
-test("executor_signature with wrong key fails", () => {
-  const result = signResult(minimalResult(), executorPrivKey);
+test("executor_signature with wrong key fails", async () => {
+  const result = await signResult(minimalResult(), executorPrivKey);
   const { privateKey: otherPrivKey, publicKey: otherPubKey } = generateKeyPairSync("ed25519", {
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
     publicKeyEncoding: { type: "spki", format: "pem" }
   });
   // Provide the wrong public key for verification.
-  const r = verifyExecutionResult(result, { executorPublicKey: otherPubKey });
+  const r = await verifyExecutionResult(result, { executorPublicKey: otherPubKey });
   assert.strictEqual(r.verified, false);
 });
 
-test("executor_signature with self-reported fingerprint spoofing attempt fails", () => {
+test("executor_signature with self-reported fingerprint spoofing attempt fails", async () => {
   // Attacker signs with their key but claims the fingerprint of the legitimate key.
   const { privateKey: attackerPrivKey, publicKey: attackerPubKey } = generateKeyPairSync("ed25519", {
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
@@ -418,7 +421,7 @@ test("executor_signature with self-reported fingerprint spoofing attempt fails",
   });
   const result = minimalResult();
   const canonical = canonicalResultPayload(result);
-  const value = signCanonical(canonical, attackerPrivKey);
+  const value = await signCanonical(canonical, attackerPrivKey);
   const spoofed = {
     ...result,
     executor_signature: {
@@ -431,25 +434,25 @@ test("executor_signature with self-reported fingerprint spoofing attempt fails",
   // Verifier derives fingerprint from executorPubKey (legitimate), compares to
   // self-reported value in spoofed sig — fingerprints match but Ed25519 verify
   // fails because signature was made with attacker key.
-  const r = verifyExecutionResult(spoofed, { executorPublicKey: executorPubKey });
+  const r = await verifyExecutionResult(spoofed, { executorPublicKey: executorPubKey });
   assert.strictEqual(r.verified, false);
 });
 
-test("tampered result body fails executor_signature even with correct key", () => {
-  const signed = signResult(minimalResult(), executorPrivKey);
+test("tampered result body fails executor_signature even with correct key", async () => {
+  const signed = await signResult(minimalResult(), executorPrivKey);
   const tampered = { ...signed, execution_id: "tampered-exec-id" };
   // Recompute result_hash so hash check passes, but sig now fails.
   const withNewHash = { ...tampered, result_hash: computeResultHash(tampered) };
-  const r = verifyExecutionResult(withNewHash, { executorPublicKey: executorPubKey });
+  const r = await verifyExecutionResult(withNewHash, { executorPublicKey: executorPubKey });
   assert.strictEqual(r.verified, false);
   assert.ok(r.reason.includes("executor_signature"));
 });
 
-test("valid signed result verifies successfully", () => {
+test("valid signed result verifies successfully", async () => {
   const result = minimalResult();
-  const signed = signResult(result, executorPrivKey);
+  const signed = await signResult(result, executorPrivKey);
   const withHash = { ...signed, result_hash: computeResultHash(signed) };
-  const r = verifyExecutionResult(withHash, { executorPublicKey: executorPubKey });
+  const r = await verifyExecutionResult(withHash, { executorPublicKey: executorPubKey });
   assert.strictEqual(r.verified, true, r.reason);
   assert.ok(r.checks.executor_signature.ok);
 });
@@ -459,19 +462,19 @@ test("valid signed result verifies successfully", () => {
 // ---------------------------------------------------------------------------
 console.log("\nHostile — receipt hash binding:");
 
-test("mismatched execution_receipt_hash fails when original receipt provided", () => {
+test("mismatched execution_receipt_hash fails when original receipt provided", async () => {
   const fakeReceipt = { decision: "ALLOW", execution_id: "exec-001" };
   const result = minimalResult(); // has "b".repeat(64) as receipt hash, not the real hash
-  const r = verifyExecutionResult(result, { originalReceipt: fakeReceipt });
+  const r = await verifyExecutionResult(result, { originalReceipt: fakeReceipt });
   assert.strictEqual(r.verified, false);
   assert.ok(r.reason.includes("receipt_hash_binding"));
 });
 
-test("correct execution_receipt_hash passes when original receipt provided", () => {
+test("correct execution_receipt_hash passes when original receipt provided", async () => {
   const fakeReceipt = { decision: "ALLOW", execution_id: "exec-001" };
   const receiptHash = sha256Hex(fakeReceipt);
   const result = minimalResult({ execution_receipt_hash: receiptHash });
-  const r = verifyExecutionResult(result, { originalReceipt: fakeReceipt });
+  const r = await verifyExecutionResult(result, { originalReceipt: fakeReceipt });
   assert.strictEqual(r.verified, true, r.reason);
   assert.ok(r.checks.receipt_hash_binding.ok);
 });
@@ -481,9 +484,9 @@ test("correct execution_receipt_hash passes when original receipt provided", () 
 // ---------------------------------------------------------------------------
 console.log("\nBehavioral — valid results:");
 
-test("minimal valid unsigned result verifies", () => {
+test("minimal valid unsigned result verifies", async () => {
   const result = minimalResult();
-  const r = verifyExecutionResult(result);
+  const r = await verifyExecutionResult(result);
   assert.strictEqual(r.verified, true, r.reason);
   // Unsigned result is noted but not a failure.
   assert.ok(r.checks.executor_signature.detail.includes("executor-asserted"));
@@ -495,12 +498,12 @@ test("buildExecutionResult throws on invalid body", () => {
   assert.throws(() => buildExecutionResult({ schema_version: "mnde.execution_result.v2" }), /invalid result/);
 });
 
-test("buildExecutionResult produces a verifiable result", () => {
+test("buildExecutionResult produces a verifiable result", async () => {
   const base = { ...minimalResult() };
   const { result_hash: _rh, ...withoutHash } = base;
   const built = buildExecutionResult(withoutHash);
   assert.strictEqual(built.schema_version, "mnde.execution_result.v2");
-  const r = verifyExecutionResult(built);
+  const r = await verifyExecutionResult(built);
   assert.strictEqual(r.verified, true, r.reason);
 });
 
@@ -521,6 +524,7 @@ test("duration_ms is not defined in validateExecutionResult schema", () => {
 // ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
+await testChain;
 const passed = results.filter(Boolean).length;
 const failed = results.filter((r) => !r).length;
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -32,7 +32,7 @@ async function main() {
   const base = mkdtempSync(join(tmpdir(), "mnde-authinit-"));
   try {
     const outDir = join(base, "root");
-    const res = initProductionAuthority({ outDir, authorityId: "acme-prod", now: NOW });
+    const res = await initProductionAuthority({ outDir, authorityId: "acme-prod", now: NOW });
 
     await test("creates a verifiable trust root and reports the fingerprint", () => {
       assert.equal(res.ok, true, res.reason);
@@ -44,16 +44,16 @@ async function main() {
       assert.ok(!JSON.stringify(bundle).includes("PRIVATE KEY"), "published bundle carries no private key");
     });
 
-    await test("loads through file-backed-production custody and signs a verifiable receipt", () => {
+    await test("loads through file-backed-production custody and signs a verifiable receipt", async () => {
       const provider = createFileBackedProductionCustody({
         MNDE_AUTHORITY_BUNDLE: res.paths.bundle,
         MNDE_RECEIPT_SIGNING_KEY: res.paths.receiptPrivate,
         MNDE_RECEIPT_KEY_ID: res.receiptKeyId
       });
       const payload = canonicalizeJson({ decision: "ALLOW" });
-      const sig = provider.signReceipt(payload);
+      const sig = await provider.signReceipt(payload);
       const bundle = provider.getPublicBundle();
-      assert.equal(verifyAgainstBundle(payload, sig.value, "receipt", sig.key_id, NOW, bundle).ok, true);
+      assert.equal((await verifyAgainstBundle(payload, sig.value, "receipt", sig.key_id, NOW, bundle)).ok, true);
     });
 
     await test("passes the production trust-root pre-flight", async () => {
@@ -69,20 +69,20 @@ async function main() {
       assert.equal(trust.profile, "production");
     });
 
-    await test("refuses to overwrite an existing trust root", () => {
-      const again = initProductionAuthority({ outDir, authorityId: "acme-prod", now: NOW });
+    await test("refuses to overwrite an existing trust root", async () => {
+      const again = await initProductionAuthority({ outDir, authorityId: "acme-prod", now: NOW });
       assert.equal(again.ok, false);
       assert.match(again.reason, /overwrite/);
     });
 
-    await test("refuses to write inside the repository", () => {
-      const r = initProductionAuthority({ outDir: join(repoRoot, "tmp-root"), authorityId: "acme-prod", now: NOW, repoRoot });
+    await test("refuses to write inside the repository", async () => {
+      const r = await initProductionAuthority({ outDir: join(repoRoot, "tmp-root"), authorityId: "acme-prod", now: NOW, repoRoot });
       assert.equal(r.ok, false);
       assert.match(r.reason, /inside the repository/);
     });
 
-    await test("refuses a demo/local authority id", () => {
-      const r = initProductionAuthority({ outDir: join(base, "root2"), authorityId: "mnde-local-demo", now: NOW });
+    await test("refuses a demo/local authority id", async () => {
+      const r = await initProductionAuthority({ outDir: join(base, "root2"), authorityId: "mnde-local-demo", now: NOW });
       assert.equal(r.ok, false);
       assert.match(r.reason, /local.*demo|demo/);
     });

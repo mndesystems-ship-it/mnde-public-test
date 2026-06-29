@@ -23,7 +23,7 @@
 // can change every run, and has no verified provenance. Record it as
 // executor_instance_id evidence under the passport, never as the passport key.
 
-import { createHash } from "node:crypto";
+import { sha256 } from "../crypto/provider.mjs";
 
 import { canonicalizeJson } from "../../shared/json.ts";
 
@@ -54,7 +54,7 @@ export function computePassportSubjectId({ issuer, verified_identity, authority_
     verified_identity
   };
 
-  return "sha256:" + createHash("sha256").update(canonicalizeJson(subject), "utf8").digest("hex");
+  return "sha256:" + sha256(canonicalizeJson(subject));
 }
 
 // Derive passport_subject_id from a verified identity_assertion and the

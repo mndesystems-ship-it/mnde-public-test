@@ -28,10 +28,13 @@ const provenance = {
   activation_mode: "enforce", rollback_authorization_id: null
 };
 const results = [];
+let testChain = Promise.resolve();
 
 function test(name, fn) {
-  try { fn(); results.push(true); console.log(`  [PASS] ${name}`); }
-  catch (error) { results.push(false); console.log(`  [FAIL] ${name}: ${error.message}`); }
+  testChain = testChain.then(async () => {
+    try { await fn(); results.push(true); console.log(`  [PASS] ${name}`); }
+    catch (error) { results.push(false); console.log(`  [FAIL] ${name}: ${error.message}`); }
+  });
 }
 
 function signedBundleReceipt() {
@@ -43,43 +46,44 @@ function signedBundleReceipt() {
 
 console.log("MNDe Signed Policy Bundle provenance gates\n");
 
-test("valid bundle provenance appears in a signed policy receipt", () => {
+test("valid bundle provenance appears in a signed policy receipt", async () => {
   const receipt = signedBundleReceipt();
   assert.deepEqual(receipt.policy_bundle_provenance, { ...provenance, policy_hash: receipt.policy_hash });
-  assert.equal(verifyPolicyReceipt(receipt).verified, true);
+  assert.equal((await verifyPolicyReceipt(receipt)).verified, true);
 });
 
-test("replay preserves signed bundle provenance", () => {
+test("replay preserves signed bundle provenance", async () => {
   const receipt = signedBundleReceipt();
-  const result = verifyPolicyReceipt(receipt);
+  const result = await verifyPolicyReceipt(receipt);
   assert.equal(result.verified, true, result.reason);
   assert.deepEqual(result.policy_bundle_provenance, receipt.policy_bundle_provenance);
 });
 
-test("tampering bundle serial fails offline verification", () => {
+test("tampering bundle serial fails offline verification", async () => {
   const receipt = signedBundleReceipt();
   receipt.policy_bundle_provenance.serial = 8;
-  assert.equal(verifyPolicyReceipt(receipt).verified, false);
+  assert.equal((await verifyPolicyReceipt(receipt)).verified, false);
 });
 
-test("tampering bundle id fails offline verification", () => {
+test("tampering bundle id fails offline verification", async () => {
   const receipt = signedBundleReceipt();
   receipt.policy_bundle_provenance.bundle_id = "attacker-bundle";
-  assert.equal(verifyPolicyReceipt(receipt).verified, false);
+  assert.equal((await verifyPolicyReceipt(receipt)).verified, false);
 });
 
-test("provenance policy hash must match the replayed policy", () => {
+test("provenance policy hash must match the replayed policy", async () => {
   const receipt = signedBundleReceipt();
   receipt.policy_bundle_provenance.policy_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
-  assert.equal(verifyPolicyReceipt(receipt).verified, false);
+  assert.equal((await verifyPolicyReceipt(receipt)).verified, false);
 });
 
-test("legacy policy receipts remain unchanged", () => {
+test("legacy policy receipts remain unchanged", async () => {
   const receipt = buildPolicyReceipt(request, policy);
   assert.equal("policy_bundle_provenance" in receipt, false);
-  assert.equal(verifyPolicyReceipt(receipt).verified, true);
+  assert.equal((await verifyPolicyReceipt(receipt)).verified, true);
 });
 
+await testChain;
 const failed = results.filter((ok) => !ok).length;
 console.log("");
 if (failed > 0) {

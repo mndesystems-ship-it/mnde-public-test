@@ -170,7 +170,7 @@ async function main() {
     const approvals = approvalsPath ? JSON.parse(readFileSync(approvalsPath, "utf8")) : undefined;
     const approvalTrustAnchors = approvalAnchorsPath ? JSON.parse(readFileSync(approvalAnchorsPath, "utf8")) : undefined;
     const receipt = buildPolicyReceipt(request, policy, { authorities, trustAnchors, approvals, approvalTrustAnchors });
-    const verified = verifyPolicyReceipt(receipt, { trustAnchors, approvalTrustAnchors }).verified;
+    const verified = (await verifyPolicyReceipt(receipt, { trustAnchors, approvalTrustAnchors })).verified;
     line(`Decision:    ${receipt.decision_output.decision}`);
     line(`Reason:      ${receipt.decision_output.reason_code}`);
     line(`Receipt:     ${verified ? "VERIFIED (offline)" : "NOT VERIFIED"}`);

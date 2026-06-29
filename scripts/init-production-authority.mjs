@@ -42,7 +42,7 @@ function addDaysIso(nowIso, days) {
 }
 
 // Pure, testable core. Returns { ok, ... } or { ok:false, reason }.
-export function initProductionAuthority(options = {}) {
+export async function initProductionAuthority(options = {}) {
   const {
     outDir,
     authorityId,
@@ -77,7 +77,7 @@ export function initProductionAuthority(options = {}) {
   const root_ = { keyId: rootKeyId, ...generateAuthorityKeyPair() };
   const receipt = { keyId: receiptKeyId, ...generateAuthorityKeyPair() };
 
-  const bundle = buildAuthorityBundle({
+  const bundle = await buildAuthorityBundle({
     authorityId,
     issuedAt: now,
     notAfter: addDaysIso(now, bundleDays),
@@ -87,9 +87,9 @@ export function initProductionAuthority(options = {}) {
   });
 
   // Verify the produced trust root before writing anything (fail closed).
-  const bundleCheck = verifyAuthorityBundle(bundle, { trustedRootFingerprint: bundle.root_key.fingerprint, now });
+  const bundleCheck = await verifyAuthorityBundle(bundle, { trustedRootFingerprint: bundle.root_key.fingerprint, now });
   if (!bundleCheck.ok) return { ok: false, reason: `produced bundle failed verification: ${bundleCheck.reason}` };
-  const probe = signCanonical(canonicalizeJson({ probe: true }), receipt.privatePem);
+  const probe = await signCanonical(canonicalizeJson({ probe: true }), receipt.privatePem);
   const keyCheck = findBundleKey(bundle, "receipt", receipt.keyId, now);
   if (!keyCheck.ok || probe.length === 0) return { ok: false, reason: "receipt key did not validate against the bundle" };
 
@@ -115,14 +115,14 @@ function arg(name, fallback) {
   return i >= 0 ? process.argv[i + 1] : fallback;
 }
 
-function main() {
+async function main() {
   const outDir = arg("--out");
   const authorityId = arg("--authority-id");
   if (!outDir || !authorityId) {
     process.stderr.write("usage: node scripts/init-production-authority.mjs --out <dir-outside-repo> --authority-id <id> [--valid-days 365] [--bundle-days 90] [--receipt-key-id receipt-1] [--root-key-id root-1]\n");
     process.exit(2);
   }
-  const result = initProductionAuthority({
+  const result = await initProductionAuthority({
     outDir,
     authorityId,
     validDays: Number(arg("--valid-days", "365")),
@@ -156,5 +156,8 @@ function main() {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
-  main();
+  main().catch((error) => {
+    process.stderr.write(`init-production-authority: ${error?.message ?? String(error)}\n`);
+    process.exit(1);
+  });
 }

@@ -18,9 +18,8 @@
 //   npm run test:executor-lifecycle
 
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-
 import { canonicalizeJson } from "../shared/json.ts";
+import { sha256 } from "../src/crypto/provider.mjs";
 import {
   buildAuthorityBundle,
   generateAuthorityKeyPair
@@ -37,15 +36,18 @@ import { verifySignedExecutionResult } from "../src/execution-gate/verify-signed
 import { computePassportSubjectId } from "../src/identity/passport.mjs";
 
 const results = [];
+let testChain = Promise.resolve();
 function test(name, fn) {
-  try {
-    fn();
-    results.push(true);
-    console.log(`  [PASS] ${name}`);
-  } catch (error) {
-    results.push(false);
-    console.log(`  [FAIL] ${name}: ${error.message}`);
-  }
+  testChain = testChain.then(async () => {
+    try {
+      await fn();
+      results.push(true);
+      console.log(`  [PASS] ${name}`);
+    } catch (error) {
+      results.push(false);
+      console.log(`  [FAIL] ${name}: ${error.message}`);
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -58,16 +60,16 @@ const AUTHORITY_CHAIN_ID = "mnde-acme-prod-chain";
 const ALT_CHAIN_ID = "mnde-acme-staging-chain";
 
 function sha256Hex(obj) {
-  return createHash("sha256").update(canonicalizeJson(obj), "utf8").digest("hex");
+  return sha256(canonicalizeJson(obj));
 }
 
-function makeBundle({ revoke = [] } = {}) {
+async function makeBundle({ revoke = [] } = {}) {
   const root = { keyId: "root", ...generateAuthorityKeyPair() };
   const receiptKey = { keyId: "receipt-key", ...generateAuthorityKeyPair() };
   const resultKey = { keyId: "result-key", ...generateAuthorityKeyPair() };
   const policyKey = { keyId: "policy-key", ...generateAuthorityKeyPair() };
   const approvalKey = { keyId: "approval-key", ...generateAuthorityKeyPair() };
-  const bundle = buildAuthorityBundle({
+  const bundle = await buildAuthorityBundle({
     authorityId: "mnde-test-authority",
     issuedAt: "2026-01-01T00:00:00.000Z",
     notAfter: "2028-01-01T00:00:00.000Z",
@@ -82,7 +84,7 @@ function makeBundle({ revoke = [] } = {}) {
 }
 
 // Base bundle — stable across all tests that don't need rotation or revocation.
-const F = makeBundle();
+const F = await makeBundle();
 
 function minimalRequest(id) {
   return {
@@ -100,8 +102,8 @@ function minimalRequest(id) {
   };
 }
 
-function makeSignedReceipt(fixtures, request) {
-  return buildSignedExecutionReceipt(request, "ALLOW", {
+async function makeSignedReceipt(fixtures, request) {
+  return await buildSignedExecutionReceipt(request, "ALLOW", {
     authorityBundle: fixtures.bundle,
     signingKeyId: fixtures.receiptKey.keyId,
     signingPrivateKeyPem: fixtures.receiptKey.privatePem
@@ -159,8 +161,8 @@ function makeExecutionResult(signedReceipt, { identityAssertion, executorId = "r
   return buildExecutionResult(body);
 }
 
-function makeSignedResult(fixtures, signedReceipt, executionResult, chainId = AUTHORITY_CHAIN_ID) {
-  return buildSignedExecutionResult(executionResult, {
+async function makeSignedResult(fixtures, signedReceipt, executionResult, chainId = AUTHORITY_CHAIN_ID) {
+  return await buildSignedExecutionResult(executionResult, {
     authorityBundle: fixtures.bundle,
     trustedRootFingerprint: fixtures.trustedRootFingerprint,
     signingKeyId: fixtures.resultKey.keyId,
@@ -172,8 +174,8 @@ function makeSignedResult(fixtures, signedReceipt, executionResult, chainId = AU
   });
 }
 
-function verify(fixtures, envelope, signedReceipt) {
-  return verifySignedExecutionResult(envelope, {
+async function verify(fixtures, envelope, signedReceipt) {
+  return await verifySignedExecutionResult(envelope, {
     authorityBundle: fixtures.bundle,
     trustedRootFingerprint: fixtures.trustedRootFingerprint,
     now: NOW_ISO,
@@ -187,20 +189,20 @@ function verify(fixtures, envelope, signedReceipt) {
 
 console.log("\n1. Same config, multiple runs — passport_subject_id must be stable:");
 
-test("run 1 and run 2 with identical config produce the same passport_subject_id", () => {
+test("run 1 and run 2 with identical config produce the same passport_subject_id", async () => {
   const assertion = makeAssertion();
 
   const req1 = minimalRequest("exec-lifecycle-run1");
-  const receipt1 = makeSignedReceipt(F, req1);
+  const receipt1 = await makeSignedReceipt(F, req1);
   const result1 = makeExecutionResult(receipt1, { identityAssertion: assertion });
-  const env1 = makeSignedResult(F, receipt1, result1);
-  const v1 = verify(F, env1, receipt1);
+  const env1 = await makeSignedResult(F, receipt1, result1);
+  const v1 = await verify(F, env1, receipt1);
 
   const req2 = minimalRequest("exec-lifecycle-run2");
-  const receipt2 = makeSignedReceipt(F, req2);
+  const receipt2 = await makeSignedReceipt(F, req2);
   const result2 = makeExecutionResult(receipt2, { identityAssertion: assertion });
-  const env2 = makeSignedResult(F, receipt2, result2);
-  const v2 = verify(F, env2, receipt2);
+  const env2 = await makeSignedResult(F, receipt2, result2);
+  const v2 = await verify(F, env2, receipt2);
 
   assert.ok(v1.valid, `run 1: ${v1.code}`);
   assert.ok(v2.valid, `run 2: ${v2.code}`);
@@ -209,15 +211,15 @@ test("run 1 and run 2 with identical config produce the same passport_subject_id
   assert.strictEqual(v1.passport_subject_id, v2.passport_subject_id);
 });
 
-test("run N times — passport_subject_id is identical across all runs", () => {
+test("run N times — passport_subject_id is identical across all runs", async () => {
   const assertion = makeAssertion();
   const subjectIds = [];
   for (let i = 0; i < 5; i++) {
     const req = minimalRequest(`exec-lifecycle-stable-${i}`);
-    const receipt = makeSignedReceipt(F, req);
+    const receipt = await makeSignedReceipt(F, req);
     const result = makeExecutionResult(receipt, { identityAssertion: assertion });
-    const env = makeSignedResult(F, receipt, result);
-    const v = verify(F, env, receipt);
+    const env = await makeSignedResult(F, receipt, result);
+    const v = await verify(F, env, receipt);
     assert.ok(v.valid, `run ${i}: ${v.code}`);
     subjectIds.push(v.passport_subject_id);
   }
@@ -231,17 +233,17 @@ test("run N times — passport_subject_id is identical across all runs", () => {
 
 console.log("\n2. executor.id changes (restart, container recreate):");
 
-test("different executor.id with same identity produces same passport_subject_id", () => {
+test("different executor.id with same identity produces same passport_subject_id", async () => {
   const assertion = makeAssertion();
   const executorIds = ["runner-11111", "runner-22222", "container-abc-def", "github-runner-XYZ"];
   const subjectIds = [];
   let i = 0;
   for (const executorId of executorIds) {
     const req = minimalRequest(`exec-lifecycle-execid-${i++}`);
-    const receipt = makeSignedReceipt(F, req);
+    const receipt = await makeSignedReceipt(F, req);
     const result = makeExecutionResult(receipt, { identityAssertion: assertion, executorId });
-    const env = makeSignedResult(F, receipt, result);
-    const v = verify(F, env, receipt);
+    const env = await makeSignedResult(F, receipt, result);
+    const v = await verify(F, env, receipt);
     assert.ok(v.valid, `executor ${executorId}: ${v.code}`);
     subjectIds.push(v.passport_subject_id);
   }
@@ -255,23 +257,23 @@ test("different executor.id with same identity produces same passport_subject_id
 
 console.log("\n3. Key rotation — passport_subject_id must not change:");
 
-test("new result signing key with same OIDC identity produces same passport_subject_id", () => {
+test("new result signing key with same OIDC identity produces same passport_subject_id", async () => {
   const assertion = makeAssertion(); // verified_identity is unchanged
 
   // Original bundle + signing
   const req1 = minimalRequest("exec-lifecycle-key-before");
-  const receipt1 = makeSignedReceipt(F, req1);
+  const receipt1 = await makeSignedReceipt(F, req1);
   const result1 = makeExecutionResult(receipt1, { identityAssertion: assertion });
-  const env1 = makeSignedResult(F, receipt1, result1);
-  const v1 = verify(F, env1, receipt1);
+  const env1 = await makeSignedResult(F, receipt1, result1);
+  const v1 = await verify(F, env1, receipt1);
 
   // Rotated bundle — new result key, same identity assertion
-  const F2 = makeBundle();
+  const F2 = await makeBundle();
   const req2 = minimalRequest("exec-lifecycle-key-after");
-  const receipt2 = makeSignedReceipt(F2, req2);
+  const receipt2 = await makeSignedReceipt(F2, req2);
   const result2 = makeExecutionResult(receipt2, { identityAssertion: assertion });
-  const env2 = makeSignedResult(F2, receipt2, result2);
-  const v2 = verify(F2, env2, receipt2);
+  const env2 = await makeSignedResult(F2, receipt2, result2);
+  const v2 = await verify(F2, env2, receipt2);
 
   assert.ok(v1.valid, `before rotation: ${v1.code}`);
   assert.ok(v2.valid, `after rotation: ${v2.code}`);
@@ -285,39 +287,39 @@ test("new result signing key with same OIDC identity produces same passport_subj
 
 console.log("\n4. verified_identity changes:");
 
-test("different repo in verified_identity produces different passport_subject_id", () => {
+test("different repo in verified_identity produces different passport_subject_id", async () => {
   const a1 = makeAssertion({ verified_identity: "repo:acme/infra:ref:refs/heads/main" });
   const a2 = makeAssertion({ verified_identity: "repo:acme/payments:ref:refs/heads/main" });
 
   const req1 = minimalRequest("exec-lifecycle-vi1");
-  const receipt1 = makeSignedReceipt(F, req1);
+  const receipt1 = await makeSignedReceipt(F, req1);
   const result1 = makeExecutionResult(receipt1, { identityAssertion: a1 });
-  const env1 = makeSignedResult(F, receipt1, result1);
-  const v1 = verify(F, env1, receipt1);
+  const env1 = await makeSignedResult(F, receipt1, result1);
+  const v1 = await verify(F, env1, receipt1);
 
   const req2 = minimalRequest("exec-lifecycle-vi2");
-  const receipt2 = makeSignedReceipt(F, req2);
+  const receipt2 = await makeSignedReceipt(F, req2);
   const result2 = makeExecutionResult(receipt2, { identityAssertion: a2 });
-  const env2 = makeSignedResult(F, receipt2, result2);
-  const v2 = verify(F, env2, receipt2);
+  const env2 = await makeSignedResult(F, receipt2, result2);
+  const v2 = await verify(F, env2, receipt2);
 
   assert.ok(v1.valid && v2.valid, "both must verify");
   assert.notStrictEqual(v1.passport_subject_id, v2.passport_subject_id);
 });
 
-test("PR branch vs main branch produces different passport_subject_id", () => {
+test("PR branch vs main branch produces different passport_subject_id", async () => {
   const main = makeAssertion({ verified_identity: "repo:acme/infra:ref:refs/heads/main" });
   const pr = makeAssertion({ verified_identity: "repo:acme/infra:ref:refs/pull/42/head" });
 
   const req1 = minimalRequest("exec-lifecycle-main");
-  const receipt1 = makeSignedReceipt(F, req1);
-  const env1 = makeSignedResult(F, receipt1, makeExecutionResult(receipt1, { identityAssertion: main }));
-  const v1 = verify(F, env1, receipt1);
+  const receipt1 = await makeSignedReceipt(F, req1);
+  const env1 = await makeSignedResult(F, receipt1, makeExecutionResult(receipt1, { identityAssertion: main }));
+  const v1 = await verify(F, env1, receipt1);
 
   const req2 = minimalRequest("exec-lifecycle-pr");
-  const receipt2 = makeSignedReceipt(F, req2);
-  const env2 = makeSignedResult(F, receipt2, makeExecutionResult(receipt2, { identityAssertion: pr }));
-  const v2 = verify(F, env2, receipt2);
+  const receipt2 = await makeSignedReceipt(F, req2);
+  const env2 = await makeSignedResult(F, receipt2, makeExecutionResult(receipt2, { identityAssertion: pr }));
+  const v2 = await verify(F, env2, receipt2);
 
   assert.ok(v1.valid && v2.valid, "both must verify");
   assert.notStrictEqual(v1.passport_subject_id, v2.passport_subject_id);
@@ -329,7 +331,7 @@ test("PR branch vs main branch produces different passport_subject_id", () => {
 
 console.log("\n5. Issuer changes:");
 
-test("GitHub issuer vs GitLab issuer produces different passport_subject_id for same subject", () => {
+test("GitHub issuer vs GitLab issuer produces different passport_subject_id for same subject", async () => {
   // Same verified_identity string, but from different issuers.
   // In practice OIDC subjects would differ too, but the derivation ensures
   // the issuer alone is enough to differentiate.
@@ -337,14 +339,14 @@ test("GitHub issuer vs GitLab issuer produces different passport_subject_id for 
   const gitlab = makeAssertion({ identity_issuer: "https://gitlab.com" });
 
   const req1 = minimalRequest("exec-lifecycle-gh");
-  const receipt1 = makeSignedReceipt(F, req1);
-  const env1 = makeSignedResult(F, receipt1, makeExecutionResult(receipt1, { identityAssertion: github }));
-  const v1 = verify(F, env1, receipt1);
+  const receipt1 = await makeSignedReceipt(F, req1);
+  const env1 = await makeSignedResult(F, receipt1, makeExecutionResult(receipt1, { identityAssertion: github }));
+  const v1 = await verify(F, env1, receipt1);
 
   const req2 = minimalRequest("exec-lifecycle-gl");
-  const receipt2 = makeSignedReceipt(F, req2);
-  const env2 = makeSignedResult(F, receipt2, makeExecutionResult(receipt2, { identityAssertion: gitlab }));
-  const v2 = verify(F, env2, receipt2);
+  const receipt2 = await makeSignedReceipt(F, req2);
+  const env2 = await makeSignedResult(F, receipt2, makeExecutionResult(receipt2, { identityAssertion: gitlab }));
+  const v2 = await verify(F, env2, receipt2);
 
   assert.ok(v1.valid && v2.valid, "both must verify");
   assert.notStrictEqual(v1.passport_subject_id, v2.passport_subject_id);
@@ -356,19 +358,19 @@ test("GitHub issuer vs GitLab issuer produces different passport_subject_id for 
 
 console.log("\n6. authority_scope (authority_chain_id) changes:");
 
-test("different authority_chain_id produces different passport_subject_id for same identity", () => {
+test("different authority_chain_id produces different passport_subject_id for same identity", async () => {
   const assertion = makeAssertion();
 
   const req1 = minimalRequest("exec-lifecycle-scope1");
-  const receipt1 = makeSignedReceipt(F, req1);
-  const env1 = makeSignedResult(F, receipt1, makeExecutionResult(receipt1, { identityAssertion: assertion }), AUTHORITY_CHAIN_ID);
+  const receipt1 = await makeSignedReceipt(F, req1);
+  const env1 = await makeSignedResult(F, receipt1, makeExecutionResult(receipt1, { identityAssertion: assertion }), AUTHORITY_CHAIN_ID);
 
   const req2 = minimalRequest("exec-lifecycle-scope2");
-  const receipt2 = makeSignedReceipt(F, req2);
-  const env2 = makeSignedResult(F, receipt2, makeExecutionResult(receipt2, { identityAssertion: assertion }), ALT_CHAIN_ID);
+  const receipt2 = await makeSignedReceipt(F, req2);
+  const env2 = await makeSignedResult(F, receipt2, makeExecutionResult(receipt2, { identityAssertion: assertion }), ALT_CHAIN_ID);
 
-  const v1 = verify(F, env1, receipt1);
-  const v2 = verify(F, env2, receipt2);
+  const v1 = await verify(F, env1, receipt1);
+  const v2 = await verify(F, env2, receipt2);
 
   assert.ok(v1.valid && v2.valid, "both must verify");
   assert.notStrictEqual(v1.passport_subject_id, v2.passport_subject_id);
@@ -380,12 +382,12 @@ test("different authority_chain_id produces different passport_subject_id for sa
 
 console.log("\n7. No identity_assertion:");
 
-test("result without identity_assertion has passport_subject_id: null", () => {
+test("result without identity_assertion has passport_subject_id: null", async () => {
   const req = minimalRequest("exec-lifecycle-no-assertion");
-  const receipt = makeSignedReceipt(F, req);
+  const receipt = await makeSignedReceipt(F, req);
   const result = makeExecutionResult(receipt, { identityAssertion: undefined });
-  const env = makeSignedResult(F, receipt, result);
-  const v = verify(F, env, receipt);
+  const env = await makeSignedResult(F, receipt, result);
+  const v = await verify(F, env, receipt);
   assert.ok(v.valid, `should verify: ${v.code}`);
   assert.strictEqual(v.identity_evidence, "ASSERTED_ONLY");
   assert.strictEqual(v.passport_subject_id, null);
@@ -397,14 +399,14 @@ test("result without identity_assertion has passport_subject_id: null", () => {
 
 console.log("\n8. Revoked authority:");
 
-test("result signed by revoked result key fails verification", () => {
+test("result signed by revoked result key fails verification", async () => {
   // Build a bundle identical to F but with the result key revoked.
   // Use the SAME root key so trustedRootFingerprint still matches.
   // Generate fresh keys for policy and approval to avoid fingerprint collisions.
   const policyKey = { keyId: "revoke-test-policy-key", ...generateAuthorityKeyPair() };
   const approvalKey = { keyId: "revoke-test-approval-key", ...generateAuthorityKeyPair() };
 
-  const revokedBundle = buildAuthorityBundle({
+  const revokedBundle = await buildAuthorityBundle({
     authorityId: "mnde-test-authority",
     issuedAt: "2026-01-01T00:00:00.000Z",
     notAfter: "2028-01-01T00:00:00.000Z",
@@ -418,13 +420,13 @@ test("result signed by revoked result key fails verification", () => {
 
   const assertion = makeAssertion();
   const req = minimalRequest("exec-lifecycle-revoked");
-  const receipt = makeSignedReceipt(F, req);
+  const receipt = await makeSignedReceipt(F, req);
   const result = makeExecutionResult(receipt, { identityAssertion: assertion });
   // Sign with the original (non-revoked) bundle.
-  const env = makeSignedResult(F, receipt, result);
+  const env = await makeSignedResult(F, receipt, result);
 
   // Verify against the bundle with the result key revoked.
-  const v = verifySignedExecutionResult(env, {
+  const v = await verifySignedExecutionResult(env, {
     authorityBundle: revokedBundle,
     trustedRootFingerprint: F.trustedRootFingerprint,
     now: NOW_ISO,
@@ -440,12 +442,12 @@ test("result signed by revoked result key fails verification", () => {
 
 console.log("\n9. Tampered identity after signing:");
 
-test("identity_assertion tampered post-signing fails verification — no passport_subject_id leaks", () => {
+test("identity_assertion tampered post-signing fails verification — no passport_subject_id leaks", async () => {
   const assertion = makeAssertion();
   const req = minimalRequest("exec-lifecycle-tamper");
-  const receipt = makeSignedReceipt(F, req);
+  const receipt = await makeSignedReceipt(F, req);
   const result = makeExecutionResult(receipt, { identityAssertion: assertion });
-  const env = makeSignedResult(F, receipt, result);
+  const env = await makeSignedResult(F, receipt, result);
 
   // Swap verified_identity inside the envelope's assertion (keeps assertion_hash intact
   // so structural check passes, but hash mismatch detected by verifyIdentityAssertion).
@@ -462,7 +464,7 @@ test("identity_assertion tampered post-signing fails verification — no passpor
       }
     }
   };
-  const v = verify(F, tampered, receipt);
+  const v = await verify(F, tampered, receipt);
   assert.strictEqual(v.valid, false);
   // No passport_subject_id must appear in the failed verdict.
   assert.strictEqual(v.passport_subject_id, undefined);
@@ -474,13 +476,13 @@ test("identity_assertion tampered post-signing fails verification — no passpor
 
 console.log("\n10. passport_subject_id derivation correctness:");
 
-test("passport_subject_id in verdict matches computePassportSubjectId output", () => {
+test("passport_subject_id in verdict matches computePassportSubjectId output", async () => {
   const assertion = makeAssertion();
   const req = minimalRequest("exec-lifecycle-formula");
-  const receipt = makeSignedReceipt(F, req);
+  const receipt = await makeSignedReceipt(F, req);
   const result = makeExecutionResult(receipt, { identityAssertion: assertion });
-  const env = makeSignedResult(F, receipt, result);
-  const v = verify(F, env, receipt);
+  const env = await makeSignedResult(F, receipt, result);
+  const v = await verify(F, env, receipt);
 
   assert.ok(v.valid, `should verify: ${v.code}`);
   const expected = computePassportSubjectId({
@@ -491,7 +493,7 @@ test("passport_subject_id in verdict matches computePassportSubjectId output", (
   assert.strictEqual(v.passport_subject_id, expected);
 });
 
-test("passport_subject_id does not include executor.id, key_id, or timestamp", () => {
+test("passport_subject_id does not include executor.id, key_id, or timestamp", async () => {
   // Verify by formula: none of these fields appear in the canonical input.
   // The result is that two results with different executor.id, key_id, or
   // timestamps but the same (issuer, verified_identity, authority_scope) produce
@@ -500,14 +502,14 @@ test("passport_subject_id does not include executor.id, key_id, or timestamp", (
   const assertion2 = makeAssertion({ verified_at: "2026-06-27T12:00:00.000Z" });
 
   const req1 = minimalRequest("exec-lifecycle-ts1");
-  const receipt1 = makeSignedReceipt(F, req1);
-  const env1 = makeSignedResult(F, receipt1, makeExecutionResult(receipt1, { identityAssertion: assertion1, executorId: "runner-A" }));
-  const v1 = verify(F, env1, receipt1);
+  const receipt1 = await makeSignedReceipt(F, req1);
+  const env1 = await makeSignedResult(F, receipt1, makeExecutionResult(receipt1, { identityAssertion: assertion1, executorId: "runner-A" }));
+  const v1 = await verify(F, env1, receipt1);
 
   const req2 = minimalRequest("exec-lifecycle-ts2");
-  const receipt2 = makeSignedReceipt(F, req2);
-  const env2 = makeSignedResult(F, receipt2, makeExecutionResult(receipt2, { identityAssertion: assertion2, executorId: "runner-B" }));
-  const v2 = verify(F, env2, receipt2);
+  const receipt2 = await makeSignedReceipt(F, req2);
+  const env2 = await makeSignedResult(F, receipt2, makeExecutionResult(receipt2, { identityAssertion: assertion2, executorId: "runner-B" }));
+  const v2 = await verify(F, env2, receipt2);
 
   assert.ok(v1.valid && v2.valid, "both must verify");
   assert.strictEqual(v1.passport_subject_id, v2.passport_subject_id,
@@ -518,6 +520,7 @@ test("passport_subject_id does not include executor.id, key_id, or timestamp", (
 // Summary
 // ---------------------------------------------------------------------------
 
+await testChain;
 const passed = results.filter(Boolean).length;
 const failed = results.filter(r => !r).length;
 console.log(`\n${passed} passed, ${failed} failed`);

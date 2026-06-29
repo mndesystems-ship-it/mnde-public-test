@@ -10,7 +10,7 @@
 // the bundle signature, rejects a stale bundle, and looks up signing keys while
 // honoring validity windows and revocation.
 
-import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
+import { generateKeyPair, sign as providerSign, spkiFingerprint, verify as providerVerify } from "../crypto/provider.mjs";
 
 import { canonicalizeJson } from "../../shared/json.ts";
 
@@ -25,25 +25,16 @@ function isValidTimestamp(value) {
 }
 
 export function fingerprintOf(publicKeyPem) {
-  const der = createPublicKey(publicKeyPem).export({ format: "der", type: "spki" });
-  return createHash("sha256").update(der).digest("hex");
+  return spkiFingerprint(publicKeyPem);
 }
 export function generateAuthorityKeyPair() {
-  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-  return {
-    publicPem: publicKey.export({ type: "spki", format: "pem" }),
-    privatePem: privateKey.export({ type: "pkcs8", format: "pem" })
-  };
+  return generateKeyPair();
 }
-export function signCanonical(payloadString, privateKeyPem) {
-  return sign(null, Buffer.from(payloadString, "utf8"), createPrivateKey(privateKeyPem)).toString("hex");
+export async function signCanonical(payloadString, privateKeyPem) {
+  return providerSign(payloadString, privateKeyPem);
 }
-export function verifyCanonical(payloadString, signatureHex, publicKeyPem) {
-  try {
-    return verify(null, Buffer.from(payloadString, "utf8"), createPublicKey(publicKeyPem), Buffer.from(signatureHex, "hex"));
-  } catch {
-    return false;
-  }
+export async function verifyCanonical(payloadString, signatureHex, publicKeyPem) {
+  return providerVerify(payloadString, signatureHex, publicKeyPem);
 }
 
 function bundleWithoutSignature(bundle) {
@@ -52,7 +43,7 @@ function bundleWithoutSignature(bundle) {
 }
 
 // Build and root-sign an authority bundle (public material only).
-export function buildAuthorityBundle(input) {
+export async function buildAuthorityBundle(input) {
   const mapKeys = (keys) => (keys ?? []).map((k) => ({
     key_id: k.keyId ?? k.key_id,
     public_key: k.publicPem ?? k.public_key,
@@ -90,12 +81,13 @@ export function buildAuthorityBundle(input) {
     keys: mappedKeys,
     revocation: Array.isArray(input.revocation) ? input.revocation : []
   };
-  return { ...body, signature: { algorithm: "ED25519", value: signCanonical(canonicalizeJson(body), input.root.privatePem) } };
+  const signatureValue = await signCanonical(canonicalizeJson(body), input.root.privatePem);
+  return { ...body, signature: { algorithm: "ED25519", value: signatureValue } };
 }
 
 // Verify a bundle offline. `trustedRootFingerprint` is the out-of-band trust
 // anchor; the bundle is never trusted on its own say-so.
-export function verifyAuthorityBundle(bundle, options = {}) {
+export async function verifyAuthorityBundle(bundle, options = {}) {
   if (!isObject(bundle) || bundle.schema_version !== BUNDLE_SCHEMA) return { ok: false, reason: "UNSUPPORTED_BUNDLE" };
   const root = bundle.root_key;
   if (!isObject(root) || typeof root.public_key !== "string" || typeof root.fingerprint !== "string") return { ok: false, reason: "MALFORMED_BUNDLE" };
@@ -113,7 +105,7 @@ export function verifyAuthorityBundle(bundle, options = {}) {
 
   const signature = bundle.signature;
   if (!isObject(signature) || signature.algorithm !== "ED25519" || typeof signature.value !== "string") return { ok: false, reason: "UNSIGNED_BUNDLE" };
-  if (!verifyCanonical(canonicalizeJson(bundleWithoutSignature(bundle)), signature.value, root.public_key)) return { ok: false, reason: "BUNDLE_SIGNATURE_INVALID" };
+  if (!(await verifyCanonical(canonicalizeJson(bundleWithoutSignature(bundle)), signature.value, root.public_key))) return { ok: false, reason: "BUNDLE_SIGNATURE_INVALID" };
 
   // Reject duplicate key_id or fingerprint across roles — prevents a key from
   // acting simultaneously as receipt, policy, approval, or result key.
@@ -173,10 +165,10 @@ export function findBundleKey(bundle, role, keyId, signedAt) {
 // Verify a signature over a canonical payload against a bundle key (offline).
 // On success, the result includes `revocation_freshness` from findBundleKey to
 // let callers know that revocation status is only current as of the bundle used.
-export function verifyAgainstBundle(canonicalPayload, signatureHex, role, keyId, signedAt, bundle) {
+export async function verifyAgainstBundle(canonicalPayload, signatureHex, role, keyId, signedAt, bundle) {
   const key = findBundleKey(bundle, role, keyId, signedAt);
   if (!key.ok) return key;
-  return verifyCanonical(canonicalPayload, signatureHex, key.publicKey)
+  return (await verifyCanonical(canonicalPayload, signatureHex, key.publicKey))
     ? { ok: true, revocation_freshness: key.revocation_freshness }
     : { ok: false, reason: "SIGNATURE_INVALID" };
 }

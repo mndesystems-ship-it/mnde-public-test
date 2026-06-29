@@ -1,5 +1,6 @@
-import { createHash } from "node:crypto";
 import path from "node:path";
+
+import { sha256 as hashHex } from "../crypto/provider.mjs";
 
 import { canonicalizeJson } from "../../shared/json.ts";
 import { verifyPolicyTrust, verifyAuthorityGrant } from "./trust.mjs";
@@ -24,7 +25,7 @@ const VALID_ATTRIBUTE_ROOTS = new Set(["principal", "agent", "tool", "parameters
 const FIXED_FAIL_CLOSED_TIME = "1970-01-01T00:00:00.000Z";
 
 function sha256(value) {
-  return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
+  return `sha256:${hashHex(value)}`;
 }
 
 function isPlainObject(value) {

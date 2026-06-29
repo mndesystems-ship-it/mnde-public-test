@@ -10,7 +10,6 @@
 // embedded request + policy + authorities, then checks the signature against the
 // trusted authority manifest. A tampered request, policy, or decision fails closed.
 
-import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -41,14 +40,14 @@ function isBundleProvenance(value, policyHash) {
     && (value.rollback_authorization_id === null || typeof value.rollback_authorization_id === "string");
 }
 
-function verifyReceiptSignatureWithAuthorityBundle(receipt, signature, options = {}) {
+async function verifyReceiptSignatureWithAuthorityBundle(receipt, signature, options = {}) {
   const hasExplicitAuthorityBundle = Object.hasOwn(options, "authorityBundle") && options.authorityBundle !== undefined;
   if (!hasExplicitAuthorityBundle) return null;
   const authorityBundle = options.authorityBundle;
   if (typeof options.trustedRootFingerprint !== "string" || options.trustedRootFingerprint.length === 0) {
     return { verified: false, reason: "MISSING_TRUSTED_ROOT" };
   }
-  const authority = verifyAuthorityBundle(authorityBundle, {
+  const authority = await verifyAuthorityBundle(authorityBundle, {
     trustedRootFingerprint: options.trustedRootFingerprint,
     now: options.now ?? signature.signed_at
   });
@@ -116,7 +115,7 @@ export function buildPolicyReceipt(request, policy, options = {}) {
 }
 
 // Verify a policy-engine receipt: replay the decision and check the signature.
-export function verifyPolicyReceipt(receipt, options = {}) {
+export async function verifyPolicyReceipt(receipt, options = {}) {
   if (!receipt || receipt.schema_version !== SCHEMA) return { verified: false, reason: "unsupported schema" };
 
   const parsedRequest = parseStrictJson(receipt.canonical_request);
@@ -152,7 +151,7 @@ export function verifyPolicyReceipt(receipt, options = {}) {
   }
   if (options.historicalPolicyBundle !== undefined) {
     if (!receipt.policy_bundle_provenance) return { verified: false, reason: "historical policy bundle supplied but receipt has no bundle provenance" };
-    const historical = verifyHistoricalPolicyBundleProvenance({
+    const historical = await verifyHistoricalPolicyBundleProvenance({
       bundle: options.historicalPolicyBundle,
       provenance: receipt.policy_bundle_provenance,
       policy: parsedPolicy.value,
@@ -164,7 +163,7 @@ export function verifyPolicyReceipt(receipt, options = {}) {
 
   const signature = receipt.verifiable_signature;
   if (!signature) return { verified: false, reason: "missing signature" };
-  const authorityBundleSignature = verifyReceiptSignatureWithAuthorityBundle(receipt, signature, options);
+  const authorityBundleSignature = await verifyReceiptSignatureWithAuthorityBundle(receipt, signature, options);
   if (authorityBundleSignature) {
     return authorityBundleSignature.verified
       ? {

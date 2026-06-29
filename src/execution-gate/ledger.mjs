@@ -5,7 +5,7 @@
 //
 //   entry_hash = "sha256:" + sha256(canonicalLedgerEntry(ledger_entry))
 
-import { createHash } from "node:crypto";
+import { sha256 } from "../crypto/provider.mjs";
 
 import { canonicalizeJson } from "../../shared/json.ts";
 import { EVIDENCE_FORBIDDEN_FIELDS as RESULT_EVIDENCE_FORBIDDEN_FIELDS } from "./result.mjs";
@@ -137,7 +137,7 @@ export function canonicalLedgerEntry(entry) {
 }
 
 export function ledgerEntryHash(entry) {
-  return `sha256:${createHash("sha256").update(canonicalLedgerEntry(entry), "utf8").digest("hex")}`;
+  return `sha256:${sha256(canonicalLedgerEntry(entry))}`;
 }
 
 export function ledgerSignaturePayloadHash(envelope) {
@@ -146,7 +146,7 @@ export function ledgerSignaturePayloadHash(envelope) {
     ledger_entry: envelope.ledger_entry,
     authority: envelope.authority
   };
-  return createHash("sha256").update(canonicalizeJson(body), "utf8").digest("hex");
+  return sha256(canonicalizeJson(body));
 }
 
 export function canonicalLedgerSignaturePayload(envelope) {

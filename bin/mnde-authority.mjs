@@ -64,7 +64,7 @@ function writeBundle(args, next) {
   writeFileSync(out, `${JSON.stringify(next, null, 2)}\n`, "utf8");
 }
 
-function main() {
+async function main() {
   const argv = process.argv.slice(2);
   const command = argv[0];
   const args = parseArgs(argv.slice(1));
@@ -90,7 +90,7 @@ function main() {
       die("rotate requires --new-public <pub.pem> or --generate --new-private-out <file>");
     }
 
-    const result = rotateSigningKey(bundle, {
+    const result = await rotateSigningKey(bundle, {
       role: typeof args.role === "string" ? args.role : "receipt",
       rootPrivateKeyPem,
       newKey: { keyId: args["key-id"], publicPem },
@@ -110,7 +110,7 @@ function main() {
     }
     const bundle = readJson(args.bundle, "bundle");
     const rootPrivateKeyPem = readText(args["root-key"], "root key");
-    const result = revokeKey(bundle, { rootPrivateKeyPem, keyId: args["key-id"], now });
+    const result = await revokeKey(bundle, { rootPrivateKeyPem, keyId: args["key-id"], now });
     if (!result.ok) die(`revoke failed: ${result.reason}`);
     writeBundle(args, result.bundle);
     process.stdout.write(`revoked key '${result.revokedKeyId}', issued_at ${now}\n`);
@@ -121,4 +121,6 @@ function main() {
   die("usage: mnde-authority <rotate|revoke> ...", 2);
 }
 
-main();
+main().catch((error) => {
+  die(error?.message ?? String(error));
+});

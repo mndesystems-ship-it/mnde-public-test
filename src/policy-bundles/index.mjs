@@ -5,11 +5,11 @@
 // bundle, enforces a persisted per-policy serial floor, and records activation
 // outcomes. It does not participate in execution, receipt signing, or replay.
 
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { canonicalizeJson } from "../../shared/json.ts";
+import { sha256 } from "../crypto/provider.mjs";
 import { signCanonical, verifyAgainstBundle, verifyAuthorityBundle } from "../custody/index.mjs";
 
 export const POLICY_BUNDLE_SCHEMA = "mnde.policy.bundle.v1";
@@ -33,11 +33,11 @@ function canonicalUnsignedBundle(bundle) {
 }
 
 function bundleDigest(bundle) {
-  return createHash("sha256").update(canonicalUnsignedBundle(bundle), "utf8").digest("hex");
+  return sha256(canonicalUnsignedBundle(bundle));
 }
 
 function policyHash(policyDocument) {
-  return `sha256:${createHash("sha256").update(canonicalizeJson(policyDocument), "utf8").digest("hex")}`;
+  return `sha256:${sha256(canonicalizeJson(policyDocument))}`;
 }
 
 function validPolicyIdentity(bundle) {
@@ -105,7 +105,7 @@ function writeState(statePath, state) {
   }
 }
 
-function rollbackAuthorized(bundle, floor, authorityBundle, now) {
+async function rollbackAuthorized(bundle, floor, authorityBundle, now) {
   if (bundle.allow_rollback !== true) return { ok: false, reason: "POLICY_BUNDLE_SERIAL_ROLLBACK_REFUSED" };
   const grant = bundle.rollback_authorization;
   if (!isObject(grant) || !isObject(grant.signature) || typeof grant.signing_key_id !== "string" || typeof grant.authorization_id !== "string" || grant.authorization_id.length === 0 || !isTimestamp(grant.issued_at) || !isTimestamp(grant.expires_at)) {
@@ -114,11 +114,11 @@ function rollbackAuthorized(bundle, floor, authorityBundle, now) {
   if (grant.policy_id !== bundle.policy_id || grant.from_serial !== floor || grant.to_serial !== bundle.serial || Date.parse(grant.issued_at) > Date.parse(now) || Date.parse(grant.expires_at) <= Date.parse(now)) {
     return { ok: false, reason: "POLICY_BUNDLE_ROLLBACK_AUTH_INVALID" };
   }
-  const verification = verifyAgainstBundle(canonicalizeJson(withoutSignature(grant)), grant.signature.value, "approval", grant.signing_key_id, grant.issued_at, authorityBundle);
+  const verification = await verifyAgainstBundle(canonicalizeJson(withoutSignature(grant)), grant.signature.value, "approval", grant.signing_key_id, grant.issued_at, authorityBundle);
   return verification.ok ? { ok: true, authorization_id: grant.authorization_id } : { ok: false, reason: "POLICY_BUNDLE_ROLLBACK_AUTH_INVALID" };
 }
 
-function verifyHistoricalRollbackAuthorization(bundle, provenance, authorityBundle) {
+async function verifyHistoricalRollbackAuthorization(bundle, provenance, authorityBundle) {
   const rollbackId = provenance.rollback_authorization_id;
   const grant = bundle.rollback_authorization;
   if (rollbackId === null) {
@@ -130,22 +130,22 @@ function verifyHistoricalRollbackAuthorization(bundle, provenance, authorityBund
   if (grant.policy_id !== bundle.policy_id || grant.to_serial !== bundle.serial || !Number.isSafeInteger(grant.from_serial) || grant.from_serial <= bundle.serial || Date.parse(grant.issued_at) > Date.parse(bundle.issued_at) || Date.parse(grant.expires_at) <= Date.parse(bundle.issued_at)) {
     return { ok: false, reason: "POLICY_BUNDLE_ROLLBACK_PROVENANCE_MISMATCH" };
   }
-  const verified = verifyAgainstBundle(canonicalizeJson(withoutSignature(grant)), grant.signature.value, "approval", grant.signing_key_id, grant.issued_at, authorityBundle);
+  const verified = await verifyAgainstBundle(canonicalizeJson(withoutSignature(grant)), grant.signature.value, "approval", grant.signing_key_id, grant.issued_at, authorityBundle);
   return verified.ok ? { ok: true } : { ok: false, reason: "POLICY_BUNDLE_ROLLBACK_AUTH_INVALID" };
 }
 
 // Verify that signed receipt provenance names this exact historical policy
 // bundle. This is an optional offline check; execution and deterministic replay
 // intentionally do not load policy bundles or consult wall-clock state.
-export function verifyHistoricalPolicyBundleProvenance({ bundle, provenance, policy, authorityBundle, trustedRootFingerprint }) {
+export async function verifyHistoricalPolicyBundleProvenance({ bundle, provenance, policy, authorityBundle, trustedRootFingerprint }) {
   const shapeError = validateBundleShape(bundle);
   if (shapeError) return { ok: false, reason: shapeError };
   if (!isObject(provenance) || typeof trustedRootFingerprint !== "string" || trustedRootFingerprint.length === 0) {
     return { ok: false, reason: "POLICY_BUNDLE_TRUST_INPUT_INVALID" };
   }
-  const authority = verifyAuthorityBundle(authorityBundle, { trustedRootFingerprint, now: bundle.issued_at });
+  const authority = await verifyAuthorityBundle(authorityBundle, { trustedRootFingerprint, now: bundle.issued_at });
   if (!authority.ok) return { ok: false, reason: `POLICY_BUNDLE_AUTHORITY_${authority.reason}` };
-  const signature = verifyAgainstBundle(canonicalUnsignedBundle(bundle), bundle.signature.value, "policy", bundle.signing_key_id, bundle.issued_at, authorityBundle);
+  const signature = await verifyAgainstBundle(canonicalUnsignedBundle(bundle), bundle.signature.value, "policy", bundle.signing_key_id, bundle.issued_at, authorityBundle);
   if (!signature.ok) return { ok: false, reason: `POLICY_BUNDLE_${signature.reason}` };
   if (provenance.bundle_id !== bundle.bundle_id || provenance.serial !== bundle.serial || provenance.policy_hash !== bundle.policy_hash || provenance.signer_key_id !== bundle.signing_key_id || provenance.activation_mode !== "enforce") {
     return { ok: false, reason: "POLICY_BUNDLE_PROVENANCE_MISMATCH" };
@@ -158,7 +158,7 @@ export function verifyHistoricalPolicyBundleProvenance({ bundle, provenance, pol
   return verifyHistoricalRollbackAuthorization(bundle, provenance, authorityBundle);
 }
 
-export function signPolicyBundle(input, { keyId, privateKeyPem }) {
+export async function signPolicyBundle(input, { keyId, privateKeyPem }) {
   const unsigned = {
     schema_version: POLICY_BUNDLE_SCHEMA,
     bundle_id: input.bundle_id,
@@ -170,10 +170,10 @@ export function signPolicyBundle(input, { keyId, privateKeyPem }) {
     ...(input.allow_rollback === true ? { allow_rollback: true } : {}),
     signing_key_id: keyId
   };
-  return { ...unsigned, signature: { algorithm: "ED25519", value: signCanonical(canonicalizeJson(unsigned), privateKeyPem) } };
+  return { ...unsigned, signature: { algorithm: "ED25519", value: await signCanonical(canonicalizeJson(unsigned), privateKeyPem) } };
 }
 
-export function signRollbackAuthorization(input, { keyId, privateKeyPem }) {
+export async function signRollbackAuthorization(input, { keyId, privateKeyPem }) {
   const unsigned = {
     schema_version: "mnde.policy.rollback.v1",
     authorization_id: input.authorization_id,
@@ -184,18 +184,18 @@ export function signRollbackAuthorization(input, { keyId, privateKeyPem }) {
     expires_at: input.expires_at,
     signing_key_id: keyId
   };
-  return { ...unsigned, signature: { algorithm: "ED25519", value: signCanonical(canonicalizeJson(unsigned), privateKeyPem) } };
+  return { ...unsigned, signature: { algorithm: "ED25519", value: await signCanonical(canonicalizeJson(unsigned), privateKeyPem) } };
 }
 
-export function activateSignedPolicyBundle({ bundle, authorityBundle, trustedRootFingerprint, statePath, now }) {
+export async function activateSignedPolicyBundle({ bundle, authorityBundle, trustedRootFingerprint, statePath, now }) {
   const shapeError = validateBundleShape(bundle);
   if (shapeError) return { ok: false, reason: shapeError };
   if (!isTimestamp(now)) return { ok: false, reason: "POLICY_BUNDLE_INVALID_NOW" };
 
-  const authority = verifyAuthorityBundle(authorityBundle, { trustedRootFingerprint, now });
+  const authority = await verifyAuthorityBundle(authorityBundle, { trustedRootFingerprint, now });
   if (!authority.ok) return { ok: false, reason: `POLICY_BUNDLE_AUTHORITY_${authority.reason}` };
 
-  const signature = verifyAgainstBundle(canonicalUnsignedBundle(bundle), bundle.signature.value, "policy", bundle.signing_key_id, bundle.issued_at, authorityBundle);
+  const signature = await verifyAgainstBundle(canonicalUnsignedBundle(bundle), bundle.signature.value, "policy", bundle.signing_key_id, bundle.issued_at, authorityBundle);
   if (!signature.ok) return { ok: false, reason: `POLICY_BUNDLE_${signature.reason}` };
 
   const loaded = loadState(statePath);
@@ -207,7 +207,7 @@ export function activateSignedPolicyBundle({ bundle, authorityBundle, trustedRoo
   if (recordedDigest && recordedDigest !== digest) return { ok: false, reason: "POLICY_BUNDLE_SERIAL_REUSE_REFUSED" };
   let rollbackAuthorizationId = null;
   if (bundle.serial < floor) {
-    const rollback = rollbackAuthorized(bundle, floor, authorityBundle, now);
+    const rollback = await rollbackAuthorized(bundle, floor, authorityBundle, now);
     if (!rollback.ok) return rollback;
     // L1: a rollback authorization is single-use. Once consumed it can never
     // authorize another rollback, even within its validity window.
@@ -247,7 +247,7 @@ export function activateSignedPolicyBundle({ bundle, authorityBundle, trustedRoo
   };
 }
 
-export function loadSignedPolicyBundleConfig(env) {
+export async function loadSignedPolicyBundleConfig(env) {
   const bundlePath = env.MNDE_PE_POLICY_BUNDLE;
   const authorityPath = env.MNDE_PE_AUTHORITY_BUNDLE;
   const statePath = env.MNDE_PE_POLICY_BUNDLE_STATE;
@@ -261,7 +261,7 @@ export function loadSignedPolicyBundleConfig(env) {
   } catch {
     return { ok: false, reason: "signed policy bundle configuration could not be read" };
   }
-  const result = activateSignedPolicyBundle({ bundle, authorityBundle, trustedRootFingerprint, statePath, now: env.MNDE_PE_BUNDLE_NOW ?? new Date().toISOString() });
+  const result = await activateSignedPolicyBundle({ bundle, authorityBundle, trustedRootFingerprint, statePath, now: env.MNDE_PE_BUNDLE_NOW ?? new Date().toISOString() });
   return result.ok ? {
     ok: true,
     policy: result.policy,

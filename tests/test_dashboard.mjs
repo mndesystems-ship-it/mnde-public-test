@@ -32,10 +32,10 @@ async function test(name, fn) {
   }
 }
 
-function writeProductionCustody(dir) {
+async function writeProductionCustody(dir) {
   const root = { keyId: "prod-root", ...generateAuthorityKeyPair() };
   const receipt = { keyId: "prod-receipt-1", ...generateAuthorityKeyPair() };
-  const bundle = buildAuthorityBundle({
+  const bundle = await buildAuthorityBundle({
     authorityId: "acme-prod-dashboard",
     issuedAt: "2026-06-14T00:00:00.000Z",
     notAfter: "2099-01-01T00:00:00.000Z",
@@ -159,7 +159,7 @@ async function main() {
     prod = await startMndeSidecar({
       url: "http://127.0.0.1:8796",
       env: {
-        ...writeProductionCustody(prodDir),
+        ...(await writeProductionCustody(prodDir)),
         MNDE_BIND_PORT: "8796",
         MNDE_AUTH_ASSERTION_PUBLIC_KEY_B64: Buffer.from(publicDer).subarray(-32).toString("base64url"),
         MNDE_AUTH_AUDIT_LOG: auditLog,

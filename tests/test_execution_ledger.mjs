@@ -2,9 +2,8 @@
 // Hostile tests for mnde.execution_ledger_entry.v1.
 
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-
 import { canonicalizeJson } from "../shared/json.ts";
+import { sha256 } from "../src/crypto/provider.mjs";
 import {
   buildAuthorityBundle,
   fingerprintOf,
@@ -19,15 +18,18 @@ import { LEDGER_SCHEMA, ledgerEntryHash } from "../src/execution-gate/ledger.mjs
 import { verifyLedgerEntry } from "../src/execution-gate/verify-ledger-entry.mjs";
 
 const results = [];
+let testChain = Promise.resolve();
 function test(name, fn) {
-  try {
-    fn();
-    results.push(true);
-    console.log(`  [PASS] ${name}`);
-  } catch (error) {
-    results.push(false);
-    console.log(`  [FAIL] ${name}: ${error.stack ?? error.message}`);
-  }
+  testChain = testChain.then(async () => {
+    try {
+      await fn();
+      results.push(true);
+      console.log(`  [PASS] ${name}`);
+    } catch (error) {
+      results.push(false);
+      console.log(`  [FAIL] ${name}: ${error.stack ?? error.message}`);
+    }
+  });
 }
 
 const EPOCH = "1970-01-01T00:00:00.000Z";
@@ -39,7 +41,7 @@ const LEDGER_ID = "ledger-prod-deployments";
 const ENVIRONMENT = "prod";
 
 function sha256HexCanonical(value) {
-  return createHash("sha256").update(canonicalizeJson(value), "utf8").digest("hex");
+  return sha256(canonicalizeJson(value));
 }
 
 function sha256Tagged(value) {
@@ -47,7 +49,7 @@ function sha256Tagged(value) {
 }
 
 function sha256String(value) {
-  return createHash("sha256").update(value, "utf8").digest("hex");
+  return sha256(value);
 }
 
 function keyEntry(key, { validFrom = EPOCH, validUntil = FAR_FUTURE } = {}) {
@@ -60,17 +62,17 @@ function keyEntry(key, { validFrom = EPOCH, validUntil = FAR_FUTURE } = {}) {
   };
 }
 
-function rootSignBundle(body, root) {
+async function rootSignBundle(body, root) {
   return {
     ...body,
     signature: {
       algorithm: "ED25519",
-      value: signCanonical(canonicalizeJson(body), root.privatePem)
+      value: await signCanonical(canonicalizeJson(body), root.privatePem)
     }
   };
 }
 
-function makeBundle({
+async function makeBundle({
   ledgerValidUntil = FAR_FUTURE,
   revokeLedger = false,
   duplicateLedgerWithReceipt = false,
@@ -86,7 +88,7 @@ function makeBundle({
     : { keyId: "test-ledger-key", ...generateAuthorityKeyPair() };
 
   if (!duplicateLedgerWithReceipt && !malformedLedgerPublicKey) {
-    const bundle = buildAuthorityBundle({
+    const bundle = await buildAuthorityBundle({
       authorityId: "mnde-ledger-test-authority",
       issuedAt: "2026-01-01T00:00:00.000Z",
       notAfter: "2028-01-01T00:00:00.000Z",
@@ -119,7 +121,7 @@ function makeBundle({
     },
     revocation: revokeLedger ? [ledgerKey.keyId] : []
   };
-  const bundle = rootSignBundle(body, root);
+  const bundle = await rootSignBundle(body, root);
   return { root, receiptKey, policyKey, approvalKey, resultKey, ledgerKey, bundle, trustedRootFingerprint: bundle.root_key.fingerprint };
 }
 
@@ -139,8 +141,8 @@ function minimalRequest() {
   };
 }
 
-function makeSignedReceipt(fixtures, { request = minimalRequest(), decision = "ALLOW" } = {}) {
-  return buildSignedExecutionReceipt(request, decision, {
+async function makeSignedReceipt(fixtures, { request = minimalRequest(), decision = "ALLOW" } = {}) {
+  return await buildSignedExecutionReceipt(request, decision, {
     authorityBundle: fixtures.bundle,
     signingKeyId: fixtures.receiptKey.keyId,
     signingPrivateKeyPem: fixtures.receiptKey.privatePem,
@@ -182,8 +184,8 @@ function makeExecutionResult(signedReceipt, overrides = {}) {
   return buildExecutionResult(body);
 }
 
-function makeSignedResult(fixtures, signedReceipt, executionResult = makeExecutionResult(signedReceipt)) {
-  return buildSignedExecutionResult(executionResult, {
+async function makeSignedResult(fixtures, signedReceipt, executionResult = makeExecutionResult(signedReceipt)) {
+  return await buildSignedExecutionResult(executionResult, {
     authorityBundle: fixtures.bundle,
     trustedRootFingerprint: fixtures.trustedRootFingerprint,
     signingKeyId: fixtures.resultKey.keyId,
@@ -197,18 +199,18 @@ function makeSignedResult(fixtures, signedReceipt, executionResult = makeExecuti
 
 function ledgerCustody(fixtures, signingKey = fixtures.ledgerKey) {
   return {
-    signLedger(payload) {
+    async signLedger(payload) {
       return {
         key_id: fixtures.ledgerKey.keyId,
-        value: signCanonical(payload, signingKey.privatePem),
+        value: await signCanonical(payload, signingKey.privatePem),
         fingerprint: fingerprintOf(fixtures.ledgerKey.publicPem)
       };
     }
   };
 }
 
-function makeLedger(fixtures, signedReceipt, signedExecutionResult, overrides = {}) {
-  return buildSignedLedgerEntry({
+async function makeLedger(fixtures, signedReceipt, signedExecutionResult, overrides = {}) {
+  return await buildSignedLedgerEntry({
     authorityBundle: fixtures.bundle,
     trustedRootFingerprint: fixtures.trustedRootFingerprint,
     custody: overrides.custody ?? ledgerCustody(fixtures),
@@ -225,8 +227,8 @@ function makeLedger(fixtures, signedReceipt, signedExecutionResult, overrides = 
   });
 }
 
-function verify(fixtures, envelope, signedReceipt, signedExecutionResult, extra = {}) {
-  return verifyLedgerEntry(envelope, {
+async function verify(fixtures, envelope, signedReceipt, signedExecutionResult, extra = {}) {
+  return await verifyLedgerEntry(envelope, {
     authorityBundle: extra.authorityBundle ?? fixtures.bundle,
     trustedRootFingerprint: extra.trustedRootFingerprint ?? fixtures.trustedRootFingerprint,
     signedReceipt,
@@ -271,7 +273,7 @@ function ledgerEntryFor(signedReceipt, signedExecutionResult, overrides = {}) {
   };
 }
 
-function manualSignLedger(fixtures, ledgerEntry, {
+async function manualSignLedger(fixtures, ledgerEntry, {
   signingKey = fixtures.ledgerKey,
   authority = authorityFor(fixtures),
   signaturePayloadHash
@@ -290,12 +292,12 @@ function manualSignLedger(fixtures, ledgerEntry, {
     verifiable_signature: {
       algorithm: "ED25519",
       key_id: authority.key_id,
-      value: signCanonical(signatureBody, signingKey.privatePem)
+      value: await signCanonical(signatureBody, signingKey.privatePem)
     }
   };
 }
 
-function makeSignedResultWithWrongRequestHash(fixtures, signedReceipt) {
+async function makeSignedResultWithWrongRequestHash(fixtures, signedReceipt) {
   const wrongHash = "f".repeat(64);
   const receiptHash = sha256HexCanonical(signedReceipt);
   const erBody = {
@@ -348,20 +350,20 @@ function makeSignedResultWithWrongRequestHash(fixtures, signedReceipt) {
     verifiable_signature: {
       algorithm: "ED25519",
       key_id: fixtures.resultKey.keyId,
-      value: signCanonical(signatureBody, fixtures.resultKey.privatePem)
+      value: await signCanonical(signatureBody, fixtures.resultKey.privatePem)
     }
   };
 }
 
 console.log("\nBehavioral - valid ledger entries:");
 
-const F = makeBundle();
-const signedReceipt = makeSignedReceipt(F);
-const signedExecutionResult = makeSignedResult(F, signedReceipt);
+const F = await makeBundle();
+const signedReceipt = await makeSignedReceipt(F);
+const signedExecutionResult = await makeSignedResult(F, signedReceipt);
 
-test("valid genesis ledger entry verifies", () => {
-  const entry = makeLedger(F, signedReceipt, signedExecutionResult);
-  const r = verify(F, entry, signedReceipt, signedExecutionResult, {
+test("valid genesis ledger entry verifies", async () => {
+  const entry = await makeLedger(F, signedReceipt, signedExecutionResult);
+  const r = await verify(F, entry, signedReceipt, signedExecutionResult, {
     expectedLedgerId: LEDGER_ID,
     expectedEnvironment: ENVIRONMENT
   });
@@ -370,163 +372,163 @@ test("valid genesis ledger entry verifies", () => {
   assert.strictEqual(r.entry_hash, ledgerEntryHash(entry.ledger_entry));
 });
 
-test("valid sequence 2 verifies against previous entry", () => {
-  const genesis = makeLedger(F, signedReceipt, signedExecutionResult);
-  const second = makeLedger(F, signedReceipt, signedExecutionResult, {
+test("valid sequence 2 verifies against previous entry", async () => {
+  const genesis = await makeLedger(F, signedReceipt, signedExecutionResult);
+  const second = await makeLedger(F, signedReceipt, signedExecutionResult, {
     sequenceNumber: 2,
     previousEntryHash: ledgerEntryHash(genesis.ledger_entry)
   });
-  const r = verify(F, second, signedReceipt, signedExecutionResult, { previousLedgerEntry: genesis });
+  const r = await verify(F, second, signedReceipt, signedExecutionResult, { previousLedgerEntry: genesis });
   assert.strictEqual(r.valid, true, r.message);
   assert.strictEqual(r.sequence_number, 2);
 });
 
 console.log("\nHostile - chain rules:");
 
-test("genesis with non-null previous hash fails", () => {
-  const entry = manualSignLedger(F, ledgerEntryFor(signedReceipt, signedExecutionResult, {
+test("genesis with non-null previous hash fails", async () => {
+  const entry = await manualSignLedger(F, ledgerEntryFor(signedReceipt, signedExecutionResult, {
     previous_entry_hash: "sha256:" + "1".repeat(64)
   }));
-  const r = verify(F, entry, signedReceipt, signedExecutionResult);
+  const r = await verify(F, entry, signedReceipt, signedExecutionResult);
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "LEDGER_GENESIS_PREVIOUS_HASH_INVALID");
 });
 
-test("sequence 2 without previous entry fails", () => {
-  const entry = makeLedger(F, signedReceipt, signedExecutionResult, {
+test("sequence 2 without previous entry fails", async () => {
+  const entry = await makeLedger(F, signedReceipt, signedExecutionResult, {
     sequenceNumber: 2,
     previousEntryHash: "sha256:" + "2".repeat(64)
   });
-  const r = verify(F, entry, signedReceipt, signedExecutionResult);
+  const r = await verify(F, entry, signedReceipt, signedExecutionResult);
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "LEDGER_PREVIOUS_REQUIRED");
 });
 
-test("sequence skips from 1 to 3 fails", () => {
-  const genesis = makeLedger(F, signedReceipt, signedExecutionResult);
-  const third = makeLedger(F, signedReceipt, signedExecutionResult, {
+test("sequence skips from 1 to 3 fails", async () => {
+  const genesis = await makeLedger(F, signedReceipt, signedExecutionResult);
+  const third = await makeLedger(F, signedReceipt, signedExecutionResult, {
     sequenceNumber: 3,
     previousEntryHash: ledgerEntryHash(genesis.ledger_entry)
   });
-  const r = verify(F, third, signedReceipt, signedExecutionResult, { previousLedgerEntry: genesis });
+  const r = await verify(F, third, signedReceipt, signedExecutionResult, { previousLedgerEntry: genesis });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "LEDGER_SEQUENCE_GAP");
 });
 
-test("wrong previous_entry_hash fails", () => {
-  const genesis = makeLedger(F, signedReceipt, signedExecutionResult);
-  const second = makeLedger(F, signedReceipt, signedExecutionResult, {
+test("wrong previous_entry_hash fails", async () => {
+  const genesis = await makeLedger(F, signedReceipt, signedExecutionResult);
+  const second = await makeLedger(F, signedReceipt, signedExecutionResult, {
     sequenceNumber: 2,
     previousEntryHash: "sha256:" + "3".repeat(64)
   });
-  const r = verify(F, second, signedReceipt, signedExecutionResult, { previousLedgerEntry: genesis });
+  const r = await verify(F, second, signedReceipt, signedExecutionResult, { previousLedgerEntry: genesis });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "LEDGER_PREVIOUS_HASH_MISMATCH");
 });
 
-test("different ledger_id from previous entry fails", () => {
-  const genesis = makeLedger(F, signedReceipt, signedExecutionResult);
-  const second = makeLedger(F, signedReceipt, signedExecutionResult, {
+test("different ledger_id from previous entry fails", async () => {
+  const genesis = await makeLedger(F, signedReceipt, signedExecutionResult);
+  const second = await makeLedger(F, signedReceipt, signedExecutionResult, {
     ledgerId: "ledger-other",
     sequenceNumber: 2,
     previousEntryHash: ledgerEntryHash(genesis.ledger_entry)
   });
-  const r = verify(F, second, signedReceipt, signedExecutionResult, { previousLedgerEntry: genesis });
+  const r = await verify(F, second, signedReceipt, signedExecutionResult, { previousLedgerEntry: genesis });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "LEDGER_ID_MISMATCH");
 });
 
-test("expected environment mismatch fails", () => {
-  const entry = makeLedger(F, signedReceipt, signedExecutionResult);
-  const r = verify(F, entry, signedReceipt, signedExecutionResult, { expectedEnvironment: "staging" });
+test("expected environment mismatch fails", async () => {
+  const entry = await makeLedger(F, signedReceipt, signedExecutionResult);
+  const r = await verify(F, entry, signedReceipt, signedExecutionResult, { expectedEnvironment: "staging" });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "LEDGER_ENVIRONMENT_MISMATCH");
 });
 
 console.log("\nHostile - binding rules:");
 
-test("receipt hash mismatch fails", () => {
-  const entry = manualSignLedger(F, ledgerEntryFor(signedReceipt, signedExecutionResult, {
+test("receipt hash mismatch fails", async () => {
+  const entry = await manualSignLedger(F, ledgerEntryFor(signedReceipt, signedExecutionResult, {
     receipt_hash: "sha256:" + "4".repeat(64)
   }));
-  const r = verify(F, entry, signedReceipt, signedExecutionResult);
+  const r = await verify(F, entry, signedReceipt, signedExecutionResult);
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "LEDGER_RECEIPT_HASH_MISMATCH");
 });
 
-test("result hash mismatch fails", () => {
-  const entry = manualSignLedger(F, ledgerEntryFor(signedReceipt, signedExecutionResult, {
+test("result hash mismatch fails", async () => {
+  const entry = await manualSignLedger(F, ledgerEntryFor(signedReceipt, signedExecutionResult, {
     result_hash: "sha256:" + "5".repeat(64)
   }));
-  const r = verify(F, entry, signedReceipt, signedExecutionResult);
+  const r = await verify(F, entry, signedReceipt, signedExecutionResult);
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "LEDGER_RESULT_HASH_MISMATCH");
 });
 
-test("receipt/result request hash mismatch fails", () => {
-  const hostileResult = makeSignedResultWithWrongRequestHash(F, signedReceipt);
-  const entry = manualSignLedger(F, ledgerEntryFor(signedReceipt, hostileResult));
-  const r = verify(F, entry, signedReceipt, hostileResult);
+test("receipt/result request hash mismatch fails", async () => {
+  const hostileResult = await makeSignedResultWithWrongRequestHash(F, signedReceipt);
+  const entry = await manualSignLedger(F, ledgerEntryFor(signedReceipt, hostileResult));
+  const r = await verify(F, entry, signedReceipt, hostileResult);
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "LEDGER_REQUEST_HASH_MISMATCH");
 });
 
 console.log("\nHostile - ledger authority keys:");
 
-test("ledger signed by receipt key fails", () => {
-  const entry = manualSignLedger(F, ledgerEntryFor(signedReceipt, signedExecutionResult), {
+test("ledger signed by receipt key fails", async () => {
+  const entry = await manualSignLedger(F, ledgerEntryFor(signedReceipt, signedExecutionResult), {
     signingKey: F.receiptKey
   });
-  const r = verify(F, entry, signedReceipt, signedExecutionResult);
+  const r = await verify(F, entry, signedReceipt, signedExecutionResult);
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "LEDGER_SIGNATURE_INVALID");
 });
 
-test("ledger signed by result key fails", () => {
-  const entry = manualSignLedger(F, ledgerEntryFor(signedReceipt, signedExecutionResult), {
+test("ledger signed by result key fails", async () => {
+  const entry = await manualSignLedger(F, ledgerEntryFor(signedReceipt, signedExecutionResult), {
     signingKey: F.resultKey
   });
-  const r = verify(F, entry, signedReceipt, signedExecutionResult);
+  const r = await verify(F, entry, signedReceipt, signedExecutionResult);
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "LEDGER_SIGNATURE_INVALID");
 });
 
-test("duplicate ledger key material across roles fails", () => {
-  const dup = makeBundle({ duplicateLedgerWithReceipt: true });
-  const entry = manualSignLedger(dup, ledgerEntryFor(signedReceipt, signedExecutionResult));
-  const r = verify(dup, entry, signedReceipt, signedExecutionResult, { authorityBundle: dup.bundle, trustedRootFingerprint: dup.trustedRootFingerprint });
+test("duplicate ledger key material across roles fails", async () => {
+  const dup = await makeBundle({ duplicateLedgerWithReceipt: true });
+  const entry = await manualSignLedger(dup, ledgerEntryFor(signedReceipt, signedExecutionResult));
+  const r = await verify(dup, entry, signedReceipt, signedExecutionResult, { authorityBundle: dup.bundle, trustedRootFingerprint: dup.trustedRootFingerprint });
   assert.strictEqual(r.valid, false);
 });
 
-test("expired ledger key fails", () => {
-  const expired = makeBundle({ ledgerValidUntil: "2026-01-01T00:00:00.000Z" });
-  const entry = manualSignLedger(expired, ledgerEntryFor(signedReceipt, signedExecutionResult));
-  const r = verify(expired, entry, signedReceipt, signedExecutionResult, { authorityBundle: expired.bundle, trustedRootFingerprint: expired.trustedRootFingerprint });
+test("expired ledger key fails", async () => {
+  const expired = await makeBundle({ ledgerValidUntil: "2026-01-01T00:00:00.000Z" });
+  const entry = await manualSignLedger(expired, ledgerEntryFor(signedReceipt, signedExecutionResult));
+  const r = await verify(expired, entry, signedReceipt, signedExecutionResult, { authorityBundle: expired.bundle, trustedRootFingerprint: expired.trustedRootFingerprint });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "LEDGER_KEY_EXPIRED");
 });
 
-test("revoked ledger key fails", () => {
-  const revoked = makeBundle({ revokeLedger: true });
-  const entry = manualSignLedger(revoked, ledgerEntryFor(signedReceipt, signedExecutionResult));
-  const r = verify(revoked, entry, signedReceipt, signedExecutionResult, { authorityBundle: revoked.bundle, trustedRootFingerprint: revoked.trustedRootFingerprint });
+test("revoked ledger key fails", async () => {
+  const revoked = await makeBundle({ revokeLedger: true });
+  const entry = await manualSignLedger(revoked, ledgerEntryFor(signedReceipt, signedExecutionResult));
+  const r = await verify(revoked, entry, signedReceipt, signedExecutionResult, { authorityBundle: revoked.bundle, trustedRootFingerprint: revoked.trustedRootFingerprint });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "LEDGER_KEY_REVOKED");
 });
 
-test("malformed ledger public key returns structured invalid verdict", () => {
-  const malformed = makeBundle({ malformedLedgerPublicKey: true });
-  const entry = manualSignLedger(malformed, ledgerEntryFor(signedReceipt, signedExecutionResult));
-  const r = verify(malformed, entry, signedReceipt, signedExecutionResult, { authorityBundle: malformed.bundle, trustedRootFingerprint: malformed.trustedRootFingerprint });
+test("malformed ledger public key returns structured invalid verdict", async () => {
+  const malformed = await makeBundle({ malformedLedgerPublicKey: true });
+  const entry = await manualSignLedger(malformed, ledgerEntryFor(signedReceipt, signedExecutionResult));
+  const r = await verify(malformed, entry, signedReceipt, signedExecutionResult, { authorityBundle: malformed.bundle, trustedRootFingerprint: malformed.trustedRootFingerprint });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "LEDGER_KEY_MALFORMED");
 });
 
 console.log("\nHostile - tampering and metadata:");
 
-test("tampered sequence_number fails signature payload hash", () => {
-  const genesis = makeLedger(F, signedReceipt, signedExecutionResult);
-  const second = makeLedger(F, signedReceipt, signedExecutionResult, {
+test("tampered sequence_number fails signature payload hash", async () => {
+  const genesis = await makeLedger(F, signedReceipt, signedExecutionResult);
+  const second = await makeLedger(F, signedReceipt, signedExecutionResult, {
     sequenceNumber: 2,
     previousEntryHash: ledgerEntryHash(genesis.ledger_entry)
   });
@@ -534,14 +536,14 @@ test("tampered sequence_number fails signature payload hash", () => {
     ...second,
     ledger_entry: { ...second.ledger_entry, sequence_number: 3 }
   };
-  const r = verify(F, tampered, signedReceipt, signedExecutionResult, { previousLedgerEntry: genesis });
+  const r = await verify(F, tampered, signedReceipt, signedExecutionResult, { previousLedgerEntry: genesis });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "LEDGER_SIGNATURE_PAYLOAD_HASH_INVALID");
 });
 
-test("tampered previous_entry_hash fails signature payload hash", () => {
-  const genesis = makeLedger(F, signedReceipt, signedExecutionResult);
-  const second = makeLedger(F, signedReceipt, signedExecutionResult, {
+test("tampered previous_entry_hash fails signature payload hash", async () => {
+  const genesis = await makeLedger(F, signedReceipt, signedExecutionResult);
+  const second = await makeLedger(F, signedReceipt, signedExecutionResult, {
     sequenceNumber: 2,
     previousEntryHash: ledgerEntryHash(genesis.ledger_entry)
   });
@@ -549,38 +551,39 @@ test("tampered previous_entry_hash fails signature payload hash", () => {
     ...second,
     ledger_entry: { ...second.ledger_entry, previous_entry_hash: "sha256:" + "6".repeat(64) }
   };
-  const r = verify(F, tampered, signedReceipt, signedExecutionResult, { previousLedgerEntry: genesis });
+  const r = await verify(F, tampered, signedReceipt, signedExecutionResult, { previousLedgerEntry: genesis });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "LEDGER_SIGNATURE_PAYLOAD_HASH_INVALID");
 });
 
-test("future created_at fails", () => {
-  const entry = makeLedger(F, signedReceipt, signedExecutionResult, {
+test("future created_at fails", async () => {
+  const entry = await makeLedger(F, signedReceipt, signedExecutionResult, {
     createdAt: "2026-06-26T12:20:00.000Z"
   });
-  const r = verify(F, entry, signedReceipt, signedExecutionResult, { nowMs: Date.parse(NOW), maxClockSkewMs: 300000 });
+  const r = await verify(F, entry, signedReceipt, signedExecutionResult, { nowMs: Date.parse(NOW), maxClockSkewMs: 300000 });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "LEDGER_CREATED_AT_FUTURE");
 });
 
-test("nested metadata token fails", () => {
-  const entry = manualSignLedger(F, ledgerEntryFor(signedReceipt, signedExecutionResult, {
+test("nested metadata token fails", async () => {
+  const entry = await manualSignLedger(F, ledgerEntryFor(signedReceipt, signedExecutionResult, {
     metadata: { nested: { token: "secret" } }
   }));
-  const r = verify(F, entry, signedReceipt, signedExecutionResult);
+  const r = await verify(F, entry, signedReceipt, signedExecutionResult);
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "LEDGER_METADATA_FORBIDDEN_FIELD");
 });
 
-test("case-variant Authorization fails", () => {
-  const entry = manualSignLedger(F, ledgerEntryFor(signedReceipt, signedExecutionResult, {
+test("case-variant Authorization fails", async () => {
+  const entry = await manualSignLedger(F, ledgerEntryFor(signedReceipt, signedExecutionResult, {
     metadata: { Authorization: "Bearer abc" }
   }));
-  const r = verify(F, entry, signedReceipt, signedExecutionResult);
+  const r = await verify(F, entry, signedReceipt, signedExecutionResult);
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "LEDGER_METADATA_FORBIDDEN_FIELD");
 });
 
+await testChain;
 const passed = results.filter(Boolean).length;
 const failed = results.filter((r) => !r).length;
 console.log(`\n${passed} passed, ${failed} failed`);

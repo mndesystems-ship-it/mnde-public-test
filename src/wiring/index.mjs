@@ -6,12 +6,13 @@
 // Reversible via uninstall(). This layer changes config files only — it never
 // touches authority, decisions, receipts, replay, or verification.
 
-import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { sha256 as hashHex } from "../crypto/provider.mjs";
+
 function sha256(value) {
-  return createHash("sha256").update(value).digest("hex");
+  return hashHex(value);
 }
 function backupsDir(ctx) {
   return join(ctx.stateDir, "backups");

@@ -59,11 +59,11 @@ async function main() {
       assert.equal(res.decision_engine, "policy-engine");
       assert.equal(res.decision, "ALLOW");
       assert.equal(res.receipt.schema_version, "mnde.pe.receipt.v1");
-      assert.equal(verifyPolicyReceipt(res.receipt).verified, true);
+      assert.equal((await verifyPolicyReceipt(res.receipt)).verified, true);
       // unified verifier via file
       const f = join(mkdtempSync(join(tmpdir(), "mnde-pe-")), "r.json");
       writeFileSync(f, JSON.stringify(res.receipt));
-      assert.equal(verifyAnyReceiptFile(f).verified, true);
+      assert.equal((await verifyAnyReceiptFile(f)).verified, true);
     });
 
     await test("PE mode REFUSE (no matching rule)", async () => {
@@ -122,7 +122,7 @@ async function main() {
       const res = await decide(b.url, peReq("deploy", { mnde_approvals: [validApproval] }));
       assert.equal(res.decision, "ALLOW");
       assert.equal(res.approval_enforced, true);
-      assert.equal(verifyPolicyReceipt(res.receipt, { approvalTrustAnchors: approvalAnchors }).verified, true);
+      assert.equal((await verifyPolicyReceipt(res.receipt, { approvalTrustAnchors: approvalAnchors })).verified, true);
     });
     await test("PE mode + missing approval -> REFUSE APPROVAL_REQUIRED", async () => {
       assert.equal((await decide(b.url, peReq("deploy"))).reason_code, "APPROVAL_REQUIRED");

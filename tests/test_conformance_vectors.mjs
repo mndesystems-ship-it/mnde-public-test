@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -8,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import { verifyAnyReceiptFile } from "../tools/verify.mjs";
 import { activateSignedPolicyBundle } from "../src/policy-bundles/index.mjs";
+import { sha256 } from "../src/crypto/provider.mjs";
 import { verifyAuthorityBundle } from "../src/custody/index.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -24,7 +24,7 @@ const requiredSchemas = new Set([
 ]);
 
 function sha256Hex(raw) {
-  return createHash("sha256").update(raw).digest("hex");
+  return sha256(raw);
 }
 
 assert.equal(existsSync(manifestPath), true, "conformance/manifest.json is missing");
@@ -85,12 +85,12 @@ for (const schema of requiredSchemas) {
 const authorityVector = bySchema.get("mnde.authority.bundle.v1");
 const authorityBundle = authorityVector.parsed;
 const rootFingerprint = manifest.trust_roots.conformance_authority;
-assert.equal(verifyAuthorityBundle(authorityBundle, { trustedRootFingerprint: rootFingerprint }).ok, true);
+assert.equal((await verifyAuthorityBundle(authorityBundle, { trustedRootFingerprint: rootFingerprint })).ok, true);
 
 const policyVector = bySchema.get("mnde.policy.bundle.v1");
 const stateDir = mkdtempSync(join(tmpdir(), "mnde-conformance-policy-"));
 try {
-  const activation = activateSignedPolicyBundle({
+  const activation = await activateSignedPolicyBundle({
     bundle: policyVector.parsed,
     authorityBundle,
     trustedRootFingerprint: rootFingerprint,
@@ -113,7 +113,7 @@ const sharedReceiptOptions = {
 
 for (const schema of ["ecs.receipt.v2", "mnde.pe.receipt.v1", "mnde.signed-receipt.v1"]) {
   const vector = bySchema.get(schema);
-  const result = verifyAnyReceiptFile(vector.filePath, sharedReceiptOptions);
+  const result = await verifyAnyReceiptFile(vector.filePath, sharedReceiptOptions);
   assert.equal(result.verified, true, `${schema} failed conformance verification: ${result.reason ?? "unknown"}`);
   assert.equal(result.kind, vector.expected_kind, `${schema} verifier kind drifted`);
 }

@@ -29,10 +29,10 @@ async function test(name, fn) {
 }
 
 // Build a production-shaped bundle + write the signer's private/public key files.
-function fixture(dir, { revoke = false } = {}) {
+async function fixture(dir, { revoke = false } = {}) {
   const root = { keyId: "prod-root", ...generateAuthorityKeyPair() };
   const receipt = { keyId: "receipt-1", ...generateAuthorityKeyPair() };
-  const bundle = buildAuthorityBundle({
+  const bundle = await buildAuthorityBundle({
     authorityId: "acme-prod",
     issuedAt: NOW,
     notAfter: "2099-01-01T00:00:00.000Z",
@@ -82,94 +82,94 @@ async function main() {
   console.log("MNDe external-signer custody (Tier 2)\n");
   const dir = mkdtempSync(join(tmpdir(), "mnde-extsigner-"));
   try {
-    const fx = fixture(dir);
+    const fx = await fixture(dir);
 
-    await test("mock external signer success -> signed envelope verifies", () => {
+    await test("mock external signer success -> signed envelope verifies", async () => {
       const e = env(fx);
-      withSigner(e, () => {
-        const cfg = loadSigningConfig(e);
+      await withSigner(e, async () => {
+        const cfg = await loadSigningConfig(e);
         assert.equal(cfg.ok, true, cfg.detail);
         assert.equal(cfg.signer_mode, "external-signer");
-        const out = signReceiptForDelivery(sampleInner(), cfg, { now: NOW });
+        const out = await signReceiptForDelivery(sampleInner(), cfg, { now: NOW });
         assert.equal(out.ok, true, out.detail);
-        const v = verifyCustodyAttestation(out.receipt, { authorityBundle: fx.bundle, trustedRootFingerprint: fx.bundle.root_key.fingerprint, now: NOW });
+        const v = await verifyCustodyAttestation(out.receipt, { authorityBundle: fx.bundle, trustedRootFingerprint: fx.bundle.root_key.fingerprint, now: NOW });
         assert.equal(v.ok, true, v.reason);
         assert.equal(v.signing_key_id, "receipt-1");
       });
     });
 
-    await test("invalid signature (signer uses a different key) fails closed", () => {
+    await test("invalid signature (signer uses a different key) fails closed", async () => {
       const stranger = join(dir, "stranger.key.pem");
       writeFileSync(stranger, generateAuthorityKeyPair().privatePem);
       const e = env(fx, { signerKey: stranger }); // signs with wrong key -> won't verify vs configured pubkey
-      withSigner(e, () => {
-        const cfg = loadSigningConfig(e);
-        const out = signReceiptForDelivery(sampleInner(), cfg, { now: NOW });
+      await withSigner(e, async () => {
+        const cfg = await loadSigningConfig(e);
+        const out = await signReceiptForDelivery(sampleInner(), cfg, { now: NOW });
         assert.equal(out.ok, false);
         assert.equal(out.reason_code, "ERR_CUSTODY_SIGNING_FAILED");
       });
     });
 
-    await test("wrong configured public key (fingerprint mismatch) fails at load", () => {
+    await test("wrong configured public key (fingerprint mismatch) fails at load", async () => {
       const wrongPub = join(dir, "wrong.pub.pem");
       writeFileSync(wrongPub, generateAuthorityKeyPair().publicPem);
       const e = env(fx, { pubPath: wrongPub });
-      const cfg = loadSigningConfig(e);
+      const cfg = await loadSigningConfig(e);
       assert.equal(cfg.ok, false);
       assert.equal(cfg.reason_code, "ERR_CUSTODY_KEY_MISMATCH");
     });
 
-    await test("signer timeout fails closed", () => {
+    await test("signer timeout fails closed", async () => {
       const e = env(fx, { mode: "timeout", timeout: 400 });
-      withSigner(e, () => {
-        const cfg = loadSigningConfig(e);
-        const out = signReceiptForDelivery(sampleInner(), cfg, { now: NOW });
+      await withSigner(e, async () => {
+        const cfg = await loadSigningConfig(e);
+        const out = await signReceiptForDelivery(sampleInner(), cfg, { now: NOW });
         assert.equal(out.ok, false);
         assert.equal(out.reason_code, "ERR_CUSTODY_SIGNING_FAILED");
       });
     });
 
-    await test("signer nonzero exit fails closed", () => {
+    await test("signer nonzero exit fails closed", async () => {
       const e = env(fx, { mode: "exit1" });
-      withSigner(e, () => {
-        const out = signReceiptForDelivery(sampleInner(), loadSigningConfig(e), { now: NOW });
+      await withSigner(e, async () => {
+        const out = await signReceiptForDelivery(sampleInner(), await loadSigningConfig(e), { now: NOW });
         assert.equal(out.ok, false);
         assert.equal(out.reason_code, "ERR_CUSTODY_SIGNING_FAILED");
       });
     });
 
-    await test("malformed hex fails closed", () => {
+    await test("malformed hex fails closed", async () => {
       const e = env(fx, { mode: "badhex" });
-      withSigner(e, () => {
-        const out = signReceiptForDelivery(sampleInner(), loadSigningConfig(e), { now: NOW });
+      await withSigner(e, async () => {
+        const out = await signReceiptForDelivery(sampleInner(), await loadSigningConfig(e), { now: NOW });
         assert.equal(out.ok, false);
         assert.equal(out.reason_code, "ERR_CUSTODY_SIGNING_FAILED");
       });
     });
 
-    await test("wrong-length signature fails closed", () => {
+    await test("wrong-length signature fails closed", async () => {
       const e = env(fx, { mode: "short" });
-      withSigner(e, () => {
-        const out = signReceiptForDelivery(sampleInner(), loadSigningConfig(e), { now: NOW });
+      await withSigner(e, async () => {
+        const out = await signReceiptForDelivery(sampleInner(), await loadSigningConfig(e), { now: NOW });
         assert.equal(out.ok, false);
         assert.equal(out.reason_code, "ERR_CUSTODY_SIGNING_FAILED");
       });
     });
 
-    await test("revoked key fails at load", () => {
+    await test("revoked key fails at load", async () => {
       const rdir = mkdtempSync(join(tmpdir(), "mnde-extsigner-rev-"));
       try {
-        const rfx = fixture(rdir, { revoke: true });
+        const rfx = await fixture(rdir, { revoke: true });
         const e = env(rfx);
-        const cfg = loadSigningConfig(e);
+        const cfg = await loadSigningConfig(e);
         assert.equal(cfg.ok, false);
         assert.equal(cfg.reason_code, "ERR_CUSTODY_KEY_REVOKED");
       } finally { rmSync(rdir, { recursive: true, force: true }); }
     });
 
-    await test("key id not in bundle fails at load", () => {
+    await test("key id not in bundle fails at load", async () => {
       const e = env(fx, { keyId: "no-such-key" });
-      const cfg = loadSigningConfig(e);
+      const cfg = await loadSigningConfig(e);
       assert.equal(cfg.ok, false);
       assert.equal(cfg.reason_code, "ERR_CUSTODY_KEY_MISSING");
     });
@@ -188,12 +188,12 @@ async function main() {
       assert.equal(trust.reason_code, "ERR_TRUST_ROOT_SIGNER_SELFTEST");
     });
 
-    await test("MNDE_EXTERNAL_SIGNER_CMD is argv-parsed (no shell injection)", () => {
+    await test("MNDE_EXTERNAL_SIGNER_CMD is argv-parsed (no shell injection)", async () => {
       // A shell metacharacter as a single argv token is treated literally -> ENOENT/spawn fail,
       // never executed by a shell. Fails closed, does not run the injected command.
       const e = env(fx, { cmd: JSON.stringify(["node", SIGNER, "; rm -rf /"]) });
-      withSigner(e, () => {
-        const out = signReceiptForDelivery(sampleInner(), loadSigningConfig(e), { now: NOW });
+      await withSigner(e, async () => {
+        const out = await signReceiptForDelivery(sampleInner(), await loadSigningConfig(e), { now: NOW });
         // extra literal arg is ignored by the mock signer; still signs fine — proving the
         // token was passed as an argument, not interpreted by a shell.
         assert.ok(out.ok === true || out.reason_code === "ERR_CUSTODY_SIGNING_FAILED");

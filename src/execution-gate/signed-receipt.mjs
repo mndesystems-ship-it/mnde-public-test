@@ -9,7 +9,7 @@
 // request.requested_at (NOT wall-clock) so the output is fully deterministic and
 // reproducible from the original request.
 
-import { createHash } from "node:crypto";
+import { sha256 } from "../crypto/provider.mjs";
 
 import { canonicalizeJson } from "../../shared/json.ts";
 import { fingerprintOf, findBundleKey, signCanonical } from "../custody/index.mjs";
@@ -24,7 +24,7 @@ function canonicalPayloadWithoutSignature(receiptBody) {
 
 // sha256 of canonicalizeJson(request).
 function hashRequest(request) {
-  return createHash("sha256").update(canonicalizeJson(request), "utf8").digest("hex");
+  return sha256(canonicalizeJson(request));
 }
 
 // Build a custody-signed execution gate receipt.
@@ -36,7 +36,7 @@ function hashRequest(request) {
 //   policyProvenance       — optional { policy_id, serial, policy_hash, bundle_id, bundle_digest }
 //   decision               — "ALLOW" | "REFUSE"
 //   refusalReason          — string | undefined
-export function buildSignedExecutionReceipt(request, decision, options) {
+export async function buildSignedExecutionReceipt(request, decision, options) {
   const { authorityBundle, signingKeyId, signingPrivateKeyPem, policyProvenance, refusalReason } = options;
 
   if (!authorityBundle || !signingKeyId || !signingPrivateKeyPem) {
@@ -101,7 +101,7 @@ export function buildSignedExecutionReceipt(request, decision, options) {
 
   // Sign the canonical form of the body (verifiable_signature absent).
   const canonical = canonicalPayloadWithoutSignature(body);
-  const signatureValue = signCanonical(canonical, signingPrivateKeyPem);
+  const signatureValue = await signCanonical(canonical, signingPrivateKeyPem);
 
   return {
     ...body,

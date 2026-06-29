@@ -18,9 +18,8 @@
 // attestation verifies against the bundle (root trust, bundle signature, key
 // validity window, revocation, attestation signature).
 
-import { createHash } from "node:crypto";
-
 import { canonicalizeJson } from "../../shared/json.ts";
+import { sha256 } from "../crypto/provider.mjs";
 import {
   createCustody,
   findBundleKey,
@@ -33,7 +32,7 @@ export const SIGNED_RECEIPT_SCHEMA = "mnde.signed-receipt.v1";
 export const ATTESTATION_SCHEMA = "mnde.custody.attestation.v1";
 
 function sha256Hex(text) {
-  return createHash("sha256").update(text, "utf8").digest("hex");
+  return sha256(text);
 }
 function decisionOf(receipt) {
   if (typeof receipt?.decision_output?.decision === "string") return receipt.decision_output.decision;
@@ -69,7 +68,7 @@ function keyCode(reason) {
 
 // Resolve signing configuration. Default legacy; custody is opt-in and fails
 // closed — a misconfiguration never silently downgrades to legacy.
-export function loadSigningConfig(env = process.env) {
+export async function loadSigningConfig(env = process.env) {
   const requested = env.MNDE_RECEIPT_SIGNING_MODE;
   // Both "custody" (local-demo / file-backed-production) and "external-signer"
   // engage custody signing. Anything else is legacy pass-through.
@@ -84,13 +83,13 @@ export function loadSigningConfig(env = process.env) {
       return { ok: false, mode: "custody", reason_code: custodyConfigCode(detail), detail };
     }
   } else {
-    const custody = createCustody(env);
+    const custody = await createCustody(env);
     if (!custody.ok) return { ok: false, mode: "custody", reason_code: custodyConfigCode(custody.reason), detail: custody.reason };
     provider = custody.provider;
   }
 
   const bundle = provider.getPublicBundle();
-  const check = verifyAuthorityBundle(bundle, { trustedRootFingerprint: provider.trustedRootFingerprint });
+  const check = await verifyAuthorityBundle(bundle, { trustedRootFingerprint: provider.trustedRootFingerprint });
   if (!check.ok) return { ok: false, mode: "custody", reason_code: bundleCode(check.reason), detail: check.reason };
 
   // mode is normalized to "custody" so signReceiptForDelivery engages; signer_mode
@@ -101,7 +100,7 @@ export function loadSigningConfig(env = process.env) {
 // Sign a built receipt for delivery. Legacy mode is a pass-through. Custody mode
 // returns an mnde.signed-receipt.v1 envelope, or fails closed with a distinct
 // reason code. Never logs or returns key material.
-export function signReceiptForDelivery(receipt, signingConfig, options = {}) {
+export async function signReceiptForDelivery(receipt, signingConfig, options = {}) {
   if (!signingConfig || signingConfig.mode !== "custody") return { ok: true, receipt };
   const provider = signingConfig.provider;
   if (!provider) return { ok: false, reason_code: "ERR_CUSTODY_UNAVAILABLE", detail: "no custody provider" };
@@ -110,7 +109,7 @@ export function signReceiptForDelivery(receipt, signingConfig, options = {}) {
   const bundle = provider.getPublicBundle();
 
   // Re-validate the bundle at signing time (catches a bundle gone stale).
-  const bundleCheck = verifyAuthorityBundle(bundle, { trustedRootFingerprint: provider.trustedRootFingerprint, now: at });
+  const bundleCheck = await verifyAuthorityBundle(bundle, { trustedRootFingerprint: provider.trustedRootFingerprint, now: at });
   if (!bundleCheck.ok) return { ok: false, reason_code: bundleCode(bundleCheck.reason), detail: bundleCheck.reason };
 
   const receiptType = typeof receipt?.schema_version === "string" ? receipt.schema_version : "unknown";
@@ -126,7 +125,7 @@ export function signReceiptForDelivery(receipt, signingConfig, options = {}) {
 
   let signed;
   try {
-    signed = provider.signReceipt(canonicalizeJson(attestationPayload));
+    signed = await provider.signReceipt(canonicalizeJson(attestationPayload));
   } catch (error) {
     // error.message comes from custody — paths/reasons only, never key bytes.
     return { ok: false, reason_code: "ERR_CUSTODY_SIGNING_FAILED", detail: error?.message ?? String(error) };
@@ -153,7 +152,7 @@ export function signReceiptForDelivery(receipt, signingConfig, options = {}) {
 // Verify ONLY the custody attestation of an envelope against a published bundle.
 // Offline; no network. The inner receipt is verified separately by the caller
 // (the unified verifier) so this stays a focused production-trust interface.
-export function verifyCustodyAttestation(envelope, options = {}) {
+export async function verifyCustodyAttestation(envelope, options = {}) {
   if (!envelope || envelope.schema_version !== SIGNED_RECEIPT_SCHEMA) {
     return { ok: false, reason: "not a custody-signed receipt" };
   }
@@ -167,7 +166,7 @@ export function verifyCustodyAttestation(envelope, options = {}) {
   const now = options.now ?? new Date().toISOString();
 
   // 1) Trust the bundle (root anchor out of band, bundle signature, staleness).
-  const bundleCheck = verifyAuthorityBundle(bundle, { trustedRootFingerprint: options.trustedRootFingerprint, now, maxAgeMs: options.maxAgeMs });
+  const bundleCheck = await verifyAuthorityBundle(bundle, { trustedRootFingerprint: options.trustedRootFingerprint, now, maxAgeMs: options.maxAgeMs });
   if (!bundleCheck.ok) return { ok: false, reason: `bundle: ${bundleCheck.reason}` };
 
   // 2) The receipt must be bound to THIS bundle.
@@ -185,7 +184,7 @@ export function verifyCustodyAttestation(envelope, options = {}) {
   const { signing_key_id, signature, ...signedFields } = attestation;
   const sigValue = signature?.value;
   if (typeof sigValue !== "string") return { ok: false, reason: "missing attestation signature" };
-  const check = verifyAgainstBundle(canonicalizeJson(signedFields), sigValue, "receipt", signing_key_id, signedFields.signed_at, bundle);
+  const check = await verifyAgainstBundle(canonicalizeJson(signedFields), sigValue, "receipt", signing_key_id, signedFields.signed_at, bundle);
   if (!check.ok) return { ok: false, reason: check.reason };
 
   return {

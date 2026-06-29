@@ -4,12 +4,12 @@
 //   npm run test:execution-gate-signing
 
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { canonicalizeJson } from "../shared/json.ts";
+import { sha256 } from "../src/crypto/provider.mjs";
 import {
   buildAuthorityBundle,
   generateAuthorityKeyPair,
@@ -24,22 +24,25 @@ import {
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const results = [];
+let testChain = Promise.resolve();
 function test(name, fn) {
-  try {
-    fn();
-    results.push(true);
-    console.log(`  [PASS] ${name}`);
-  } catch (error) {
-    results.push(false);
-    console.log(`  [FAIL] ${name}: ${error.message}`);
-  }
+  testChain = testChain.then(async () => {
+    try {
+      await fn();
+      results.push(true);
+      console.log(`  [PASS] ${name}`);
+    } catch (error) {
+      results.push(false);
+      console.log(`  [FAIL] ${name}: ${error.message}`);
+    }
+  });
 }
 
 // ── Test fixtures ─────────────────────────────────────────────────────────────
 
 // Build a minimal authority bundle with one receipt key.
 // Returns { root, receiptKey, bundle, trustedRootFingerprint }.
-function makeBundle({
+async function makeBundle({
   now = "2026-06-01T00:00:00.000Z",
   validFrom = "2025-01-01T00:00:00.000Z",
   validUntil = "2027-01-01T00:00:00.000Z",
@@ -49,7 +52,7 @@ function makeBundle({
 } = {}) {
   const root = { keyId: "test-root", ...generateAuthorityKeyPair() };
   const receiptKey = { keyId: "test-receipt-key-1", ...generateAuthorityKeyPair() };
-  const bundle = buildAuthorityBundle({
+  const bundle = await buildAuthorityBundle({
     authorityId,
     issuedAt: now,
     notAfter,
@@ -89,10 +92,10 @@ function minimalRequest(overrides = {}) {
 }
 
 // Build a valid signed receipt and the bundle used to sign it.
-function buildValidReceipt(reqOverrides = {}) {
-  const { receiptKey, bundle, trustedRootFingerprint } = makeBundle();
+async function buildValidReceipt(reqOverrides = {}) {
+  const { receiptKey, bundle, trustedRootFingerprint } = await makeBundle();
   const request = minimalRequest(reqOverrides);
-  const receipt = buildSignedExecutionReceipt(request, "ALLOW", {
+  const receipt = await buildSignedExecutionReceipt(request, "ALLOW", {
     authorityBundle: bundle,
     signingKeyId: receiptKey.keyId,
     signingPrivateKeyPem: receiptKey.privatePem
@@ -102,61 +105,61 @@ function buildValidReceipt(reqOverrides = {}) {
 
 // ── Hostile tests ─────────────────────────────────────────────────────────────
 
-test("1. Valid signed receipt verifies successfully", () => {
-  const { receipt, bundle, trustedRootFingerprint } = buildValidReceipt();
-  const result = verifySignedExecutionReceipt(receipt, { authorityBundle: bundle, trustedRootFingerprint });
+test("1. Valid signed receipt verifies successfully", async () => {
+  const { receipt, bundle, trustedRootFingerprint } = await buildValidReceipt();
+  const result = await verifySignedExecutionReceipt(receipt, { authorityBundle: bundle, trustedRootFingerprint });
   assert.equal(result.verified, true, result.reason ?? "");
   assert.equal(result.checks.schema.ok, true);
   assert.equal(result.checks.signature.ok, true);
   assert.equal(result.checks.fingerprint_match.ok, true);
 });
 
-test("2. Tampered decision field fails verification (signature mismatch)", () => {
-  const { receipt, bundle, trustedRootFingerprint } = buildValidReceipt();
+test("2. Tampered decision field fails verification (signature mismatch)", async () => {
+  const { receipt, bundle, trustedRootFingerprint } = await buildValidReceipt();
   const tampered = { ...receipt, decision: "REFUSE" };
-  const result = verifySignedExecutionReceipt(tampered, { authorityBundle: bundle, trustedRootFingerprint });
+  const result = await verifySignedExecutionReceipt(tampered, { authorityBundle: bundle, trustedRootFingerprint });
   assert.equal(result.verified, false);
   // signature check must fail because we changed the signed body
   assert.match(result.reason, /signature/);
 });
 
-test("3. Tampered request_hash field fails verification", () => {
-  const { receipt, bundle, trustedRootFingerprint } = buildValidReceipt();
+test("3. Tampered request_hash field fails verification", async () => {
+  const { receipt, bundle, trustedRootFingerprint } = await buildValidReceipt();
   const tampered = { ...receipt, request_hash: "0".repeat(64) };
-  const result = verifySignedExecutionReceipt(tampered, { authorityBundle: bundle, trustedRootFingerprint });
+  const result = await verifySignedExecutionReceipt(tampered, { authorityBundle: bundle, trustedRootFingerprint });
   assert.equal(result.verified, false);
   assert.match(result.reason, /signature/);
 });
 
-test("4. Tampered verifiable_signature.value fails verification", () => {
-  const { receipt, bundle, trustedRootFingerprint } = buildValidReceipt();
+test("4. Tampered verifiable_signature.value fails verification", async () => {
+  const { receipt, bundle, trustedRootFingerprint } = await buildValidReceipt();
   const tampered = structuredClone(receipt);
   // Flip first two bytes of the signature.
   tampered.verifiable_signature.value = "0000" + tampered.verifiable_signature.value.slice(4);
-  const result = verifySignedExecutionReceipt(tampered, { authorityBundle: bundle, trustedRootFingerprint });
+  const result = await verifySignedExecutionReceipt(tampered, { authorityBundle: bundle, trustedRootFingerprint });
   assert.equal(result.verified, false);
   assert.match(result.reason, /signature/);
 });
 
-test("5. Wrong trustedRootFingerprint fails authority bundle verification", () => {
-  const { receipt, bundle } = buildValidReceipt();
-  const result = verifySignedExecutionReceipt(receipt, { authorityBundle: bundle, trustedRootFingerprint: "deadbeef".repeat(8) });
+test("5. Wrong trustedRootFingerprint fails authority bundle verification", async () => {
+  const { receipt, bundle } = await buildValidReceipt();
+  const result = await verifySignedExecutionReceipt(receipt, { authorityBundle: bundle, trustedRootFingerprint: "deadbeef".repeat(8) });
   assert.equal(result.verified, false);
   assert.match(result.reason, /authority_bundle/);
 });
 
-test("6. Revoked signing key fails verification", () => {
+test("6. Revoked signing key fails verification", async () => {
   // Build receipt with a key, then present a bundle that has it revoked.
-  const { receiptKey, bundle: origBundle, trustedRootFingerprint: _ } = makeBundle();
+  const { receiptKey, bundle: origBundle, trustedRootFingerprint: _ } = await makeBundle();
   const request = minimalRequest();
-  const receipt = buildSignedExecutionReceipt(request, "ALLOW", {
+  const receipt = await buildSignedExecutionReceipt(request, "ALLOW", {
     authorityBundle: origBundle,
     signingKeyId: receiptKey.keyId,
     signingPrivateKeyPem: receiptKey.privatePem
   });
   // Rebuild the bundle with revocation, re-signed by same root.
   const root = { keyId: "test-root", ...generateAuthorityKeyPair() };
-  const revokedBundle = buildAuthorityBundle({
+  const revokedBundle = await buildAuthorityBundle({
     authorityId: origBundle.authority_id,
     issuedAt: origBundle.issued_at,
     notAfter: origBundle.not_after,
@@ -166,23 +169,23 @@ test("6. Revoked signing key fails verification", () => {
     approvalKeys: [],
     revocation: [receiptKey.keyId]
   });
-  const result = verifySignedExecutionReceipt(receipt, { authorityBundle: revokedBundle, trustedRootFingerprint: revokedBundle.root_key.fingerprint });
+  const result = await verifySignedExecutionReceipt(receipt, { authorityBundle: revokedBundle, trustedRootFingerprint: revokedBundle.root_key.fingerprint });
   assert.equal(result.verified, false);
   assert.match(result.reason, /key_lookup/);
   assert.equal(result.checks.key_lookup.detail, "KEY_REVOKED");
 });
 
-test("7. Expired signing key fails verification (key valid_until in the past)", () => {
+test("7. Expired signing key fails verification (key valid_until in the past)", async () => {
   // Build bundle with key that is already expired at signing time.
-  const { receiptKey, bundle, trustedRootFingerprint } = makeBundle({
+  const { receiptKey, bundle, trustedRootFingerprint } = await makeBundle({
     validFrom: "2020-01-01T00:00:00.000Z",
     validUntil: "2021-01-01T00:00:00.000Z"
     // requested_at = "2026-06-15T..." which is after valid_until
   });
   const request = minimalRequest();
   // buildSignedExecutionReceipt should throw because findBundleKey returns KEY_EXPIRED
-  assert.throws(() => {
-    buildSignedExecutionReceipt(request, "ALLOW", {
+  await assert.rejects(async () => {
+    await buildSignedExecutionReceipt(request, "ALLOW", {
       authorityBundle: bundle,
       signingKeyId: receiptKey.keyId,
       signingPrivateKeyPem: receiptKey.privatePem
@@ -191,39 +194,39 @@ test("7. Expired signing key fails verification (key valid_until in the past)", 
   // And even if we had a receipt from this key, verifying it would fail.
 });
 
-test("8. Substituted authority bundle (different authority) fails verification", () => {
-  const { receipt } = buildValidReceipt();
+test("8. Substituted authority bundle (different authority) fails verification", async () => {
+  const { receipt } = await buildValidReceipt();
   // Build a completely different bundle with its own root.
-  const { bundle: otherBundle, trustedRootFingerprint: otherFp } = makeBundle({ authorityId: "other-authority" });
-  const result = verifySignedExecutionReceipt(receipt, { authorityBundle: otherBundle, trustedRootFingerprint: otherFp });
+  const { bundle: otherBundle, trustedRootFingerprint: otherFp } = await makeBundle({ authorityId: "other-authority" });
+  const result = await verifySignedExecutionReceipt(receipt, { authorityBundle: otherBundle, trustedRootFingerprint: otherFp });
   assert.equal(result.verified, false);
   // Either authority_id mismatch or key not found in the substituted bundle.
   assert.ok(result.reason, "must have a reason");
 });
 
-test("9. Missing verifiable_signature field fails verification", () => {
-  const { receipt, bundle, trustedRootFingerprint } = buildValidReceipt();
+test("9. Missing verifiable_signature field fails verification", async () => {
+  const { receipt, bundle, trustedRootFingerprint } = await buildValidReceipt();
   const { verifiable_signature: _removed, ...noSig } = receipt;
-  const result = verifySignedExecutionReceipt(noSig, { authorityBundle: bundle, trustedRootFingerprint });
+  const result = await verifySignedExecutionReceipt(noSig, { authorityBundle: bundle, trustedRootFingerprint });
   assert.equal(result.verified, false);
   assert.match(result.reason, /required_fields|algorithm/);
 });
 
-test("10. Wrong signing_key_id (key not in bundle) fails verification", () => {
-  const { receipt, bundle, trustedRootFingerprint } = buildValidReceipt();
+test("10. Wrong signing_key_id (key not in bundle) fails verification", async () => {
+  const { receipt, bundle, trustedRootFingerprint } = await buildValidReceipt();
   const tampered = structuredClone(receipt);
   tampered.verifiable_signature.key_id = "nonexistent-key-id";
   tampered.signing_key_id = "nonexistent-key-id";
-  const result = verifySignedExecutionReceipt(tampered, { authorityBundle: bundle, trustedRootFingerprint });
+  const result = await verifySignedExecutionReceipt(tampered, { authorityBundle: bundle, trustedRootFingerprint });
   assert.equal(result.verified, false);
   assert.match(result.reason, /key_lookup/);
 });
 
-test("11. Fingerprint mismatch (receipt claims wrong fingerprint) fails verification", () => {
-  const { receipt, bundle, trustedRootFingerprint } = buildValidReceipt();
+test("11. Fingerprint mismatch (receipt claims wrong fingerprint) fails verification", async () => {
+  const { receipt, bundle, trustedRootFingerprint } = await buildValidReceipt();
   const tampered = structuredClone(receipt);
   tampered.verifiable_signature.public_key_fingerprint = "a".repeat(64);
-  const result = verifySignedExecutionReceipt(tampered, { authorityBundle: bundle, trustedRootFingerprint });
+  const result = await verifySignedExecutionReceipt(tampered, { authorityBundle: bundle, trustedRootFingerprint });
   assert.equal(result.verified, false);
   // signature check will also fail since we modified signed body; but fingerprint_match fires first
   assert.match(result.reason, /fingerprint_match/);
@@ -231,53 +234,53 @@ test("11. Fingerprint mismatch (receipt claims wrong fingerprint) fails verifica
 
 // ── Behavioral / integrity tests ──────────────────────────────────────────────
 
-test("12. decided_at equals requested_at — no wall-clock used", () => {
-  const { receipt } = buildValidReceipt();
+test("12. decided_at equals requested_at — no wall-clock used", async () => {
+  const { receipt } = await buildValidReceipt();
   assert.equal(receipt.decided_at, receipt.verifiable_signature.signed_at);
   assert.equal(receipt.decided_at, minimalRequest().requested_at);
 });
 
-test("13. Replay: re-running gate on original request produces same request_hash", () => {
-  const { receipt, request } = buildValidReceipt();
-  const recomputed = createHash("sha256").update(canonicalizeJson(request), "utf8").digest("hex");
+test("13. Replay: re-running gate on original request produces same request_hash", async () => {
+  const { receipt, request } = await buildValidReceipt();
+  const recomputed = sha256(canonicalizeJson(request));
   assert.equal(receipt.request_hash, recomputed);
   // Verifier with original request also confirms the hash.
-  const { bundle, trustedRootFingerprint } = makeBundle();
+  const { bundle, trustedRootFingerprint } = await makeBundle();
   // Use the same bundle/key that built the receipt.
-  const { receipt: r2, bundle: b2, trustedRootFingerprint: fp2 } = buildValidReceipt();
-  const result = verifySignedExecutionReceipt(r2, { authorityBundle: b2, trustedRootFingerprint: fp2, originalRequest: request });
+  const { receipt: r2, bundle: b2, trustedRootFingerprint: fp2 } = await buildValidReceipt();
+  const result = await verifySignedExecutionReceipt(r2, { authorityBundle: b2, trustedRootFingerprint: fp2, originalRequest: request });
   // originalRequest is a DIFFERENT request so hash check may fail — that's OK, we just
   // verify the request_hash field of the receipt matches what we'd compute from the
   // actual original request.
-  const { receipt: r3, bundle: b3, trustedRootFingerprint: fp3, request: req3 } = buildValidReceipt();
-  const result3 = verifySignedExecutionReceipt(r3, { authorityBundle: b3, trustedRootFingerprint: fp3, originalRequest: req3 });
+  const { receipt: r3, bundle: b3, trustedRootFingerprint: fp3, request: req3 } = await buildValidReceipt();
+  const result3 = await verifySignedExecutionReceipt(r3, { authorityBundle: b3, trustedRootFingerprint: fp3, originalRequest: req3 });
   assert.equal(result3.verified, true, result3.reason ?? "");
   assert.equal(result3.checks.request_hash.ok, true);
 });
 
-test("14. Cross-request: two different requests produce different request_hash and different signatures", () => {
-  const { receiptKey, bundle, trustedRootFingerprint } = makeBundle();
+test("14. Cross-request: two different requests produce different request_hash and different signatures", async () => {
+  const { receiptKey, bundle, trustedRootFingerprint } = await makeBundle();
   const req1 = minimalRequest({ execution_id: "exec-a" });
   const req2 = minimalRequest({ execution_id: "exec-b" });
-  const r1 = buildSignedExecutionReceipt(req1, "ALLOW", { authorityBundle: bundle, signingKeyId: receiptKey.keyId, signingPrivateKeyPem: receiptKey.privatePem });
-  const r2 = buildSignedExecutionReceipt(req2, "ALLOW", { authorityBundle: bundle, signingKeyId: receiptKey.keyId, signingPrivateKeyPem: receiptKey.privatePem });
+  const r1 = await buildSignedExecutionReceipt(req1, "ALLOW", { authorityBundle: bundle, signingKeyId: receiptKey.keyId, signingPrivateKeyPem: receiptKey.privatePem });
+  const r2 = await buildSignedExecutionReceipt(req2, "ALLOW", { authorityBundle: bundle, signingKeyId: receiptKey.keyId, signingPrivateKeyPem: receiptKey.privatePem });
   assert.notEqual(r1.request_hash, r2.request_hash);
   assert.notEqual(r1.verifiable_signature.value, r2.verifiable_signature.value);
 });
 
-test("15. Unsigned path (no signing options) still produces a valid unsigned receipt", () => {
+test("15. Unsigned path (no signing options) still produces a valid unsigned receipt", async () => {
   const request = minimalRequest();
-  const result = authorizeAndSign(request, {});
+  const result = await authorizeAndSign(request, {});
   assert.equal(result.ok, true);
   assert.equal(result.signed, false);
   assert.ok(result.receipt.receipt_hash, "unsigned receipt must have receipt_hash");
   assert.equal(result.receipt.verifiable_signature, undefined);
 });
 
-test("16. authorizeAndSign with signing options produces a signed receipt", () => {
-  const { receiptKey, bundle, trustedRootFingerprint } = makeBundle();
+test("16. authorizeAndSign with signing options produces a signed receipt", async () => {
+  const { receiptKey, bundle, trustedRootFingerprint } = await makeBundle();
   const request = minimalRequest();
-  const result = authorizeAndSign(request, {
+  const result = await authorizeAndSign(request, {
     authorityBundle: bundle,
     signingKeyId: receiptKey.keyId,
     signingPrivateKeyPem: receiptKey.privatePem
@@ -286,14 +289,14 @@ test("16. authorizeAndSign with signing options produces a signed receipt", () =
   assert.equal(result.signed, true);
   assert.ok(result.receipt.verifiable_signature, "signed receipt must have verifiable_signature");
   // Must verify.
-  const v = verifySignedExecutionReceipt(result.receipt, { authorityBundle: bundle, trustedRootFingerprint });
+  const v = await verifySignedExecutionReceipt(result.receipt, { authorityBundle: bundle, trustedRootFingerprint });
   assert.equal(v.verified, true, v.reason ?? "");
 });
 
-test("17. Private key never appears in receipt output", () => {
-  const { receiptKey, bundle } = makeBundle();
+test("17. Private key never appears in receipt output", async () => {
+  const { receiptKey, bundle } = await makeBundle();
   const request = minimalRequest();
-  const receipt = buildSignedExecutionReceipt(request, "ALLOW", {
+  const receipt = await buildSignedExecutionReceipt(request, "ALLOW", {
     authorityBundle: bundle,
     signingKeyId: receiptKey.keyId,
     signingPrivateKeyPem: receiptKey.privatePem
@@ -303,10 +306,10 @@ test("17. Private key never appears in receipt output", () => {
   assert.ok(!json.includes(receiptKey.privatePem.slice(40, 80)), "receipt must not contain private key bytes");
 });
 
-test("18. Receipt body fields are correctly populated", () => {
-  const { receiptKey, bundle, trustedRootFingerprint } = makeBundle();
+test("18. Receipt body fields are correctly populated", async () => {
+  const { receiptKey, bundle, trustedRootFingerprint } = await makeBundle();
   const request = minimalRequest();
-  const receipt = buildSignedExecutionReceipt(request, "ALLOW", {
+  const receipt = await buildSignedExecutionReceipt(request, "ALLOW", {
     authorityBundle: bundle,
     signingKeyId: receiptKey.keyId,
     signingPrivateKeyPem: receiptKey.privatePem
@@ -327,10 +330,10 @@ test("18. Receipt body fields are correctly populated", () => {
   assert.equal(receipt.verifiable_signature.public_key_fingerprint, expectedFp);
 });
 
-test("19. REFUSE decision is captured with refusal_reason", () => {
-  const { receiptKey, bundle, trustedRootFingerprint } = makeBundle();
+test("19. REFUSE decision is captured with refusal_reason", async () => {
+  const { receiptKey, bundle, trustedRootFingerprint } = await makeBundle();
   const request = minimalRequest({ principal: { verified: false } });
-  const result = authorizeAndSign(request, {
+  const result = await authorizeAndSign(request, {
     authorityBundle: bundle,
     signingKeyId: receiptKey.keyId,
     signingPrivateKeyPem: receiptKey.privatePem
@@ -338,15 +341,15 @@ test("19. REFUSE decision is captured with refusal_reason", () => {
   assert.equal(result.ok, true);
   assert.equal(result.receipt.decision, "REFUSE");
   assert.equal(result.receipt.refusal_reason, "PRINCIPAL_NOT_VERIFIED");
-  const v = verifySignedExecutionReceipt(result.receipt, { authorityBundle: bundle, trustedRootFingerprint });
+  const v = await verifySignedExecutionReceipt(result.receipt, { authorityBundle: bundle, trustedRootFingerprint });
   assert.equal(v.verified, true, v.reason ?? "");
 });
 
-test("20. policyProvenance is embedded when provided", () => {
-  const { receiptKey, bundle, trustedRootFingerprint } = makeBundle();
+test("20. policyProvenance is embedded when provided", async () => {
+  const { receiptKey, bundle, trustedRootFingerprint } = await makeBundle();
   const request = minimalRequest();
   const provenance = { policy_id: "pol-1", serial: 1, policy_hash: "sha256:abc", bundle_id: "b-1", bundle_digest: "def" };
-  const receipt = buildSignedExecutionReceipt(request, "ALLOW", {
+  const receipt = await buildSignedExecutionReceipt(request, "ALLOW", {
     authorityBundle: bundle,
     signingKeyId: receiptKey.keyId,
     signingPrivateKeyPem: receiptKey.privatePem,
@@ -354,17 +357,17 @@ test("20. policyProvenance is embedded when provided", () => {
   });
   assert.deepEqual(receipt.policy_provenance, provenance);
   // Must still verify.
-  const v = verifySignedExecutionReceipt(receipt, { authorityBundle: bundle, trustedRootFingerprint });
+  const v = await verifySignedExecutionReceipt(receipt, { authorityBundle: bundle, trustedRootFingerprint });
   assert.equal(v.verified, true, v.reason ?? "");
 });
 
-test("21. Fingerprint check is actually enforced (not bypassable by claiming own fingerprint)", () => {
-  const { receiptKey, bundle, trustedRootFingerprint } = makeBundle();
+test("21. Fingerprint check is actually enforced (not bypassable by claiming own fingerprint)", async () => {
+  const { receiptKey, bundle, trustedRootFingerprint } = await makeBundle();
   // Build a second key that is NOT in the bundle.
   const rogue = generateAuthorityKeyPair();
   const request = minimalRequest();
   // Sign with the real key first to get a valid signature shape, then swap the fingerprint.
-  const receipt = buildSignedExecutionReceipt(request, "ALLOW", {
+  const receipt = await buildSignedExecutionReceipt(request, "ALLOW", {
     authorityBundle: bundle,
     signingKeyId: receiptKey.keyId,
     signingPrivateKeyPem: receiptKey.privatePem
@@ -372,24 +375,24 @@ test("21. Fingerprint check is actually enforced (not bypassable by claiming own
   // Attacker replaces the public_key_fingerprint with their own key's fingerprint.
   const tampered = structuredClone(receipt);
   tampered.verifiable_signature.public_key_fingerprint = fingerprintOf(rogue.publicPem);
-  const result = verifySignedExecutionReceipt(tampered, { authorityBundle: bundle, trustedRootFingerprint });
+  const result = await verifySignedExecutionReceipt(tampered, { authorityBundle: bundle, trustedRootFingerprint });
   assert.equal(result.verified, false);
   // The bundle lookup returns the real key; its fingerprint won't match the tampered value.
   assert.match(result.reason, /fingerprint_match/);
 });
 
-test("22. Request hash actually covers all mutable fields — changing one field changes hash", () => {
-  const { receiptKey, bundle } = makeBundle();
+test("22. Request hash actually covers all mutable fields — changing one field changes hash", async () => {
+  const { receiptKey, bundle } = await makeBundle();
   const req1 = minimalRequest({ action: { name: "deploy-v1" } });
   const req2 = minimalRequest({ action: { name: "deploy-v2" } });
-  const r1 = buildSignedExecutionReceipt(req1, "ALLOW", { authorityBundle: bundle, signingKeyId: receiptKey.keyId, signingPrivateKeyPem: receiptKey.privatePem });
-  const r2 = buildSignedExecutionReceipt(req2, "ALLOW", { authorityBundle: bundle, signingKeyId: receiptKey.keyId, signingPrivateKeyPem: receiptKey.privatePem });
+  const r1 = await buildSignedExecutionReceipt(req1, "ALLOW", { authorityBundle: bundle, signingKeyId: receiptKey.keyId, signingPrivateKeyPem: receiptKey.privatePem });
+  const r2 = await buildSignedExecutionReceipt(req2, "ALLOW", { authorityBundle: bundle, signingKeyId: receiptKey.keyId, signingPrivateKeyPem: receiptKey.privatePem });
   assert.notEqual(r1.request_hash, r2.request_hash);
 });
 
 // ── Regression: existing test suites must remain green ────────────────────────
 
-test("23. Existing test_execution_gate.mjs exits 0", () => {
+test("23. Existing test_execution_gate.mjs exits 0", async () => {
   const result = spawnSync(process.execPath, ["tests/test_execution_gate.mjs"], {
     cwd: repoRoot, encoding: "utf8", timeout: 60000
   });
@@ -398,7 +401,7 @@ test("23. Existing test_execution_gate.mjs exits 0", () => {
   }
 });
 
-test("24. Existing test_policy_receipt.mjs exits 0", () => {
+test("24. Existing test_policy_receipt.mjs exits 0", async () => {
   const result = spawnSync(process.execPath, ["tests/test_policy_receipt.mjs"], {
     cwd: repoRoot, encoding: "utf8", timeout: 60000
   });
@@ -407,7 +410,7 @@ test("24. Existing test_policy_receipt.mjs exits 0", () => {
   }
 });
 
-test("25. Existing test_signed_policy_bundle.mjs exits 0", () => {
+test("25. Existing test_signed_policy_bundle.mjs exits 0", async () => {
   const result = spawnSync(process.execPath, ["tests/test_signed_policy_bundle.mjs"], {
     cwd: repoRoot, encoding: "utf8", timeout: 60000
   });
@@ -417,6 +420,7 @@ test("25. Existing test_signed_policy_bundle.mjs exits 0", () => {
 });
 
 // ── Summary ───────────────────────────────────────────────────────────────────
+await testChain;
 const passed = results.filter(Boolean).length;
 const failed = results.filter((r) => !r).length;
 console.log(`\n${passed}/${results.length} tests passed${failed > 0 ? `, ${failed} failed` : ""}`);

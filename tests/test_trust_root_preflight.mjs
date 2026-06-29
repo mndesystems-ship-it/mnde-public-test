@@ -32,10 +32,10 @@ async function test(name, fn) {
 }
 
 // A real, non-demo production custody fixture written to disk.
-function writeProductionCustody(dir) {
+async function writeProductionCustody(dir) {
   const root = { keyId: "prod-root", ...generateAuthorityKeyPair() };
   const receipt = { keyId: "prod-receipt-1", ...generateAuthorityKeyPair() };
-  const bundle = buildAuthorityBundle({
+  const bundle = await buildAuthorityBundle({
     authorityId: "acme-prod",
     issuedAt: "2026-06-14T00:00:00.000Z",
     notAfter: "2099-01-01T00:00:00.000Z",
@@ -111,7 +111,7 @@ async function main() {
     try {
       const root = { keyId: "local-demo-root", ...generateAuthorityKeyPair() };
       const receipt = { keyId: "local-demo-receipt", ...generateAuthorityKeyPair() };
-      const bundle = buildAuthorityBundle({
+      const bundle = await buildAuthorityBundle({
         authorityId: "mnde-local-demo",
         issuedAt: "2026-06-14T00:00:00.000Z", notAfter: "2099-01-01T00:00:00.000Z", root,
         receiptKeys: [{ keyId: receipt.keyId, publicPem: receipt.publicPem, validFrom: "2020-01-01T00:00:00.000Z", validUntil: "2099-01-01T00:00:00.000Z" }],
@@ -131,7 +131,7 @@ async function main() {
   await test("production mode with explicit valid custody passes", async () => {
     const dir = mkdtempSync(join(tmpdir(), "mnde-tr-"));
     try {
-      const env = writeProductionCustody(dir);
+      const env = await writeProductionCustody(dir);
       const r = await assertTrustRoot(env, { repoRoot });
       assert.equal(r.ok, true, r.detail ?? "");
       assert.equal(r.profile, "production");
@@ -165,7 +165,7 @@ async function main() {
     const dir = mkdtempSync(join(tmpdir(), "mnde-tr-"));
     let sc = null;
     try {
-      const env = { ...writeProductionCustody(dir), MNDE_BIND_PORT: "8792" };
+      const env = { ...(await writeProductionCustody(dir)), MNDE_BIND_PORT: "8792" };
       sc = await startMndeSidecar({ url: "http://127.0.0.1:8792", env });
       const res = await fetch(`${sc.url}/v1/decisions`, {
         method: "POST", headers: { "content-type": "application/json" },

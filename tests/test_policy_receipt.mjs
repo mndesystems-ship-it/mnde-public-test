@@ -24,15 +24,18 @@ import { verifyAnyReceiptFile, verifyAnyReceiptObject } from "../tools/verify.mj
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const results = [];
+let testChain = Promise.resolve();
 function test(name, fn) {
-  try {
-    fn();
-    results.push(true);
-    console.log(`  [PASS] ${name}`);
-  } catch (error) {
-    results.push(false);
-    console.log(`  [FAIL] ${name}: ${error.message}`);
-  }
+  testChain = testChain.then(async () => {
+    try {
+      await fn();
+      results.push(true);
+      console.log(`  [PASS] ${name}`);
+    } catch (error) {
+      results.push(false);
+      console.log(`  [FAIL] ${name}: ${error.message}`);
+    }
+  });
 }
 
 function request(overrides = {}) {
@@ -56,10 +59,10 @@ function policy(rules) {
 const explicitNow = "2026-06-25T00:00:00.000Z";
 const allowReadStatusRule = { rule_id: "r1", effect: "ALLOW", match: { field: "tool.tool_name", op: "eq", value: "read_status" } };
 
-function makeExplicitAuthorityReceipt(authorityId = "mnde-explicit-test-authority") {
+async function makeExplicitAuthorityReceipt(authorityId = "mnde-explicit-test-authority") {
   const root = { keyId: `${authorityId}-root`, ...generateAuthorityKeyPair() };
   const receiptKey = { keyId: `${authorityId}-receipt`, ...generateAuthorityKeyPair() };
-  const authorityBundle = buildAuthorityBundle({
+  const authorityBundle = await buildAuthorityBundle({
     authorityId,
     issuedAt: explicitNow,
     notAfter: "2027-06-25T00:00:00.000Z",
@@ -88,7 +91,7 @@ function makeExplicitAuthorityReceipt(authorityId = "mnde-explicit-test-authorit
       key_id: receiptKey.keyId,
       public_key_fingerprint: fingerprintOf(receiptKey.publicPem),
       signed_at: explicitNow,
-      value: signCanonical(canonicalizeJson(payload), receiptKey.privatePem)
+      value: await signCanonical(canonicalizeJson(payload), receiptKey.privatePem)
     }
   };
   return { receipt, authorityBundle, rootFingerprint: authorityBundle.root_key.fingerprint };
@@ -96,101 +99,102 @@ function makeExplicitAuthorityReceipt(authorityId = "mnde-explicit-test-authorit
 
 bootstrapReceiptKeys({ repoRoot });
 
-test("ALLOW decision produces a verifiable policy receipt", () => {
+test("ALLOW decision produces a verifiable policy receipt", async () => {
   const rec = buildPolicyReceipt(
     request(),
     policy([{ rule_id: "r1", effect: "ALLOW", match: { field: "tool.tool_name", op: "eq", value: "read_status" } }])
   );
-  const v = verifyPolicyReceipt(rec);
+  const v = await verifyPolicyReceipt(rec);
   assert.equal(v.verified, true, v.reason ?? "");
   assert.equal(rec.decision_output.decision, "ALLOW");
 });
 
-test("REFUSE decision is also a verifiable receipt", () => {
+test("REFUSE decision is also a verifiable receipt", async () => {
   const rec = buildPolicyReceipt(
     request({ tool: { tool_name: "delete_everything" } }),
     policy([{ rule_id: "r1", effect: "ALLOW", match: { field: "tool.tool_name", op: "eq", value: "read_status" } }])
   );
-  const v = verifyPolicyReceipt(rec);
+  const v = await verifyPolicyReceipt(rec);
   assert.equal(v.verified, true);
   assert.equal(rec.decision_output.decision, "REFUSE");
   assert.equal(rec.decision_output.reason_code, "NO_MATCHING_RULE");
 });
 
-test("tampering the decision fails verification", () => {
+test("tampering the decision fails verification", async () => {
   const rec = buildPolicyReceipt(request(), policy([{ rule_id: "r1", effect: "ALLOW", match: { field: "tool.tool_name", op: "eq", value: "read_status" } }]));
   rec.decision_output.decision = "REFUSE"; // forge
-  assert.equal(verifyPolicyReceipt(rec).verified, false);
+  assert.equal((await verifyPolicyReceipt(rec)).verified, false);
 });
 
-test("tampering the request fails verification", () => {
+test("tampering the request fails verification", async () => {
   const rec = buildPolicyReceipt(request(), policy([{ rule_id: "r1", effect: "ALLOW", match: { field: "tool.tool_name", op: "eq", value: "read_status" } }]));
   rec.canonical_request = rec.canonical_request.replace("read_status", "delete_everything");
-  assert.equal(verifyPolicyReceipt(rec).verified, false);
+  assert.equal((await verifyPolicyReceipt(rec)).verified, false);
 });
 
-test("ONE verifier verifies a policy-engine receipt", () => {
+test("ONE verifier verifies a policy-engine receipt", async () => {
   const rec = buildPolicyReceipt(request(), policy([{ rule_id: "r1", effect: "ALLOW", match: { field: "tool.tool_name", op: "eq", value: "read_status" } }]));
   const file = join(mkdtempSync(join(tmpdir(), "mnde-pe-rec-")), "pe-receipt.json");
   writeFileSync(file, JSON.stringify(rec, null, 2));
-  const out = verifyAnyReceiptFile(file);
+  const out = await verifyAnyReceiptFile(file);
   assert.equal(out.kind, "policy-engine");
   assert.equal(out.verified, true);
 });
 
-test("the SAME verifier verifies a legacy pipeline receipt", () => {
+test("the SAME verifier verifies a legacy pipeline receipt", async () => {
   const legacy = join(repoRoot, "examples", "receipts", "valid-receipt.json");
   if (!existsSync(legacy)) {
     // example receipt not present in this checkout; skip without failing
     assert.ok(true);
     return;
   }
-  const out = verifyAnyReceiptFile(legacy);
+  const out = await verifyAnyReceiptFile(legacy);
   assert.equal(out.kind, "pipeline");
   assert.equal(out.verified, true, "legacy ecs.receipt.v2 must still verify through the unified verifier");
 });
 
-test("explicit PE authority bundle requires a trusted root pin", () => {
-  const { receipt, authorityBundle } = makeExplicitAuthorityReceipt("mnde-attacker-no-root");
-  const out = verifyAnyReceiptObject(receipt, { authorityBundle, now: explicitNow });
+test("explicit PE authority bundle requires a trusted root pin", async () => {
+  const { receipt, authorityBundle } = await makeExplicitAuthorityReceipt("mnde-attacker-no-root");
+  const out = await verifyAnyReceiptObject(receipt, { authorityBundle, now: explicitNow });
   assert.equal(out.kind, "policy-engine");
   assert.equal(out.verified, false);
   assert.equal(out.reason, "MISSING_TRUSTED_ROOT");
 });
 
-test("explicit PE authority bundle fails with the wrong trusted root pin", () => {
-  const { receipt, authorityBundle } = makeExplicitAuthorityReceipt("mnde-attacker-wrong-root");
-  const out = verifyAnyReceiptObject(receipt, { authorityBundle, trustedRootFingerprint: "0".repeat(64), now: explicitNow });
+test("explicit PE authority bundle fails with the wrong trusted root pin", async () => {
+  const { receipt, authorityBundle } = await makeExplicitAuthorityReceipt("mnde-attacker-wrong-root");
+  const out = await verifyAnyReceiptObject(receipt, { authorityBundle, trustedRootFingerprint: "0".repeat(64), now: explicitNow });
   assert.equal(out.kind, "policy-engine");
   assert.equal(out.verified, false);
   assert.equal(out.reason, "authority bundle: UNTRUSTED_ROOT");
 });
 
-test("conflicting explicit PE authority bundle fails without repo-local fallback", () => {
+test("conflicting explicit PE authority bundle fails without repo-local fallback", async () => {
   const rec = buildPolicyReceipt(request(), policy([allowReadStatusRule]));
-  const { authorityBundle, rootFingerprint } = makeExplicitAuthorityReceipt("mnde-conflicting-authority");
-  const out = verifyAnyReceiptObject(rec, { authorityBundle, trustedRootFingerprint: rootFingerprint, now: explicitNow });
+  const { authorityBundle, rootFingerprint } = await makeExplicitAuthorityReceipt("mnde-conflicting-authority");
+  const out = await verifyAnyReceiptObject(rec, { authorityBundle, trustedRootFingerprint: rootFingerprint, now: explicitNow });
   assert.equal(out.kind, "policy-engine");
   assert.equal(out.verified, false);
   assert.equal(out.reason, "AUTHORITY_BUNDLE_MISMATCH");
 });
 
-test("repo-local policy receipt still verifies when no explicit bundle is supplied", () => {
+test("repo-local policy receipt still verifies when no explicit bundle is supplied", async () => {
   const rec = buildPolicyReceipt(request(), policy([allowReadStatusRule]));
-  const out = verifyAnyReceiptObject(rec);
+  const out = await verifyAnyReceiptObject(rec);
   assert.equal(out.kind, "policy-engine");
   assert.equal(out.verified, true, out.reason ?? "");
   assert.equal(out.trust_source, "REPO_LOCAL_AUTHORITY");
 });
 
-test("explicit PE authority bundle verifies with the matching trusted root pin", () => {
-  const { receipt, authorityBundle, rootFingerprint } = makeExplicitAuthorityReceipt("mnde-explicit-valid");
-  const out = verifyAnyReceiptObject(receipt, { authorityBundle, trustedRootFingerprint: rootFingerprint, now: explicitNow });
+test("explicit PE authority bundle verifies with the matching trusted root pin", async () => {
+  const { receipt, authorityBundle, rootFingerprint } = await makeExplicitAuthorityReceipt("mnde-explicit-valid");
+  const out = await verifyAnyReceiptObject(receipt, { authorityBundle, trustedRootFingerprint: rootFingerprint, now: explicitNow });
   assert.equal(out.kind, "policy-engine");
   assert.equal(out.verified, true, out.reason ?? "");
   assert.equal(out.trust_source, "ROOT_PINNED_AUTHORITY_BUNDLE");
 });
 
+await testChain;
 const failed = results.filter((ok) => !ok).length;
 console.log("");
 if (failed > 0) {

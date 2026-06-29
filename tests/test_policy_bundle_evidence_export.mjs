@@ -17,16 +17,19 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 bootstrapReceiptKeys({ repoRoot });
 const NOW = "2026-06-23T12:00:00.000Z";
 const results = [];
+let testChain = Promise.resolve();
 
 function test(name, fn) {
-  try { fn(); results.push(true); console.log(`  [PASS] ${name}`); }
-  catch (error) { results.push(false); console.log(`  [FAIL] ${name}: ${error.message}`); }
+  testChain = testChain.then(async () => {
+    try { await fn(); results.push(true); console.log(`  [PASS] ${name}`); }
+    catch (error) { results.push(false); console.log(`  [FAIL] ${name}: ${error.message}`); }
+  });
 }
 
-function fixture() {
+async function fixture() {
   const root = { keyId: "root-1", ...generateAuthorityKeyPair() };
   const policyKey = { keyId: "policy-1", ...generateAuthorityKeyPair() };
-  const authorityBundle = buildAuthorityBundle({
+  const authorityBundle = await buildAuthorityBundle({
     authorityId: "evidence-authority", issuedAt: "2026-01-01T00:00:00.000Z", notAfter: "2099-01-01T00:00:00.000Z", root,
     policyKeys: [{ keyId: policyKey.keyId, publicPem: policyKey.publicPem, validFrom: "2026-01-01T00:00:00.000Z", validUntil: "2099-01-01T00:00:00.000Z" }]
   });
@@ -34,12 +37,12 @@ function fixture() {
     schema_version: "1.0", policy_id: "ops-policy", version: "7.0.0", state: "ACTIVE",
     rules: [{ rule_id: "allow-status", effect: "ALLOW", match: { field: "tool.tool_name", op: "eq", value: "read_status" } }]
   };
-  const signedBundle = signPolicyBundle({
+  const signedBundle = await signPolicyBundle({
     bundle_id: "ops-7-evidence", policy_id: "ops-policy", serial: 7, issued_at: NOW, policy_document: policy
   }, { keyId: policyKey.keyId, privateKeyPem: policyKey.privatePem });
   const dir = mkdtempSync(join(tmpdir(), "mnde-evidence-export-"));
   const statePath = join(dir, "state.json");
-  const activated = activateSignedPolicyBundle({ bundle: signedBundle, authorityBundle, trustedRootFingerprint: authorityBundle.root_key.fingerprint, statePath, now: NOW });
+  const activated = await activateSignedPolicyBundle({ bundle: signedBundle, authorityBundle, trustedRootFingerprint: authorityBundle.root_key.fingerprint, statePath, now: NOW });
   assert.equal(activated.ok, true, activated.reason);
   const receipt = buildPolicyReceipt({
     schema_version: "1.0", request_id: "evidence-1", timestamp: NOW,
@@ -56,8 +59,8 @@ function fixture() {
 
 console.log("MNDe policy bundle evidence export\n");
 
-test("exported evidence is public-only and verifies offline", () => {
-  const f = fixture();
+test("exported evidence is public-only and verifies offline", async () => {
+  const f = await fixture();
   try {
     const out = join(f.dir, "review-evidence");
     const exported = spawnSync(process.execPath, [
@@ -89,8 +92,8 @@ test("exported evidence is public-only and verifies offline", () => {
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test("evidence export refuses private-key or secret-like input and writes nothing", () => {
-  const f = fixture();
+test("evidence export refuses private-key or secret-like input and writes nothing", async () => {
+  const f = await fixture();
   const runExport = (receiptPath, policyBundlePath, outName) => spawnSync(process.execPath, [
     "tools/export-policy-bundle-evidence.mjs",
     "--receipt", receiptPath,
@@ -126,8 +129,8 @@ test("evidence export refuses private-key or secret-like input and writes nothin
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test("evidence export refuses an undeclared policy_document field (allowlist, not just blocklist)", () => {
-  const f = fixture();
+test("evidence export refuses an undeclared policy_document field (allowlist, not just blocklist)", async () => {
+  const f = await fixture();
   try {
     const bundleObj = JSON.parse(readFileSync(f.policyBundlePath, "utf8"));
     // Benign value (no secret pattern) under an undeclared field: the blocklist
@@ -147,10 +150,10 @@ test("evidence export refuses an undeclared policy_document field (allowlist, no
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test("evidence export allows a policy field declared in export_safe_fields", () => {
+test("evidence export allows a policy field declared in export_safe_fields", async () => {
   const root = { keyId: "root-1", ...generateAuthorityKeyPair() };
   const policyKey = { keyId: "policy-1", ...generateAuthorityKeyPair() };
-  const authorityBundle = buildAuthorityBundle({
+  const authorityBundle = await buildAuthorityBundle({
     authorityId: "declared-authority", issuedAt: "2026-01-01T00:00:00.000Z", notAfter: "2099-01-01T00:00:00.000Z", root,
     policyKeys: [{ keyId: policyKey.keyId, publicPem: policyKey.publicPem, validFrom: "2026-01-01T00:00:00.000Z", validUntil: "2099-01-01T00:00:00.000Z" }]
   });
@@ -159,13 +162,13 @@ test("evidence export allows a policy field declared in export_safe_fields", () 
     rules: [{ rule_id: "allow-status", effect: "ALLOW", match: { field: "tool.tool_name", op: "eq", value: "read_status" } }],
     export_safe_fields: ["owner"], owner: "ops-team"
   };
-  const signedBundle = signPolicyBundle({
+  const signedBundle = await signPolicyBundle({
     bundle_id: "declared-1", policy_id: "declared-policy", serial: 1, issued_at: NOW, policy_document: policy
   }, { keyId: policyKey.keyId, privateKeyPem: policyKey.privatePem });
   const dir = mkdtempSync(join(tmpdir(), "mnde-evidence-declared-"));
   try {
     const statePath = join(dir, "state.json");
-    const activated = activateSignedPolicyBundle({ bundle: signedBundle, authorityBundle, trustedRootFingerprint: authorityBundle.root_key.fingerprint, statePath, now: NOW });
+    const activated = await activateSignedPolicyBundle({ bundle: signedBundle, authorityBundle, trustedRootFingerprint: authorityBundle.root_key.fingerprint, statePath, now: NOW });
     assert.equal(activated.ok, true, activated.reason);
     const receipt = buildPolicyReceipt({
       schema_version: "1.0", request_id: "declared-1", timestamp: NOW,
@@ -183,6 +186,7 @@ test("evidence export allows a policy field declared in export_safe_fields", () 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+await testChain;
 const failed = results.filter((ok) => !ok).length;
 console.log("");
 if (failed > 0) {

@@ -17,7 +17,7 @@
 // accepted, preventing a forged result+receipt pair from passing hash-only
 // checks.
 
-import { createHash } from "node:crypto";
+import { sha256 } from "../crypto/provider.mjs";
 
 import { canonicalizeJson } from "../../shared/json.ts";
 import { fingerprintOf, verifyCanonical } from "../custody/index.mjs";
@@ -49,7 +49,7 @@ function checkEntry(passed, detail) {
 //                          re-verified against sha256(canonicalizeJson(request)).
 //
 // Returns { verified, reason?, checks: { [name]: { ok, detail? } } }
-export function verifyExecutionResult(result, options = {}) {
+export async function verifyExecutionResult(result, options = {}) {
   const { executorPublicKey, originalReceipt, originalRequest } = options;
   const checks = {};
 
@@ -101,7 +101,7 @@ export function verifyExecutionResult(result, options = {}) {
     }
     // Signature covers canonical payload (same content as result_hash input).
     const canonicalPayload = canonicalResultPayload(result);
-    const sigOk = verifyCanonical(canonicalPayload, sig.value, executorPublicKey);
+    const sigOk = await verifyCanonical(canonicalPayload, sig.value, executorPublicKey);
     checks.executor_signature = checkEntry(sigOk,
       sigOk ? undefined : "Ed25519 executor signature verification failed");
     if (!sigOk) return fail(checks, "executor_signature: Ed25519 executor signature verification failed");
@@ -117,9 +117,7 @@ export function verifyExecutionResult(result, options = {}) {
   // This check confirms only that the hash in the result matches the receipt
   // provided; it does NOT re-verify the receipt signature.
   if (originalReceipt !== undefined) {
-    const receiptHash = createHash("sha256")
-      .update(canonicalizeJson(originalReceipt), "utf8")
-      .digest("hex");
+    const receiptHash = sha256(canonicalizeJson(originalReceipt));
     const receiptHashOk = receiptHash === result.execution_receipt_hash;
     checks.receipt_hash_binding = checkEntry(receiptHashOk,
       receiptHashOk ? undefined : `recomputed receipt hash ${receiptHash}, result claims ${result.execution_receipt_hash}`);
@@ -130,9 +128,7 @@ export function verifyExecutionResult(result, options = {}) {
 
   // ── 7. Optional: request hash binding ────────────────────────────────────
   if (originalRequest !== undefined) {
-    const requestHash = createHash("sha256")
-      .update(canonicalizeJson(originalRequest), "utf8")
-      .digest("hex");
+    const requestHash = sha256(canonicalizeJson(originalRequest));
     const requestHashOk = requestHash === result.execution_request_hash;
     checks.request_hash_binding = checkEntry(requestHashOk,
       requestHashOk ? undefined : `recomputed request hash ${requestHash}, result claims ${result.execution_request_hash}`);

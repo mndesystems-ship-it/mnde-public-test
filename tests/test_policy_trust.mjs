@@ -21,15 +21,18 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 bootstrapReceiptKeys({ repoRoot });
 
 const results = [];
+let testChain = Promise.resolve();
 function test(name, fn) {
-  try {
-    fn();
-    results.push(true);
-    console.log(`  [PASS] ${name}`);
-  } catch (error) {
-    results.push(false);
-    console.log(`  [FAIL] ${name}: ${error.message}`);
-  }
+  testChain = testChain.then(async () => {
+    try {
+      await fn();
+      results.push(true);
+      console.log(`  [PASS] ${name}`);
+    } catch (error) {
+      results.push(false);
+      console.log(`  [FAIL] ${name}: ${error.message}`);
+    }
+  });
 }
 
 function keypair() {
@@ -99,30 +102,31 @@ test("a grant from an unknown issuer is rejected as untrusted", () => {
   assert.equal(d.reason_code, "AUTHORITY_UNTRUSTED_ISSUER");
 });
 
-test("trust-enforced receipt round-trips with matching trust anchors", () => {
+test("trust-enforced receipt round-trips with matching trust anchors", async () => {
   const policy = signPolicy(basePolicy(), { keyId: "policy-key-1", privateKeyPem: policyKey.priv });
   const signedGrant = signAuthorityGrant(grant(), { keyId: "authority-key-1", privateKeyPem: authorityKey.priv });
   const receipt = buildPolicyReceipt(request(), policy, { authorities: [signedGrant], trustAnchors, now: NOW });
   assert.equal(receipt.trust_enforced, true);
   assert.equal(receipt.decision_output.decision, "ALLOW");
-  assert.equal(verifyPolicyReceipt(receipt, { trustAnchors }).verified, true);
+  assert.equal((await verifyPolicyReceipt(receipt, { trustAnchors })).verified, true);
 });
 
-test("a verifier with the WRONG trust anchors does not accept the receipt", () => {
+test("a verifier with the WRONG trust anchors does not accept the receipt", async () => {
   const policy = signPolicy(basePolicy(), { keyId: "policy-key-1", privateKeyPem: policyKey.priv });
   const signedGrant = signAuthorityGrant(grant(), { keyId: "authority-key-1", privateKeyPem: authorityKey.priv });
   const receipt = buildPolicyReceipt(request(), policy, { authorities: [signedGrant], trustAnchors, now: NOW });
   const wrongAnchors = { policy_keys: [{ key_id: "policy-key-1", public_key: attackerKey.pub }], authority_keys: [] };
-  assert.equal(verifyPolicyReceipt(receipt, { trustAnchors: wrongAnchors }).verified, false);
+  assert.equal((await verifyPolicyReceipt(receipt, { trustAnchors: wrongAnchors })).verified, false);
 });
 
-test("a trust-enforced receipt cannot be verified without trust anchors", () => {
+test("a trust-enforced receipt cannot be verified without trust anchors", async () => {
   const policy = signPolicy(basePolicy(), { keyId: "policy-key-1", privateKeyPem: policyKey.priv });
   const signedGrant = signAuthorityGrant(grant(), { keyId: "authority-key-1", privateKeyPem: authorityKey.priv });
   const receipt = buildPolicyReceipt(request(), policy, { authorities: [signedGrant], trustAnchors, now: NOW });
-  assert.equal(verifyPolicyReceipt(receipt).verified, false);
+  assert.equal((await verifyPolicyReceipt(receipt)).verified, false);
 });
 
+await testChain;
 const failed = results.filter((ok) => !ok).length;
 console.log("");
 if (failed > 0) {

@@ -6,8 +6,9 @@
 // token label — NEVER from the request body. Tokens and identities are config;
 // they are never written into receipts.
 
-import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
+
+import { constantTimeEqual } from "../crypto/provider.mjs";
 
 // Load auth config from env. Fails closed (ok:false) if bearer mode is enabled
 // but no usable tokens are configured.
@@ -52,7 +53,7 @@ function matchToken(tokens, candidate) {
   let matched = null;
   for (const [token, identity] of tokens) {
     const tokenBuffer = Buffer.from(token, "utf8");
-    if (tokenBuffer.length === candidateBuffer.length && timingSafeEqual(tokenBuffer, candidateBuffer)) {
+    if (constantTimeEqual(tokenBuffer, candidateBuffer)) {
       matched = identity;
     }
   }

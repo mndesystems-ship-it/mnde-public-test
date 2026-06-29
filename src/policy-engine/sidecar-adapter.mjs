@@ -40,14 +40,14 @@ function loadOptionalTrustConfig(env) {
 
 // Load decision-engine config. Fails closed (ok:false) on any malformed/missing
 // configured file, so the sidecar can refuse rather than silently run unprotected.
-export function loadPolicyEngineConfig(env) {
+export async function loadPolicyEngineConfig(env) {
   const profileResult = parseRuntimeProfile(env.MNDE_PROFILE);
   if (!profileResult.ok) return { ok: false, reason: profileResult.detail };
   const production = profileResult.profile === "production";
   // Signed bundles are opt-in. The legacy MNDE_PE_POLICY path stays unchanged
   // unless an operator explicitly supplies a bundle path.
   if (env.MNDE_PE_POLICY_BUNDLE) {
-    const signed = loadSignedPolicyBundleConfig(env);
+    const signed = await loadSignedPolicyBundleConfig(env);
     if (!signed.ok) return signed;
     const trustConfig = loadOptionalTrustConfig(env);
     if (!trustConfig.ok) return trustConfig;

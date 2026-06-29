@@ -19,14 +19,14 @@ function arg(name) {
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
 
-const { ok, provider, reason } = createCustody(process.env);
+const { ok, provider, reason } = await createCustody(process.env);
 if (!ok) {
   console.error(`custody not available: ${reason}`);
   process.exit(1);
 }
 
 const bundle = provider.getPublicBundle();
-const check = verifyAuthorityBundle(bundle, { trustedRootFingerprint: provider.trustedRootFingerprint });
+const check = await verifyAuthorityBundle(bundle, { trustedRootFingerprint: provider.trustedRootFingerprint });
 if (!check.ok) {
   console.error(`refusing to export an unverifiable bundle: ${check.reason}`);
   process.exit(1);

@@ -89,7 +89,7 @@ export async function assertTrustRoot(env = process.env, options = {}) {
   //    and that the configured public key matches the bundle key.
   //    Imported lazily so local profile never loads the custody subsystem.
   const { loadSigningConfig } = await import("./index.mjs");
-  const signing = loadSigningConfig(env);
+  const signing = await loadSigningConfig(env);
   if (!signing.ok) {
     return fail(
       signing.reason_code ?? "ERR_CUSTODY_UNAVAILABLE",
@@ -101,7 +101,7 @@ export async function assertTrustRoot(env = process.env, options = {}) {
   //     verify it before accepting the trust root.
   if (signing.signer_mode === "external-signer") {
     try {
-      signing.provider.selfTest();
+      await signing.provider.selfTest();
     } catch (error) {
       return fail(
         "ERR_TRUST_ROOT_SIGNER_SELFTEST",

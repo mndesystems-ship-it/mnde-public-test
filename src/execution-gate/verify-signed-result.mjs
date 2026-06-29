@@ -23,9 +23,8 @@
 //
 // Returns a deterministic, stable verdict object.
 
-import { createHash } from "node:crypto";
-
 import { canonicalizeJson } from "../../shared/json.ts";
+import { sha256 } from "../crypto/provider.mjs";
 import { findBundleKey, fingerprintOf, verifyAuthorityBundle, verifyCanonical } from "../custody/index.mjs";
 import { derivePassportSubjectId } from "../identity/passport.mjs";
 import { EVIDENCE_FORBIDDEN_FIELDS } from "./result.mjs";
@@ -76,7 +75,7 @@ function isObject(v) {
 }
 
 function sha256Hex(str) {
-  return createHash("sha256").update(str, "utf8").digest("hex");
+  return sha256(str);
 }
 
 function payloadHashBody(envelope) {
@@ -152,7 +151,7 @@ function check(checks, name, passed, detail) {
 //   maxOpenStatusAgeMs     — if set, STARTED results without ended_at older than this fail
 //
 // Returns a deterministic verdict object.
-export function verifySignedExecutionResult(envelope, options = {}) {
+export async function verifySignedExecutionResult(envelope, options = {}) {
   const {
     authorityBundle,
     trustedRootFingerprint,
@@ -271,7 +270,7 @@ export function verifySignedExecutionResult(envelope, options = {}) {
   check(checks, "receipt_binding_shape", true);
 
   // ── 7. Verify unsigned execution_result ───────────────────────────────────
-  const resultCheck = verifyExecutionResult(envelope.execution_result, { executorPublicKey });
+  const resultCheck = await verifyExecutionResult(envelope.execution_result, { executorPublicKey });
   if (!resultCheck.verified) {
     check(checks, "execution_result", false, resultCheck.reason);
     return fail(checks, "SIGNED_RESULT_RESULT_INVALID", `execution_result invalid: ${resultCheck.reason}`);
@@ -289,7 +288,7 @@ export function verifySignedExecutionResult(envelope, options = {}) {
     return fail(checks, "SIGNED_RESULT_RECEIPT_INVALID", "signedReceipt is required for verification");
   }
   if (authorityBundle) {
-    const earlyBundleCheck = verifyAuthorityBundle(authorityBundle, { trustedRootFingerprint, now });
+    const earlyBundleCheck = await verifyAuthorityBundle(authorityBundle, { trustedRootFingerprint, now });
     if (!earlyBundleCheck.ok) {
       check(checks, "authority_bundle", false, earlyBundleCheck.reason);
       if (earlyBundleCheck.reason === "KEY_MALFORMED") {
@@ -299,7 +298,7 @@ export function verifySignedExecutionResult(envelope, options = {}) {
     }
     check(checks, "authority_bundle", true);
   }
-  const receiptCheck = verifySignedExecutionReceipt(signedReceipt, { authorityBundle, trustedRootFingerprint, now });
+  const receiptCheck = await verifySignedExecutionReceipt(signedReceipt, { authorityBundle, trustedRootFingerprint, now });
   if (!receiptCheck.verified) {
     check(checks, "signed_receipt", false, receiptCheck.reason);
     return fail(checks, "SIGNED_RESULT_RECEIPT_INVALID", `signed receipt invalid: ${receiptCheck.reason}`);
@@ -374,7 +373,7 @@ export function verifySignedExecutionResult(envelope, options = {}) {
     check(checks, "authority_bundle", false, "authorityBundle is required");
     return fail(checks, "SIGNED_RESULT_AUTHORITY_INVALID", "authorityBundle is required");
   }
-  const bundleCheck = verifyAuthorityBundle(authorityBundle, { trustedRootFingerprint, now });
+  const bundleCheck = await verifyAuthorityBundle(authorityBundle, { trustedRootFingerprint, now });
   if (!bundleCheck.ok) {
     check(checks, "authority_bundle", false, bundleCheck.reason);
     if (bundleCheck.reason === "KEY_MALFORMED") {
@@ -454,7 +453,7 @@ export function verifySignedExecutionResult(envelope, options = {}) {
     check(checks, "signature", false, "canonicalization failed");
     return fail(checks, "SIGNED_RESULT_CANONICALIZATION_INVALID", "failed to canonicalize signature body");
   }
-  const sigOk = verifyCanonical(sigBodyStr, sig.value, keyResult.publicKey);
+  const sigOk = await verifyCanonical(sigBodyStr, sig.value, keyResult.publicKey);
   if (!sigOk) {
     check(checks, "signature", false, "Ed25519 signature verification failed");
     return fail(checks, "SIGNED_RESULT_SIGNATURE_INVALID", "Ed25519 signature verification failed");

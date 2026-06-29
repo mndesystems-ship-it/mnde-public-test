@@ -8,7 +8,7 @@
 // MNDe does not call the internet, fetch JWKS endpoints, or check token
 // revocation. All of that happens in the adapter before this object exists.
 
-import { createHash } from "node:crypto";
+import { sha256 } from "../crypto/provider.mjs";
 
 import { canonicalizeJson } from "../../shared/json.ts";
 
@@ -20,7 +20,7 @@ const UTC_ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
 // Compute assertion_hash over canonical body with assertion_hash excluded.
 export function computeAssertionHash(body) {
   const { assertion_hash: _ah, ...rest } = body;
-  return "sha256:" + createHash("sha256").update(canonicalizeJson(rest), "utf8").digest("hex");
+  return "sha256:" + sha256(canonicalizeJson(rest));
 }
 
 // Validate an mnde.identity_assertion.v1 object (structural only).

@@ -29,15 +29,18 @@ const LATER = "2026-06-24T12:00:00.000Z";
 const results = [];
 bootstrapReceiptKeys({ repoRoot: resolve(dirname(fileURLToPath(import.meta.url)), "..") });
 
+let testChain = Promise.resolve();
 function test(name, fn) {
-  try {
-    fn();
-    results.push(true);
-    console.log(`  [PASS] ${name}`);
-  } catch (error) {
-    results.push(false);
-    console.log(`  [FAIL] ${name}: ${error.message}`);
-  }
+  testChain = testChain.then(async () => {
+    try {
+      await fn();
+      results.push(true);
+      console.log(`  [PASS] ${name}`);
+    } catch (error) {
+      results.push(false);
+      console.log(`  [FAIL] ${name}: ${error.message}`);
+    }
+  });
 }
 
 function policy(version, rules = [{ rule_id: "allow-status", effect: "ALLOW", match: { field: "tool.tool_name", op: "eq", value: "read_status" } }]) {
@@ -50,11 +53,11 @@ function policy(version, rules = [{ rule_id: "allow-status", effect: "ALLOW", ma
   };
 }
 
-function fixture() {
+async function fixture() {
   const root = { keyId: "root-1", ...generateAuthorityKeyPair() };
   const policyKey = { keyId: "policy-1", ...generateAuthorityKeyPair() };
   const approvalKey = { keyId: "approval-1", ...generateAuthorityKeyPair() };
-  const authorityBundle = buildAuthorityBundle({
+  const authorityBundle = await buildAuthorityBundle({
     authorityId: "mnde-test-authority",
     issuedAt: "2026-01-01T00:00:00.000Z",
     notAfter: "2099-01-01T00:00:00.000Z",
@@ -66,8 +69,8 @@ function fixture() {
   return { root, policyKey, approvalKey, authorityBundle, statePath: join(dir, "bundle-state.json"), dir };
 }
 
-function signedBundle(serial, version, f, policyDocument = policy(version)) {
-  return signPolicyBundle({
+async function signedBundle(serial, version, f, policyDocument = policy(version)) {
+  return await signPolicyBundle({
     bundle_id: `ops-policy-${serial}-${version}`,
     policy_id: "ops-policy",
     serial,
@@ -76,10 +79,11 @@ function signedBundle(serial, version, f, policyDocument = policy(version)) {
   }, { keyId: f.policyKey.keyId, privateKeyPem: f.policyKey.privatePem });
 }
 
-function writeSignedConfig(f, bundle = signedBundle(10, "10.0.0", f), extra = {}) {
+async function writeSignedConfig(f, bundle = null, extra = {}) {
+  const signed = bundle ?? await signedBundle(10, "10.0.0", f);
   const policyBundlePath = join(f.dir, "policy-bundle.json");
   const authorityBundlePath = join(f.dir, "authority-bundle.json");
-  writeFileSync(policyBundlePath, JSON.stringify(bundle), "utf8");
+  writeFileSync(policyBundlePath, JSON.stringify(signed), "utf8");
   writeFileSync(authorityBundlePath, JSON.stringify(f.authorityBundle), "utf8");
   return {
     MNDE_PE_POLICY_BUNDLE: policyBundlePath,
@@ -129,8 +133,8 @@ function authorityGrant(f) {
   }, { keyId: f.approvalKey.keyId, privateKeyPem: f.approvalKey.privatePem });
 }
 
-function activate(bundle, f, extra = {}) {
-  return activateSignedPolicyBundle({
+async function activate(bundle, f, extra = {}) {
+  return await activateSignedPolicyBundle({
     bundle,
     authorityBundle: f.authorityBundle,
     trustedRootFingerprint: f.authorityBundle.root_key.fingerprint,
@@ -142,11 +146,11 @@ function activate(bundle, f, extra = {}) {
 
 console.log("MNDe Signed Policy Bundle gates\n");
 
-test("valid signed bundle activates and persists its serial floor", () => {
-  const f = fixture();
+test("valid signed bundle activates and persists its serial floor", async () => {
+  const f = await fixture();
   try {
-    const bundle = signedBundle(7, "7.0.0", f);
-    const result = activate(bundle, f);
+    const bundle = await signedBundle(7, "7.0.0", f);
+    const result = await activate(bundle, f);
     assert.equal(result.ok, true, result.reason);
     assert.equal(result.policy.version, "7.0.0");
     const state = JSON.parse(readFileSync(f.statePath, "utf8"));
@@ -155,92 +159,96 @@ test("valid signed bundle activates and persists its serial floor", () => {
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test("invalid bundle signature refuses without creating activation state", () => {
-  const f = fixture();
+test("invalid bundle signature refuses without creating activation state", async () => {
+  const f = await fixture();
   try {
-    const bundle = signedBundle(7, "7.0.0", f);
+    const bundle = await signedBundle(7, "7.0.0", f);
     bundle.signature.value = bundle.signature.value.replace(/.$/, bundle.signature.value.endsWith("0") ? "1" : "0");
-    const result = activate(bundle, f);
+    const result = await activate(bundle, f);
     assert.equal(result.ok, false);
     assert.equal(result.reason, "POLICY_BUNDLE_SIGNATURE_INVALID");
     assert.throws(() => readFileSync(f.statePath, "utf8"));
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test("stale serial refuses after a higher serial is active", () => {
-  const f = fixture();
+test("stale serial refuses after a higher serial is active", async () => {
+  const f = await fixture();
   try {
-    assert.equal(activate(signedBundle(7, "7.0.0", f), f).ok, true);
-    const result = activate(signedBundle(6, "6.0.0", f), f);
+    const accepted = await activate(await signedBundle(7, "7.0.0", f), f);
+    assert.equal(accepted.ok, true);
+    const result = await activate(await signedBundle(6, "6.0.0", f), f);
     assert.equal(result.ok, false);
     assert.equal(result.reason, "POLICY_BUNDLE_SERIAL_ROLLBACK_REFUSED");
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test("a different bundle cannot reuse an already accepted serial", () => {
-  const f = fixture();
+test("a different bundle cannot reuse an already accepted serial", async () => {
+  const f = await fixture();
   try {
-    assert.equal(activate(signedBundle(7, "7.0.0", f), f).ok, true);
-    const replacement = signedBundle(7, "7.0.1", f);
-    const result = activate(replacement, f);
+    const accepted = await activate(await signedBundle(7, "7.0.0", f), f);
+    assert.equal(accepted.ok, true);
+    const replacement = await signedBundle(7, "7.0.1", f);
+    const result = await activate(replacement, f);
     assert.equal(result.ok, false);
     assert.equal(result.reason, "POLICY_BUNDLE_SERIAL_REUSE_REFUSED");
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test("rollback below the serial floor requires a valid, scoped signed authorization", () => {
-  const f = fixture();
+test("rollback below the serial floor requires a valid, scoped signed authorization", async () => {
+  const f = await fixture();
   try {
-    assert.equal(activate(signedBundle(7, "7.0.0", f), f).ok, true);
-    const older = signPolicyBundle({
+    const accepted = await activate(await signedBundle(7, "7.0.0", f), f);
+    assert.equal(accepted.ok, true);
+    const older = await signPolicyBundle({
       bundle_id: "ops-policy-6-rollback", policy_id: "ops-policy", serial: 6, issued_at: NOW, allow_rollback: true,
       policy_document: policy("6.0.0")
     }, { keyId: f.policyKey.keyId, privateKeyPem: f.policyKey.privatePem });
-    assert.equal(activate(older, f).reason, "POLICY_BUNDLE_ROLLBACK_AUTH_INVALID");
+    const refusedRollback = await activate(older, f);
+    assert.equal(refusedRollback.reason, "POLICY_BUNDLE_ROLLBACK_AUTH_INVALID");
 
-    const rollback = signRollbackAuthorization({
+    const rollback = await signRollbackAuthorization({
       policy_id: "ops-policy", from_serial: 7, to_serial: 6,
       issued_at: NOW, expires_at: LATER, authorization_id: "rollback-7-to-6"
     }, { keyId: f.approvalKey.keyId, privateKeyPem: f.approvalKey.privatePem });
-    const rollbackBundle = signPolicyBundle({
+    const rollbackBundle = await signPolicyBundle({
       bundle_id: "ops-policy-6-rollback-approved", policy_id: "ops-policy", serial: 6, issued_at: NOW, allow_rollback: true,
       policy_document: policy("6.0.0")
     }, { keyId: f.policyKey.keyId, privateKeyPem: f.policyKey.privatePem });
-    const result = activate({ ...rollbackBundle, rollback_authorization: rollback }, f);
+    const result = await activate({ ...rollbackBundle, rollback_authorization: rollback }, f);
     assert.equal(result.ok, true, result.reason);
     assert.equal(result.policyBundleProvenance.rollback_authorization_id, "rollback-7-to-6");
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test("default policy-engine file configuration remains legacy-compatible", () => {
-  const f = fixture();
+test("default policy-engine file configuration remains legacy-compatible", async () => {
+  const f = await fixture();
   try {
     const policyPath = join(f.dir, "legacy-policy.json");
     writeFileSync(policyPath, JSON.stringify(policy("legacy-1")));
-    const config = loadPolicyEngineConfig({ MNDE_PE_POLICY: policyPath });
+    const config = await loadPolicyEngineConfig({ MNDE_PE_POLICY: policyPath });
     assert.equal(config.ok, true, config.reason);
     assert.equal(config.policy.version, "legacy-1");
     assert.equal(config.signedPolicyBundle, undefined);
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test("production refuses unsigned policy-engine file configuration", () => {
-  const f = fixture();
+test("production refuses unsigned policy-engine file configuration", async () => {
+  const f = await fixture();
   try {
     const policyPath = join(f.dir, "legacy-policy.json");
     writeFileSync(policyPath, JSON.stringify(policy("legacy-prod")), "utf8");
-    const config = loadPolicyEngineConfig({ MNDE_PROFILE: "production", MNDE_PE_POLICY: policyPath });
+    const config = await loadPolicyEngineConfig({ MNDE_PROFILE: "production", MNDE_PE_POLICY: policyPath });
     assert.equal(config.ok, false);
     assert.equal(config.reason, "ERR_PE_PRODUCTION_REQUIRES_SIGNED_POLICY_BUNDLE");
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test("production refuses request-body legacy authority without trusted anchors", () => {
-  const f = fixture();
+test("production refuses request-body legacy authority without trusted anchors", async () => {
+  const f = await fixture();
   try {
-    const config = loadPolicyEngineConfig({
+    const config = await loadPolicyEngineConfig({
       MNDE_PROFILE: "production",
-      ...writeSignedConfig(f, signedBundle(10, "10.0.0", f, authorityPolicy("10.0.0")))
+      ...(await writeSignedConfig(f, await signedBundle(10, "10.0.0", f, authorityPolicy("10.0.0"))))
     });
     assert.equal(config.ok, true, config.reason);
     const decision = decidePolicyEngine({
@@ -256,17 +264,17 @@ test("production refuses request-body legacy authority without trusted anchors",
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test("production accepts signed policy bundle plus signed trusted authority grant", () => {
-  const f = fixture();
+test("production accepts signed policy bundle plus signed trusted authority grant", async () => {
+  const f = await fixture();
   try {
     const anchorsPath = join(f.dir, "trust-anchors.json");
     writeFileSync(anchorsPath, JSON.stringify({
       policy_keys: [{ key_id: f.policyKey.keyId, public_key: f.policyKey.publicPem }],
       authority_keys: [{ key_id: f.approvalKey.keyId, public_key: f.approvalKey.publicPem }]
     }), "utf8");
-    const config = loadPolicyEngineConfig({
+    const config = await loadPolicyEngineConfig({
       MNDE_PROFILE: "production",
-      ...writeSignedConfig(f, signedBundle(11, "11.0.0", f, authorityPolicy("11.0.0", true, f)), { MNDE_PE_TRUST_ANCHORS: anchorsPath })
+      ...(await writeSignedConfig(f, await signedBundle(11, "11.0.0", f, authorityPolicy("11.0.0", true, f)), { MNDE_PE_TRUST_ANCHORS: anchorsPath }))
     });
     assert.equal(config.ok, true, config.reason);
     const decision = decidePolicyEngine({ ...deleteRequest({ request_id: "delete-prod-signed" }), mnde_authorities: [authorityGrant(f)] }, config, { now: NOW });
@@ -276,14 +284,14 @@ test("production accepts signed policy bundle plus signed trusted authority gran
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test("policy-engine configuration activates a signed bundle before exposing its policy", () => {
-  const f = fixture();
+test("policy-engine configuration activates a signed bundle before exposing its policy", async () => {
+  const f = await fixture();
   try {
     const policyBundlePath = join(f.dir, "policy-bundle.json");
     const authorityBundlePath = join(f.dir, "authority-bundle.json");
-    writeFileSync(policyBundlePath, JSON.stringify(signedBundle(4, "4.0.0", f)));
+    writeFileSync(policyBundlePath, JSON.stringify(await signedBundle(4, "4.0.0", f)));
     writeFileSync(authorityBundlePath, JSON.stringify(f.authorityBundle));
-    const config = loadPolicyEngineConfig({
+    const config = await loadPolicyEngineConfig({
       MNDE_PE_POLICY_BUNDLE: policyBundlePath,
       MNDE_PE_AUTHORITY_BUNDLE: authorityBundlePath,
       MNDE_PE_POLICY_BUNDLE_STATE: f.statePath,
@@ -303,12 +311,13 @@ test("policy-engine configuration activates a signed bundle before exposing its 
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test("persisted serial floor refuses an older bundle after simulated restart", () => {
-  const f = fixture();
+test("persisted serial floor refuses an older bundle after simulated restart", async () => {
+  const f = await fixture();
   try {
-    assert.equal(activate(signedBundle(9, "9.0.0", f), f).ok, true);
-    const restarted = activateSignedPolicyBundle({
-      bundle: signedBundle(8, "8.0.0", f), authorityBundle: f.authorityBundle,
+    const accepted = await activate(await signedBundle(9, "9.0.0", f), f);
+    assert.equal(accepted.ok, true);
+    const restarted = await activateSignedPolicyBundle({
+      bundle: await signedBundle(8, "8.0.0", f), authorityBundle: f.authorityBundle,
       trustedRootFingerprint: f.authorityBundle.root_key.fingerprint, statePath: f.statePath, now: NOW
     });
     assert.equal(restarted.ok, false);
@@ -316,69 +325,70 @@ test("persisted serial floor refuses an older bundle after simulated restart", (
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test("enforce mode refuses state written by a different mode", () => {
-  const f = fixture();
+test("enforce mode refuses state written by a different mode", async () => {
+  const f = await fixture();
   try {
     writeFileSync(f.statePath, JSON.stringify({ schema_version: "mnde.policy.bundle.state.v1", mode: "warn", serial_floors: { "ops-policy": 99 } }));
-    const result = activate(signedBundle(100, "100.0.0", f), f);
+    const result = await activate(await signedBundle(100, "100.0.0", f), f);
     assert.equal(result.ok, false);
     assert.equal(result.reason, "POLICY_BUNDLE_STATE_MODE_MISMATCH");
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test("a rollback authorization is single-use and cannot be replayed", () => {
-  const f = fixture();
+test("a rollback authorization is single-use and cannot be replayed", async () => {
+  const f = await fixture();
   try {
-    assert.equal(activate(signedBundle(7, "7.0.0", f), f).ok, true);
-    const grant = signRollbackAuthorization({
+    const accepted = await activate(await signedBundle(7, "7.0.0", f), f);
+    assert.equal(accepted.ok, true);
+    const grant = await signRollbackAuthorization({
       policy_id: "ops-policy", from_serial: 7, to_serial: 6, issued_at: NOW, expires_at: LATER, authorization_id: "rb-7-to-6"
     }, { keyId: f.approvalKey.keyId, privateKeyPem: f.approvalKey.privatePem });
-    const rollbackBundle = signPolicyBundle({
+    const rollbackBundle = await signPolicyBundle({
       bundle_id: "ops-policy-6-single-use", policy_id: "ops-policy", serial: 6, issued_at: NOW, allow_rollback: true,
       policy_document: policy("6.0.0")
     }, { keyId: f.policyKey.keyId, privateKeyPem: f.policyKey.privatePem });
 
-    const first = activate({ ...rollbackBundle, rollback_authorization: grant }, f);
+    const first = await activate({ ...rollbackBundle, rollback_authorization: grant }, f);
     assert.equal(first.ok, true, first.reason);
     const state = JSON.parse(readFileSync(f.statePath, "utf8"));
     assert.deepEqual(state.consumed_rollback_authorizations, ["rb-7-to-6"]);
 
     // Re-presenting the exact same bundle + grant (digest matches, so the
     // serial-reuse gate passes) is refused by the single-use check.
-    const second = activate({ ...rollbackBundle, rollback_authorization: grant }, f);
+    const second = await activate({ ...rollbackBundle, rollback_authorization: grant }, f);
     assert.equal(second.ok, false);
     assert.equal(second.reason, "POLICY_BUNDLE_ROLLBACK_AUTH_REUSED");
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test("pre-existing v1 state without a consumed list migrates safely and supports rollback", () => {
-  const f = fixture();
+test("pre-existing v1 state without a consumed list migrates safely and supports rollback", async () => {
+  const f = await fixture();
   try {
     // An older v1 state file predates single-use tracking (no consumed list).
     writeFileSync(f.statePath, JSON.stringify({
       schema_version: "mnde.policy.bundle.state.v1", mode: "enforce",
       serial_floors: { "ops-policy": 7 }, serial_digests: { "ops-policy": {} }, activation_events: []
     }));
-    const grant = signRollbackAuthorization({
+    const grant = await signRollbackAuthorization({
       policy_id: "ops-policy", from_serial: 7, to_serial: 6, issued_at: NOW, expires_at: LATER, authorization_id: "migrated-rb"
     }, { keyId: f.approvalKey.keyId, privateKeyPem: f.approvalKey.privatePem });
-    const rollbackBundle = signPolicyBundle({
+    const rollbackBundle = await signPolicyBundle({
       bundle_id: "ops-policy-6-migrated", policy_id: "ops-policy", serial: 6, issued_at: NOW, allow_rollback: true,
       policy_document: policy("6.0.0")
     }, { keyId: f.policyKey.keyId, privateKeyPem: f.policyKey.privatePem });
-    const result = activate({ ...rollbackBundle, rollback_authorization: grant }, f);
+    const result = await activate({ ...rollbackBundle, rollback_authorization: grant }, f);
     assert.equal(result.ok, true, result.reason);
     const state = JSON.parse(readFileSync(f.statePath, "utf8"));
     assert.deepEqual(state.consumed_rollback_authorizations, ["migrated-rb"]);
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test("legacy bundle-off receipts carry no policy_bundle_provenance", () => {
-  const f = fixture();
+test("legacy bundle-off receipts carry no policy_bundle_provenance", async () => {
+  const f = await fixture();
   try {
     const policyPath = join(f.dir, "legacy-policy.json");
     writeFileSync(policyPath, JSON.stringify(policy("legacy-9")));
-    const config = loadPolicyEngineConfig({ MNDE_PE_POLICY: policyPath });
+    const config = await loadPolicyEngineConfig({ MNDE_PE_POLICY: policyPath });
     assert.equal(config.ok, true, config.reason);
     assert.equal(config.policyBundleProvenance, undefined);
     const decision = decidePolicyEngine({
@@ -390,6 +400,7 @@ test("legacy bundle-off receipts carry no policy_bundle_provenance", () => {
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
+await testChain;
 const failed = results.filter((ok) => !ok).length;
 console.log("");
 if (failed > 0) {

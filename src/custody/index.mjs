@@ -52,7 +52,7 @@ const EPOCH = "1970-01-01T00:00:00.000Z";
 // Ephemeral in-process keys. NOT production custody: keys live in memory, the
 // root is self-asserted, and nothing is durable. Good enough to develop and
 // demo the full sign/verify loop offline.
-export function createLocalDemoCustody(options = {}) {
+export async function createLocalDemoCustody(options = {}) {
   const issuedAt = options.now ?? new Date().toISOString();
   const root = { keyId: "local-demo-root", ...generateAuthorityKeyPair() };
   const receipt = { keyId: "local-demo-receipt", ...generateAuthorityKeyPair() };
@@ -61,7 +61,7 @@ export function createLocalDemoCustody(options = {}) {
   const result = { keyId: "local-demo-result", ...generateAuthorityKeyPair() };
   const ledger = { keyId: "local-demo-ledger", ...generateAuthorityKeyPair() };
 
-  const bundle = buildAuthorityBundle({
+  const bundle = await buildAuthorityBundle({
     authorityId: "mnde-local-demo",
     issuedAt,
     notAfter: FAR_FUTURE,
@@ -74,9 +74,9 @@ export function createLocalDemoCustody(options = {}) {
     revocation: []
   });
 
-  const signWith = (role, key) => (payload) => ({
+  const signWith = (role, key) => async (payload) => ({
     key_id: key.keyId,
-    value: signCanonical(payload, key.privatePem),
+    value: await signCanonical(payload, key.privatePem),
     fingerprint: bundle.keys[role][0].fingerprint
   });
 
@@ -142,7 +142,7 @@ export function createFileBackedProductionCustody(env = process.env) {
 
   const signer = (key, role) => {
     if (!key) return () => { throw new Error(`custody: no ${role} signing key configured`); };
-    return (payload) => ({ key_id: key.keyId, value: signCanonical(payload, key.privatePem), fingerprint: key.fingerprint });
+    return async (payload) => ({ key_id: key.keyId, value: await signCanonical(payload, key.privatePem), fingerprint: key.fingerprint });
   };
 
   return {
@@ -159,7 +159,7 @@ export function createFileBackedProductionCustody(env = process.env) {
 }
 
 // Factory. Default local-demo; production opt-in; fail closed on bad config.
-export function createCustody(env = process.env) {
+export async function createCustody(env = process.env) {
   const requested = env.MNDE_KEY_CUSTODY;
   if (requested === "file-backed-production") {
     try {
@@ -172,5 +172,5 @@ export function createCustody(env = process.env) {
   if (requested && !KNOWN_PROVIDERS.includes(requested)) {
     return { ok: false, reason: `custody: unknown MNDE_KEY_CUSTODY '${requested}'` };
   }
-  return { ok: true, provider: createLocalDemoCustody() };
+  return { ok: true, provider: await createLocalDemoCustody() };
 }

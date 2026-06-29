@@ -1,8 +1,7 @@
 // Offline verifier for mnde.execution_ledger_entry.v1.
 
-import { createHash } from "node:crypto";
-
 import { canonicalizeJson } from "../../shared/json.ts";
+import { sha256 } from "../crypto/provider.mjs";
 import { findBundleKey, fingerprintOf, verifyAuthorityBundle, verifyCanonical } from "../custody/index.mjs";
 import {
   canonicalLedgerSignaturePayload,
@@ -22,7 +21,7 @@ function isObject(value) {
 }
 
 function sha256Tagged(value) {
-  return `sha256:${createHash("sha256").update(canonicalizeJson(value), "utf8").digest("hex")}`;
+  return `sha256:${sha256(canonicalizeJson(value))}`;
 }
 
 function policyHashFromReceipt(receipt) {
@@ -63,7 +62,7 @@ function mapKeyReason(reason) {
 }
 
 // Verify a signed execution ledger entry.
-export function verifyLedgerEntry(envelope, options = {}) {
+export async function verifyLedgerEntry(envelope, options = {}) {
   const checks = {};
   try {
     const {
@@ -151,7 +150,7 @@ export function verifyLedgerEntry(envelope, options = {}) {
       check(checks, "authority_bundle", false, "authorityBundle is required");
       return fail(checks, "LEDGER_AUTHORITY_INVALID", "authorityBundle is required");
     }
-    const bundleCheck = verifyAuthorityBundle(authorityBundle, { trustedRootFingerprint, now });
+    const bundleCheck = await verifyAuthorityBundle(authorityBundle, { trustedRootFingerprint, now });
     if (!bundleCheck.ok) {
       check(checks, "authority_bundle", false, bundleCheck.reason);
       if (bundleCheck.reason === "KEY_MALFORMED") return fail(checks, "LEDGER_KEY_MALFORMED", "ledger key has malformed public key");
@@ -192,7 +191,7 @@ export function verifyLedgerEntry(envelope, options = {}) {
       check(checks, "signed_receipt", false, "signedReceipt is required");
       return fail(checks, "LEDGER_RECEIPT_INVALID", "signedReceipt is required");
     }
-    const receiptCheck = verifySignedExecutionReceipt(signedReceipt, { authorityBundle, trustedRootFingerprint, now });
+    const receiptCheck = await verifySignedExecutionReceipt(signedReceipt, { authorityBundle, trustedRootFingerprint, now });
     if (!receiptCheck.verified) {
       check(checks, "signed_receipt", false, receiptCheck.reason);
       return fail(checks, "LEDGER_RECEIPT_INVALID", `signed receipt invalid: ${receiptCheck.reason}`);
@@ -208,7 +207,7 @@ export function verifyLedgerEntry(envelope, options = {}) {
       check(checks, "execution_request_hash", false, `receipt=${signedReceipt.request_hash}, result=${preflightResultRequestHash}`);
       return fail(checks, "LEDGER_REQUEST_HASH_MISMATCH", "signed result request hash does not match signed receipt");
     }
-    const resultCheck = verifySignedExecutionResult(signedExecutionResult, {
+    const resultCheck = await verifySignedExecutionResult(signedExecutionResult, {
       authorityBundle,
       trustedRootFingerprint,
       signedReceipt,
@@ -260,7 +259,7 @@ export function verifyLedgerEntry(envelope, options = {}) {
       check(checks, "signature", false, "verifiable_signature is missing or malformed");
       return fail(checks, "LEDGER_SIGNATURE_INVALID", "verifiable_signature is missing or malformed");
     }
-    const sigOk = verifyCanonical(canonicalLedgerSignaturePayload(envelope), sig.value, keyResult.publicKey);
+    const sigOk = await verifyCanonical(canonicalLedgerSignaturePayload(envelope), sig.value, keyResult.publicKey);
     if (!sigOk) {
       check(checks, "signature", false, "Ed25519 signature verification failed");
       return fail(checks, "LEDGER_SIGNATURE_INVALID", "Ed25519 signature verification failed");
@@ -272,7 +271,7 @@ export function verifyLedgerEntry(envelope, options = {}) {
       return fail(checks, "LEDGER_PREVIOUS_REQUIRED", "previousLedgerEntry is required for sequence_number > 1");
     }
     if (previousLedgerEntry) {
-      const previousCheck = verifyLedgerEntry(previousLedgerEntry, {
+      const previousCheck = await verifyLedgerEntry(previousLedgerEntry, {
         authorityBundle,
         trustedRootFingerprint,
         signedReceipt: previousSignedReceipt,

@@ -49,7 +49,7 @@ export function rootKeyMatches(bundle, rootPrivateKeyPem) {
 }
 
 // Re-sign a bundle with updated key material. Pure; returns a new bundle object.
-function reissue(bundle, rootPrivateKeyPem, updates) {
+async function reissue(bundle, rootPrivateKeyPem, updates) {
   return buildAuthorityBundle({
     authorityId: bundle.authority_id,
     issuedAt: updates.now,
@@ -63,8 +63,8 @@ function reissue(bundle, rootPrivateKeyPem, updates) {
 }
 
 // Validate the produced bundle before returning it. Never emit a broken bundle.
-function finalize(bundle, next, now) {
-  const check = verifyAuthorityBundle(next, { trustedRootFingerprint: bundle.root_key.fingerprint, now });
+async function finalize(bundle, next, now) {
+  const check = await verifyAuthorityBundle(next, { trustedRootFingerprint: bundle.root_key.fingerprint, now });
   if (!check.ok) return { ok: false, reason: `REISSUE_UNVERIFIABLE:${check.reason}` };
   return { ok: true, bundle: next };
 }
@@ -73,7 +73,7 @@ function finalize(bundle, next, now) {
 // default retire all current keys of that role by closing their validity window
 // at `now`. Receipts signed by the old key BEFORE `now` stay verifiable; the old
 // key cannot sign anything dated at/after `now`.
-export function rotateSigningKey(bundle, options = {}) {
+export async function rotateSigningKey(bundle, options = {}) {
   const { role = "receipt", rootPrivateKeyPem, newKey, now, validUntil = FAR_FUTURE, retire = true } = options;
   if (!ROLES.has(role)) return { ok: false, reason: "INVALID_ROLE" };
   if (!isValidTimestamp(now)) return { ok: false, reason: "INVALID_NOW" };
@@ -87,8 +87,8 @@ export function rotateSigningKey(bundle, options = {}) {
   const retired = retire ? existing.map((k) => ({ ...k, validUntil: earliest(k.validUntil, now) })) : existing;
   const updated = [...retired, { keyId: newKey.keyId, publicPem: newKey.publicPem, validFrom: now, validUntil }];
 
-  const next = reissue(bundle, rootPrivateKeyPem, { now, [`${role}Keys`]: updated });
-  const result = finalize(bundle, next, now);
+  const next = await reissue(bundle, rootPrivateKeyPem, { now, [`${role}Keys`]: updated });
+  const result = await finalize(bundle, next, now);
   if (!result.ok) return result;
   return { ...result, role, newKeyId: newKey.keyId, retiredKeyIds: retire ? existing.map((k) => k.keyId) : [] };
 }
@@ -96,7 +96,7 @@ export function rotateSigningKey(bundle, options = {}) {
 // Revoke a key id across the bundle: it is rejected immediately, even inside its
 // validity window. Use for compromise. Historical receipts signed by it stop
 // verifying (intended — a compromised key's receipts are no longer trustworthy).
-export function revokeKey(bundle, options = {}) {
+export async function revokeKey(bundle, options = {}) {
   const { rootPrivateKeyPem, keyId, now } = options;
   if (!isValidTimestamp(now)) return { ok: false, reason: "INVALID_NOW" };
   if (typeof keyId !== "string" || keyId.length === 0) return { ok: false, reason: "INVALID_KEY_ID" };
@@ -107,8 +107,8 @@ export function revokeKey(bundle, options = {}) {
   const known = ["receipt", "policy", "approval"].some((r) => (bundle.keys?.[r] ?? []).some((k) => k.key_id === keyId));
   if (!known) return { ok: false, reason: "UNKNOWN_KEY_ID" };
 
-  const next = reissue(bundle, rootPrivateKeyPem, { now, revocation: [...revocation, keyId] });
-  const result = finalize(bundle, next, now);
+  const next = await reissue(bundle, rootPrivateKeyPem, { now, revocation: [...revocation, keyId] });
+  const result = await finalize(bundle, next, now);
   if (!result.ok) return result;
   return { ...result, revokedKeyId: keyId };
 }

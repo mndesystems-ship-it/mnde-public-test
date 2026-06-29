@@ -6,9 +6,8 @@
 //   npm run test:signed-execution-result
 
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-
 import { canonicalizeJson } from "../shared/json.ts";
+import { sha256 } from "../src/crypto/provider.mjs";
 import {
   buildAuthorityBundle,
   fingerprintOf,
@@ -23,15 +22,18 @@ import { buildExecutionResult, computeResultHash, NON_EXECUTION_REASONS, VALID_S
 import { verifySignedExecutionResult } from "../src/execution-gate/verify-signed-result.mjs";
 
 const results = [];
+let testChain = Promise.resolve();
 function test(name, fn) {
-  try {
-    fn();
-    results.push(true);
-    console.log(`  [PASS] ${name}`);
-  } catch (error) {
-    results.push(false);
-    console.log(`  [FAIL] ${name}: ${error.message}`);
-  }
+  testChain = testChain.then(async () => {
+    try {
+      await fn();
+      results.push(true);
+      console.log(`  [PASS] ${name}`);
+    } catch (error) {
+      results.push(false);
+      console.log(`  [FAIL] ${name}: ${error.message}`);
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -45,11 +47,11 @@ const NOW = "2026-06-26T12:01:00.000Z";
 const AUTHORITY_CHAIN_ID = "mnde-test-chain-001";
 
 function sha256Hex(obj) {
-  return createHash("sha256").update(canonicalizeJson(obj), "utf8").digest("hex");
+  return sha256(canonicalizeJson(obj));
 }
 
 // Build a full authority bundle with receipt and result keys.
-function makeBundle({
+async function makeBundle({
   authorityId = "mnde-test-authority",
   issuedAt = "2026-01-01T00:00:00.000Z",
   notAfter = "2028-01-01T00:00:00.000Z",
@@ -69,7 +71,7 @@ function makeBundle({
     ...(revokeReceipt ? [receiptKey.keyId] : [])
   ];
 
-  const bundle = buildAuthorityBundle({
+  const bundle = await buildAuthorityBundle({
     authorityId,
     issuedAt,
     notAfter,
@@ -106,8 +108,8 @@ function minimalRequest() {
 }
 
 // Build a valid signed receipt.
-function makeSignedReceipt(fixtures, { decision = "ALLOW", request = minimalRequest() } = {}) {
-  return buildSignedExecutionReceipt(request, decision, {
+async function makeSignedReceipt(fixtures, { decision = "ALLOW", request = minimalRequest() } = {}) {
+  return await buildSignedExecutionReceipt(request, decision, {
     authorityBundle: fixtures.bundle,
     signingKeyId: fixtures.receiptKey.keyId,
     signingPrivateKeyPem: fixtures.receiptKey.privatePem
@@ -157,11 +159,11 @@ function makeExecutionResult(signedReceipt, {
 }
 
 // Build a valid signed result envelope.
-function makeSignedResult(fixtures, { decision = "ALLOW", status = "SUCCEEDED", extraResultFields = {} } = {}) {
+async function makeSignedResult(fixtures, { decision = "ALLOW", status = "SUCCEEDED", extraResultFields = {} } = {}) {
   const request = minimalRequest();
-  const signedReceipt = makeSignedReceipt(fixtures, { decision, request });
+  const signedReceipt = await makeSignedReceipt(fixtures, { decision, request });
   const executionResult = makeExecutionResult(signedReceipt, { status, decision, extraFields: extraResultFields });
-  return buildSignedExecutionResult(executionResult, {
+  return await buildSignedExecutionResult(executionResult, {
     authorityBundle: fixtures.bundle,
     trustedRootFingerprint: fixtures.trustedRootFingerprint,
     signingKeyId: fixtures.resultKey.keyId,
@@ -173,9 +175,9 @@ function makeSignedResult(fixtures, { decision = "ALLOW", status = "SUCCEEDED", 
   });
 }
 
-function verify(fixtures, envelope, extra = {}) {
-  const signedReceipt = extra.signedReceipt ?? makeSignedReceipt(fixtures);
-  return verifySignedExecutionResult(envelope, {
+async function verify(fixtures, envelope, extra = {}) {
+  const signedReceipt = extra.signedReceipt ?? await makeSignedReceipt(fixtures);
+  return await verifySignedExecutionResult(envelope, {
     authorityBundle: extra.authorityBundle ?? fixtures.bundle,
     trustedRootFingerprint: extra.trustedRootFingerprint ?? fixtures.trustedRootFingerprint,
     now: extra.now ?? NOW,
@@ -188,61 +190,61 @@ function verify(fixtures, envelope, extra = {}) {
 // ---------------------------------------------------------------------------
 console.log("\nHostile — schema and structure:");
 
-const F = makeBundle();
+const F = await makeBundle();
 
-test("unknown schema fails", () => {
-  const envelope = { ...makeSignedResult(F), schema: "mnde.execution_result.v1" };
-  const r = verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: makeSignedReceipt(F) });
+test("unknown schema fails", async () => {
+  const envelope = { ...(await makeSignedResult(F)), schema: "mnde.execution_result.v1" };
+  const r = await verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: await makeSignedReceipt(F) });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "SIGNED_RESULT_SCHEMA_INVALID");
 });
 
-test("missing schema fails", () => {
-  const { schema: _s, ...envelope } = makeSignedResult(F);
-  const r = verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: makeSignedReceipt(F) });
+test("missing schema fails", async () => {
+  const { schema: _s, ...envelope } = await makeSignedResult(F);
+  const r = await verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: await makeSignedReceipt(F) });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "SIGNED_RESULT_SCHEMA_INVALID");
 });
 
-test("unsupported trust_model fails", () => {
-  const envelope = { ...makeSignedResult(F), trust_model: "online-authority" };
-  const r = verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: makeSignedReceipt(F) });
+test("unsupported trust_model fails", async () => {
+  const envelope = { ...(await makeSignedResult(F)), trust_model: "online-authority" };
+  const r = await verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: await makeSignedReceipt(F) });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "SIGNED_RESULT_TRUST_MODEL_UNSUPPORTED");
 });
 
-test("missing signed_at fails", () => {
-  const { signed_at: _s, ...envelope } = makeSignedResult(F);
-  const r = verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: makeSignedReceipt(F) });
+test("missing signed_at fails", async () => {
+  const { signed_at: _s, ...envelope } = await makeSignedResult(F);
+  const r = await verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: await makeSignedReceipt(F) });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "SIGNED_RESULT_SCHEMA_INVALID");
 });
 
-test("missing authority fails", () => {
-  const { authority: _a, ...envelope } = makeSignedResult(F);
-  const r = verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: makeSignedReceipt(F) });
+test("missing authority fails", async () => {
+  const { authority: _a, ...envelope } = await makeSignedResult(F);
+  const r = await verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: await makeSignedReceipt(F) });
   assert.strictEqual(r.valid, false);
   assert.ok(["SIGNED_RESULT_AUTHORITY_INVALID", "SIGNED_RESULT_SCHEMA_INVALID"].includes(r.code));
 });
 
-test("missing signature fails", () => {
-  const { verifiable_signature: _s, ...envelope } = makeSignedResult(F);
-  const r = verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: makeSignedReceipt(F) });
+test("missing signature fails", async () => {
+  const { verifiable_signature: _s, ...envelope } = await makeSignedResult(F);
+  const r = await verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: await makeSignedReceipt(F) });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "SIGNED_RESULT_SIGNATURE_MISSING");
 });
 
-test("authority_chain_id that is a 64-hex fingerprint is rejected", () => {
-  const envelope = { ...makeSignedResult(F), authority_chain_id: "a".repeat(64) };
-  const r = verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: makeSignedReceipt(F) });
+test("authority_chain_id that is a 64-hex fingerprint is rejected", async () => {
+  const envelope = { ...(await makeSignedResult(F)), authority_chain_id: "a".repeat(64) };
+  const r = await verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: await makeSignedReceipt(F) });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "SIGNED_RESULT_AUTHORITY_CHAIN_INVALID");
 });
 
-test("unsupported algorithm fails", () => {
-  const envelope = makeSignedResult(F);
+test("unsupported algorithm fails", async () => {
+  const envelope = await makeSignedResult(F);
   const tampered = { ...envelope, authority: { ...envelope.authority, algorithm: "RSA" } };
-  const r = verifySignedExecutionResult(tampered, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: makeSignedReceipt(F) });
+  const r = await verifySignedExecutionResult(tampered, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: await makeSignedReceipt(F) });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "SIGNED_RESULT_ALGORITHM_UNSUPPORTED");
 });
@@ -252,12 +254,12 @@ test("unsupported algorithm fails", () => {
 // ---------------------------------------------------------------------------
 console.log("\nHostile — role separation:");
 
-test("receipt key cannot sign result", () => {
+test("receipt key cannot sign result", async () => {
   const request = minimalRequest();
-  const signedReceipt = makeSignedReceipt(F, { request });
+  const signedReceipt = await makeSignedReceipt(F, { request });
   const executionResult = makeExecutionResult(signedReceipt);
   // Attempt to build with the receipt key instead of the result key.
-  assert.throws(() => buildSignedExecutionResult(executionResult, {
+  await assert.rejects(async () => await buildSignedExecutionResult(executionResult, {
     authorityBundle: F.bundle,
     trustedRootFingerprint: F.trustedRootFingerprint,
     signingKeyId: F.receiptKey.keyId, // receipt key, wrong role
@@ -269,11 +271,11 @@ test("receipt key cannot sign result", () => {
   }), /result signing key not usable/i);
 });
 
-test("policy key cannot sign result", () => {
+test("policy key cannot sign result", async () => {
   const request = minimalRequest();
-  const signedReceipt = makeSignedReceipt(F, { request });
+  const signedReceipt = await makeSignedReceipt(F, { request });
   const executionResult = makeExecutionResult(signedReceipt);
-  assert.throws(() => buildSignedExecutionResult(executionResult, {
+  await assert.rejects(async () => await buildSignedExecutionResult(executionResult, {
     authorityBundle: F.bundle,
     trustedRootFingerprint: F.trustedRootFingerprint,
     signingKeyId: F.policyKey.keyId,
@@ -285,11 +287,11 @@ test("policy key cannot sign result", () => {
   }), /result signing key not usable/i);
 });
 
-test("approval key cannot sign result", () => {
+test("approval key cannot sign result", async () => {
   const request = minimalRequest();
-  const signedReceipt = makeSignedReceipt(F, { request });
+  const signedReceipt = await makeSignedReceipt(F, { request });
   const executionResult = makeExecutionResult(signedReceipt);
-  assert.throws(() => buildSignedExecutionResult(executionResult, {
+  await assert.rejects(async () => await buildSignedExecutionResult(executionResult, {
     authorityBundle: F.bundle,
     trustedRootFingerprint: F.trustedRootFingerprint,
     signingKeyId: F.approvalKey.keyId,
@@ -301,40 +303,40 @@ test("approval key cannot sign result", () => {
   }), /result signing key not usable/i);
 });
 
-test("wrong key_id in verifier fails", () => {
-  const envelope = makeSignedResult(F);
+test("wrong key_id in verifier fails", async () => {
+  const envelope = await makeSignedResult(F);
   const tampered = { ...envelope, authority: { ...envelope.authority, key_id: "nonexistent-key" }, verifiable_signature: { ...envelope.verifiable_signature, key_id: "nonexistent-key" } };
-  const r = verifySignedExecutionResult(tampered, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: makeSignedReceipt(F) });
+  const r = await verifySignedExecutionResult(tampered, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: await makeSignedReceipt(F) });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "SIGNED_RESULT_KEY_NOT_FOUND");
 });
-test("wrong key_role in authority object returns SIGNED_RESULT_KEY_ROLE_INVALID", () => {
-  const envelope = makeSignedResult(F);
+test("wrong key_role in authority object returns SIGNED_RESULT_KEY_ROLE_INVALID", async () => {
+  const envelope = await makeSignedResult(F);
   const tampered = { ...envelope, authority: { ...envelope.authority, key_role: "receipt" } };
-  const r = verifySignedExecutionResult(tampered, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: makeSignedReceipt(F) });
+  const r = await verifySignedExecutionResult(tampered, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: await makeSignedReceipt(F) });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "SIGNED_RESULT_KEY_ROLE_INVALID");
 });
 
-test("revoked result key fails", () => {
-  const F2 = makeBundle({ revokeResult: true });
-  const r = verifySignedExecutionResult(makeSignedResult(F, {}), {
+test("revoked result key fails", async () => {
+  const F2 = await makeBundle({ revokeResult: true });
+  const r = await verifySignedExecutionResult(await makeSignedResult(F, {}), {
     authorityBundle: F2.bundle, // bundle with result key revoked
     trustedRootFingerprint: F2.trustedRootFingerprint,
     now: NOW,
-    signedReceipt: makeSignedReceipt(F2)
+    signedReceipt: await makeSignedReceipt(F2)
   });
   // Will fail either at key_lookup (revoked) or at receipt binding (different bundle).
   assert.strictEqual(r.valid, false);
 });
 
-test("revoked result key fails — same bundle with revocation", () => {
-  const F3 = makeBundle({ revokeResult: true });
+test("revoked result key fails — same bundle with revocation", async () => {
+  const F3 = await makeBundle({ revokeResult: true });
   // Build a receipt with F3, but the result key is revoked so the builder throws.
   const request = minimalRequest();
-  const signedReceipt3 = makeSignedReceipt(F3, { request });
+  const signedReceipt3 = await makeSignedReceipt(F3, { request });
   const executionResult3 = makeExecutionResult(signedReceipt3);
-  assert.throws(() => buildSignedExecutionResult(executionResult3, {
+  await assert.rejects(async () => await buildSignedExecutionResult(executionResult3, {
     authorityBundle: F3.bundle,
     trustedRootFingerprint: F3.trustedRootFingerprint,
     signingKeyId: F3.resultKey.keyId,
@@ -346,14 +348,14 @@ test("revoked result key fails — same bundle with revocation", () => {
   }), /result signing key not usable/i);
 });
 
-test("expired result key fails", () => {
+test("expired result key fails", async () => {
   // Build a bundle with a valid receipt key but an expired result key.
   const root4 = { keyId: "root-4", ...generateAuthorityKeyPair() };
   const receiptKey4 = { keyId: "receipt-4", ...generateAuthorityKeyPair() };
   const resultKey4 = { keyId: "result-4-expired", ...generateAuthorityKeyPair() };
   const policyKey4 = { keyId: "policy-4", ...generateAuthorityKeyPair() };
   const approvalKey4 = { keyId: "approval-4", ...generateAuthorityKeyPair() };
-  const bundle4 = buildAuthorityBundle({
+  const bundle4 = await buildAuthorityBundle({
     authorityId: "mnde-test-expired",
     issuedAt: "2025-01-01T00:00:00.000Z",
     notAfter: FAR_FUTURE,
@@ -367,9 +369,9 @@ test("expired result key fails", () => {
   });
   const F4 = { root: root4, receiptKey: receiptKey4, resultKey: resultKey4, bundle: bundle4, trustedRootFingerprint: bundle4.root_key.fingerprint };
   const request = minimalRequest();
-  const signedReceipt4 = makeSignedReceipt(F4, { request });
+  const signedReceipt4 = await makeSignedReceipt(F4, { request });
   const executionResult4 = makeExecutionResult(signedReceipt4);
-  assert.throws(() => buildSignedExecutionResult(executionResult4, {
+  await assert.rejects(async () => await buildSignedExecutionResult(executionResult4, {
     authorityBundle: F4.bundle,
     trustedRootFingerprint: F4.trustedRootFingerprint,
     signingKeyId: F4.resultKey.keyId,
@@ -386,23 +388,23 @@ test("expired result key fails", () => {
 // ---------------------------------------------------------------------------
 console.log("\nHostile — envelope tampering:");
 
-test("tampered execution_result status fails", () => {
-  const envelope = makeSignedResult(F);
-  const signedReceipt = makeSignedReceipt(F);
+test("tampered execution_result status fails", async () => {
+  const envelope = await makeSignedResult(F);
+  const signedReceipt = await makeSignedReceipt(F);
   // Change status in embedded result (but result_hash is stale).
   const tampered = {
     ...envelope,
     execution_result: { ...envelope.execution_result, status: "FAILED" }
   };
-  const r = verifySignedExecutionResult(tampered, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
+  const r = await verifySignedExecutionResult(tampered, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
   assert.strictEqual(r.valid, false);
   // Fails at result_hash check inside verifyExecutionResult.
   assert.ok(r.code.includes("RESULT") || r.code.includes("SIGNATURE") || r.code.includes("PAYLOAD"));
 });
 
-test("tampered execution_result effects fails", () => {
-  const envelope = makeSignedResult(F);
-  const signedReceipt = makeSignedReceipt(F);
+test("tampered execution_result effects fails", async () => {
+  const envelope = await makeSignedResult(F);
+  const signedReceipt = await makeSignedReceipt(F);
   const tampered = {
     ...envelope,
     execution_result: {
@@ -410,13 +412,13 @@ test("tampered execution_result effects fails", () => {
       effects: [{ type: "deployment", resource_id: "evil-service", before: "sha256:" + "f".repeat(64), after: null }]
     }
   };
-  const r = verifySignedExecutionResult(tampered, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
+  const r = await verifySignedExecutionResult(tampered, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
   assert.strictEqual(r.valid, false);
 });
 
-test("tampered execution_result evidence fails", () => {
-  const envelope = makeSignedResult(F);
-  const signedReceipt = makeSignedReceipt(F);
+test("tampered execution_result evidence fails", async () => {
+  const envelope = await makeSignedResult(F);
+  const signedReceipt = await makeSignedReceipt(F);
   const tampered = {
     ...envelope,
     execution_result: {
@@ -424,52 +426,52 @@ test("tampered execution_result evidence fails", () => {
       evidence: [{ type: "artifact", identifier: "evil-artifact", digest: "sha256:" + "e".repeat(64) }]
     }
   };
-  const r = verifySignedExecutionResult(tampered, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
+  const r = await verifySignedExecutionResult(tampered, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
   assert.strictEqual(r.valid, false);
 });
 
-test("tampered receipt_binding.execution_id fails", () => {
-  const envelope = makeSignedResult(F);
-  const signedReceipt = makeSignedReceipt(F);
+test("tampered receipt_binding.execution_id fails", async () => {
+  const envelope = await makeSignedResult(F);
+  const signedReceipt = await makeSignedReceipt(F);
   const tampered = {
     ...envelope,
     receipt_binding: { ...envelope.receipt_binding, execution_id: "tampered-id" }
   };
-  const r = verifySignedExecutionResult(tampered, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
+  const r = await verifySignedExecutionResult(tampered, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
   assert.strictEqual(r.valid, false);
 });
 
-test("wrong execution_request_hash fails", () => {
-  const envelope = makeSignedResult(F);
-  const signedReceipt = makeSignedReceipt(F);
+test("wrong execution_request_hash fails", async () => {
+  const envelope = await makeSignedResult(F);
+  const signedReceipt = await makeSignedReceipt(F);
   const tampered = {
     ...envelope,
     receipt_binding: { ...envelope.receipt_binding, execution_request_hash: "f".repeat(64) }
   };
-  const r = verifySignedExecutionResult(tampered, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
+  const r = await verifySignedExecutionResult(tampered, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
   assert.strictEqual(r.valid, false);
 });
 
-test("wrong execution_receipt_hash fails", () => {
-  const envelope = makeSignedResult(F);
-  const signedReceipt = makeSignedReceipt(F);
+test("wrong execution_receipt_hash fails", async () => {
+  const envelope = await makeSignedResult(F);
+  const signedReceipt = await makeSignedReceipt(F);
   const tampered = {
     ...envelope,
     receipt_binding: { ...envelope.receipt_binding, execution_receipt_hash: "f".repeat(64) }
   };
-  const r = verifySignedExecutionResult(tampered, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
+  const r = await verifySignedExecutionResult(tampered, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "SIGNED_RESULT_RECEIPT_BINDING_INVALID");
 });
 
-test("wrong receipt_schema fails", () => {
-  const envelope = makeSignedResult(F);
-  const signedReceipt = makeSignedReceipt(F);
+test("wrong receipt_schema fails", async () => {
+  const envelope = await makeSignedResult(F);
+  const signedReceipt = await makeSignedReceipt(F);
   const tampered = {
     ...envelope,
     receipt_binding: { ...envelope.receipt_binding, receipt_schema: "mnde.fake.receipt.v99" }
   };
-  const r = verifySignedExecutionResult(tampered, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
+  const r = await verifySignedExecutionResult(tampered, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "SIGNED_RESULT_RECEIPT_BINDING_INVALID");
 });
@@ -479,56 +481,56 @@ test("wrong receipt_schema fails", () => {
 // ---------------------------------------------------------------------------
 console.log("\nHostile — signature_payload_hash:");
 
-test("tampered signature_payload_hash fails", () => {
-  const envelope = makeSignedResult(F);
-  const signedReceipt = makeSignedReceipt(F);
+test("tampered signature_payload_hash fails", async () => {
+  const envelope = await makeSignedResult(F);
+  const signedReceipt = await makeSignedReceipt(F);
   const tampered = { ...envelope, signature_payload_hash: "f".repeat(64) };
-  const r = verifySignedExecutionResult(tampered, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
+  const r = await verifySignedExecutionResult(tampered, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
   assert.strictEqual(r.valid, false);
   // Fails at payload hash check or signature check (both cover it).
   assert.ok(r.code === "SIGNED_RESULT_PAYLOAD_HASH_INVALID" || r.code === "SIGNED_RESULT_SIGNATURE_INVALID");
 });
 
-test("signature_payload_hash excluded from payload hash body", () => {
-  const envelope = makeSignedResult(F);
+test("signature_payload_hash excluded from payload hash body", async () => {
+  const envelope = await makeSignedResult(F);
   // Simulate what the verifier does: remove both fields, hash, compare.
   const { signature_payload_hash: _sph, verifiable_signature: _vs, ...payloadBody } = envelope;
-  const recomputed = createHash("sha256").update(canonicalizeJson(payloadBody), "utf8").digest("hex");
+  const recomputed = sha256(canonicalizeJson(payloadBody));
   assert.strictEqual(recomputed, envelope.signature_payload_hash);
 });
 
-test("signature covers signature_payload_hash (sig body keeps it)", () => {
-  const envelope = makeSignedResult(F);
+test("signature covers signature_payload_hash (sig body keeps it)", async () => {
+  const envelope = await makeSignedResult(F);
   // The signature body includes signature_payload_hash but not verifiable_signature.
   const { verifiable_signature: _vs, ...sigBody } = envelope;
   assert.ok("signature_payload_hash" in sigBody, "signature_payload_hash must be in sig body");
   // Verify the signature manually over this body.
   const sigBodyStr = canonicalizeJson(sigBody);
-  const ok = verifyCanonical(sigBodyStr, envelope.verifiable_signature.value, F.resultKey.publicPem);
+  const ok = await verifyCanonical(sigBodyStr, envelope.verifiable_signature.value, F.resultKey.publicPem);
   assert.strictEqual(ok, true);
 });
 
-test("signature field excluded from canonical payload", () => {
-  const envelope = makeSignedResult(F);
+test("signature field excluded from canonical payload", async () => {
+  const envelope = await makeSignedResult(F);
   // The canonical payload used for signing must NOT include verifiable_signature.
   const { verifiable_signature: _vs, ...sigBody } = envelope;
   assert.ok(!("verifiable_signature" in sigBody));
 });
 
-test("result_hash excludes signed wrapper metadata", () => {
-  const envelope = makeSignedResult(F);
+test("result_hash excludes signed wrapper metadata", async () => {
+  const envelope = await makeSignedResult(F);
   const er = envelope.execution_result;
   // result_hash is over the v2 body only, not the signed result wrapper.
   const { result_hash: _rh, executor_signature: _es, ...resultBody } = er;
-  const expected = createHash("sha256").update(canonicalizeJson(resultBody), "utf8").digest("hex");
+  const expected = sha256(canonicalizeJson(resultBody));
   assert.strictEqual(er.result_hash, expected);
   // Confirm wrapper fields are not in scope.
   assert.ok(!("schema" in resultBody)); // signed result schema is not in v2 body
   assert.ok(!("verifiable_signature" in resultBody));
 });
 
-test("no circular hash dependency in signature_payload_hash", () => {
-  const envelope = makeSignedResult(F);
+test("no circular hash dependency in signature_payload_hash", async () => {
+  const envelope = await makeSignedResult(F);
   // The payload_hash_body must not contain signature_payload_hash.
   const { signature_payload_hash: sph, verifiable_signature: _vs, ...payloadBody } = envelope;
   assert.ok(!("signature_payload_hash" in payloadBody), "payload hash body must not contain signature_payload_hash");
@@ -542,9 +544,9 @@ test("no circular hash dependency in signature_payload_hash", () => {
 // ---------------------------------------------------------------------------
 console.log("\nHostile — receipt validation:");
 
-test("invalid signed receipt fails", () => {
-  const envelope = makeSignedResult(F);
-  const r = verifySignedExecutionResult(envelope, {
+test("invalid signed receipt fails", async () => {
+  const envelope = await makeSignedResult(F);
+  const r = await verifySignedExecutionResult(envelope, {
     authorityBundle: F.bundle,
     trustedRootFingerprint: F.trustedRootFingerprint,
     now: NOW,
@@ -554,9 +556,9 @@ test("invalid signed receipt fails", () => {
   assert.strictEqual(r.code, "SIGNED_RESULT_RECEIPT_INVALID");
 });
 
-test("missing signed receipt fails closed", () => {
-  const envelope = makeSignedResult(F);
-  const r = verifySignedExecutionResult(envelope, {
+test("missing signed receipt fails closed", async () => {
+  const envelope = await makeSignedResult(F);
+  const r = await verifySignedExecutionResult(envelope, {
     authorityBundle: F.bundle,
     trustedRootFingerprint: F.trustedRootFingerprint,
     now: NOW
@@ -566,12 +568,12 @@ test("missing signed receipt fails closed", () => {
   assert.strictEqual(r.code, "SIGNED_RESULT_RECEIPT_INVALID");
 });
 
-test("receipt from different bundle fails", () => {
-  const F5 = makeBundle({ authorityId: "mnde-other-authority" });
+test("receipt from different bundle fails", async () => {
+  const F5 = await makeBundle({ authorityId: "mnde-other-authority" });
   const request = minimalRequest();
-  const otherReceipt = makeSignedReceipt(F5, { request }); // receipt from other authority
-  const envelope = makeSignedResult(F);
-  const r = verifySignedExecutionResult(envelope, {
+  const otherReceipt = await makeSignedReceipt(F5, { request }); // receipt from other authority
+  const envelope = await makeSignedResult(F);
+  const r = await verifySignedExecutionResult(envelope, {
     authorityBundle: F.bundle,
     trustedRootFingerprint: F.trustedRootFingerprint,
     now: NOW,
@@ -586,9 +588,9 @@ test("receipt from different bundle fails", () => {
 // ---------------------------------------------------------------------------
 console.log("\nHostile — decision-status compatibility:");
 
-test("REFUSE + SUCCEEDED builder refuses", () => {
+test("REFUSE + SUCCEEDED builder refuses", async () => {
   const request = minimalRequest();
-  const signedReceipt = makeSignedReceipt(F, { decision: "REFUSE", request });
+  const signedReceipt = await makeSignedReceipt(F, { decision: "REFUSE", request });
   const receiptHash = sha256Hex(signedReceipt);
   // Craft a result that claims SUCCEEDED against a REFUSE receipt.
   // Build it manually since makeExecutionResult would produce NOT_EXECUTED.
@@ -612,7 +614,7 @@ test("REFUSE + SUCCEEDED builder refuses", () => {
   // Now manually set decision to ALLOW and status to SUCCEEDED to try to bypass.
   const evil = { ...result, decision: "ALLOW", status: "SUCCEEDED", effects: [{ type: "deployment", resource_id: "x", before: null, after: "sha256:" + "b".repeat(64) }], result_hash: computeResultHash({ ...result, decision: "ALLOW", status: "SUCCEEDED", effects: [{ type: "deployment", resource_id: "x", before: null, after: "sha256:" + "b".repeat(64) }] }) };
   // Builder should refuse — decision in execution_result doesn't match receipt.
-  assert.throws(() => buildSignedExecutionResult(evil, {
+  await assert.rejects(async () => await buildSignedExecutionResult(evil, {
     authorityBundle: F.bundle,
     trustedRootFingerprint: F.trustedRootFingerprint,
     signingKeyId: F.resultKey.keyId,
@@ -624,11 +626,11 @@ test("REFUSE + SUCCEEDED builder refuses", () => {
   }), /decision mismatch|mismatch|refuse|not_executed|non_execution_reason/i);
 });
 
-test("REFUSE + NOT_EXECUTED passes — verifier accepts", () => {
+test("REFUSE + NOT_EXECUTED passes — verifier accepts", async () => {
   const request = minimalRequest();
-  const signedReceipt = makeSignedReceipt(F, { decision: "REFUSE", request });
+  const signedReceipt = await makeSignedReceipt(F, { decision: "REFUSE", request });
   const er = makeExecutionResult(signedReceipt, { decision: "REFUSE", status: "NOT_EXECUTED" });
-  const envelope = buildSignedExecutionResult(er, {
+  const envelope = await buildSignedExecutionResult(er, {
     authorityBundle: F.bundle,
     trustedRootFingerprint: F.trustedRootFingerprint,
     signingKeyId: F.resultKey.keyId,
@@ -638,7 +640,7 @@ test("REFUSE + NOT_EXECUTED passes — verifier accepts", () => {
     now: NOW,
     signedReceipt
   });
-  const r = verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
+  const r = await verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
   assert.strictEqual(r.valid, true, r.message);
   assert.strictEqual(r.status, "NOT_EXECUTED");
   assert.strictEqual(r.decision, "REFUSE");
@@ -646,15 +648,15 @@ test("REFUSE + NOT_EXECUTED passes — verifier accepts", () => {
 
 // Verifier-level REFUSE+X checks (bypass attempt using forged envelope).
 for (const badStatus of ["SUCCEEDED", "STARTED", "FAILED", "ROLLED_BACK"]) {
-  test(`REFUSE + ${badStatus} fails at verifier decision-status check`, () => {
+  test(`REFUSE + ${badStatus} fails at verifier decision-status check`, async () => {
     // Craft a plausibly-signed envelope where the receipt says REFUSE but
     // the embedded result claims another status. We do this by taking a valid
     // ALLOW envelope and rewriting the receipt decision via separate receipt.
     const request = minimalRequest();
-    const refuseReceipt = makeSignedReceipt(F, { decision: "REFUSE", request });
-    const allowEnvelope = makeSignedResult(F, { decision: "ALLOW", status: "SUCCEEDED" });
+    const refuseReceipt = await makeSignedReceipt(F, { decision: "REFUSE", request });
+    const allowEnvelope = await makeSignedResult(F, { decision: "ALLOW", status: "SUCCEEDED" });
     // Swap in the refuse receipt — binding will mismatch since hashes differ.
-    const r = verifySignedExecutionResult(allowEnvelope, {
+    const r = await verifySignedExecutionResult(allowEnvelope, {
       authorityBundle: F.bundle,
       trustedRootFingerprint: F.trustedRootFingerprint,
       now: NOW,
@@ -670,14 +672,14 @@ for (const badStatus of ["SUCCEEDED", "STARTED", "FAILED", "ROLLED_BACK"]) {
 // ---------------------------------------------------------------------------
 console.log("\nHostile — authority and trust root:");
 
-test("wrong trust root fails", () => {
-  const envelope = makeSignedResult(F);
+test("wrong trust root fails", async () => {
+  const envelope = await makeSignedResult(F);
   const { publicPem: fakeRootPub } = generateAuthorityKeyPair();
-  const r = verifySignedExecutionResult(envelope, {
+  const r = await verifySignedExecutionResult(envelope, {
     authorityBundle: F.bundle,
     trustedRootFingerprint: fingerprintOf(fakeRootPub),
     now: NOW,
-    signedReceipt: makeSignedReceipt(F)
+    signedReceipt: await makeSignedReceipt(F)
   });
   assert.strictEqual(r.valid, false);
   // Receipt verifier runs before authority bundle check and also uses the trust root.
@@ -688,56 +690,56 @@ test("wrong trust root fails", () => {
   );
 });
 
-test("authority substitution fails", () => {
-  const F6 = makeBundle({ authorityId: "mnde-evil-authority" });
-  const envelope = makeSignedResult(F);
+test("authority substitution fails", async () => {
+  const F6 = await makeBundle({ authorityId: "mnde-evil-authority" });
+  const envelope = await makeSignedResult(F);
   // Supply a different authority bundle but same trust root — root mismatch.
-  const r = verifySignedExecutionResult(envelope, {
+  const r = await verifySignedExecutionResult(envelope, {
     authorityBundle: F6.bundle,
     trustedRootFingerprint: F.trustedRootFingerprint, // F's root, not F6's
     now: NOW,
-    signedReceipt: makeSignedReceipt(F)
+    signedReceipt: await makeSignedReceipt(F)
   });
   assert.strictEqual(r.valid, false);
 });
 
-test("authority_bundle_fingerprint spoof fails", () => {
-  const envelope = makeSignedResult(F);
+test("authority_bundle_fingerprint spoof fails", async () => {
+  const envelope = await makeSignedResult(F);
   const spoofed = {
     ...envelope,
     authority: { ...envelope.authority, authority_bundle_fingerprint: "f".repeat(64) }
   };
-  const r = verifySignedExecutionResult(spoofed, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: makeSignedReceipt(F) });
+  const r = await verifySignedExecutionResult(spoofed, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: await makeSignedReceipt(F) });
   assert.strictEqual(r.valid, false);
   // Fails at payload_hash check (tampered body) or fingerprint mismatch.
   assert.ok(r.code === "SIGNED_RESULT_AUTHORITY_BUNDLE_FINGERPRINT_INVALID" || r.code === "SIGNED_RESULT_PAYLOAD_HASH_INVALID" || r.code === "SIGNED_RESULT_SIGNATURE_INVALID");
 });
 
-test("signing_key_fingerprint spoof fails", () => {
-  const envelope = makeSignedResult(F);
+test("signing_key_fingerprint spoof fails", async () => {
+  const envelope = await makeSignedResult(F);
   const spoofed = {
     ...envelope,
     authority: { ...envelope.authority, signing_key_fingerprint: "e".repeat(64) }
   };
-  const r = verifySignedExecutionResult(spoofed, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: makeSignedReceipt(F) });
+  const r = await verifySignedExecutionResult(spoofed, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: await makeSignedReceipt(F) });
   assert.strictEqual(r.valid, false);
   assert.ok(r.code === "SIGNED_RESULT_SIGNING_KEY_FINGERPRINT_INVALID" || r.code === "SIGNED_RESULT_PAYLOAD_HASH_INVALID" || r.code === "SIGNED_RESULT_SIGNATURE_INVALID");
 });
 
-test("authority_chain_id mismatch warns when bundle lacks it", () => {
+test("authority_chain_id mismatch warns when bundle lacks it", async () => {
   // Bundle does not have authority_chain_id → should be asserted-only (warning, not fail).
-  const envelope = makeSignedResult(F);
-  const r = verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: makeSignedReceipt(F) });
+  const envelope = await makeSignedResult(F);
+  const r = await verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt: await makeSignedReceipt(F) });
   assert.strictEqual(r.valid, true, r.message);
   assert.ok(r.checks.authority_chain.detail?.includes("AUTHORITY_CHAIN_ASSERTED_ONLY"));
 });
 
-test("authority_chain_id mismatch fails when bundle has it", () => {
+test("authority_chain_id mismatch fails when bundle has it", async () => {
   // Simulate a bundle that has authority_chain_id.
   const bundleWithChainId = { ...F.bundle, authority_chain_id: "mnde-official-chain" };
   // The bundle signature will fail since we modified the bundle. Let's just check
   // the verifier logic by directly checking the code path.
-  const envelope = makeSignedResult(F); // AUTHORITY_CHAIN_ID = "mnde-test-chain-001"
+  const envelope = await makeSignedResult(F); // AUTHORITY_CHAIN_ID = "mnde-test-chain-001"
   // The bundle has a different chain id than the envelope.
   // Inject authority_chain_id into the bundle without re-signing (will fail at bundle verify).
   // Instead, we test by verifying the check logic is present.
@@ -774,18 +776,18 @@ function makeResultWithEvidenceField(signedReceipt, forbidden) {
   };
   // Manually compute result_hash — bypass buildExecutionResult validation.
   const { result_hash: _rh, executor_signature: _es, ...payload } = body;
-  const result_hash = createHash("sha256").update(canonicalizeJson(payload), "utf8").digest("hex");
+  const result_hash = sha256(canonicalizeJson(payload));
   return { ...body, result_hash };
 }
 
 for (const forbidden of ["uri", "url", "token", "secret", "password", "authorization", "bearer", "private_key", "access_key", "refresh_token", "session_cookie", "raw_log", "env", "environment", "stdout", "stderr"]) {
-  test(`evidence with forbidden field "${forbidden}" is rejected by verifier`, () => {
+  test(`evidence with forbidden field "${forbidden}" is rejected by verifier`, async () => {
     const request = minimalRequest();
-    const signedReceipt = makeSignedReceipt(F, { request });
+    const signedReceipt = await makeSignedReceipt(F, { request });
     const er = makeResultWithEvidenceField(signedReceipt, forbidden);
     // Build the envelope by directly calling the builder (it only calls verifyExecutionResult
     // which validates structure but not forbidden fields — forbidden field check is verifier-only).
-    const envelope = buildSignedExecutionResult(er, {
+    const envelope = await buildSignedExecutionResult(er, {
       authorityBundle: F.bundle,
       trustedRootFingerprint: F.trustedRootFingerprint,
       signingKeyId: F.resultKey.keyId,
@@ -795,7 +797,7 @@ for (const forbidden of ["uri", "url", "token", "secret", "password", "authoriza
       now: NOW,
       signedReceipt
     });
-    const r = verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
+    const r = await verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
     assert.strictEqual(r.valid, false);
     assert.strictEqual(r.code, "SIGNED_RESULT_EVIDENCE_FORBIDDEN_FIELD");
   });
@@ -806,9 +808,9 @@ for (const forbidden of ["uri", "url", "token", "secret", "password", "authoriza
 // ---------------------------------------------------------------------------
 console.log("\nHostile — v2 lifecycle:");
 
-test("SUCCEEDED with empty effects fails", () => {
+test("SUCCEEDED with empty effects fails", async () => {
   const request = minimalRequest();
-  const signedReceipt = makeSignedReceipt(F, { request });
+  const signedReceipt = await makeSignedReceipt(F, { request });
   const body = {
     schema_version: "mnde.execution_result.v2",
     result_id: "result-empty-effects",
@@ -827,9 +829,9 @@ test("SUCCEEDED with empty effects fails", () => {
   assert.throws(() => buildExecutionResult(body), /effects must be non-empty/i);
 });
 
-test("FAILED without error fails", () => {
+test("FAILED without error fails", async () => {
   const request = minimalRequest();
-  const signedReceipt = makeSignedReceipt(F, { request });
+  const signedReceipt = await makeSignedReceipt(F, { request });
   const body = {
     schema_version: "mnde.execution_result.v2",
     result_id: "result-no-error",
@@ -848,9 +850,9 @@ test("FAILED without error fails", () => {
   assert.throws(() => buildExecutionResult(body), /error object is required/i);
 });
 
-test("ROLLED_BACK without rollback fails", () => {
+test("ROLLED_BACK without rollback fails", async () => {
   const request = minimalRequest();
-  const signedReceipt = makeSignedReceipt(F, { request });
+  const signedReceipt = await makeSignedReceipt(F, { request });
   const body = {
     schema_version: "mnde.execution_result.v2",
     result_id: "result-no-rollback",
@@ -869,12 +871,12 @@ test("ROLLED_BACK without rollback fails", () => {
   assert.throws(() => buildExecutionResult(body), /rollback is required/i);
 });
 
-test("STARTED accepted after v2 lifecycle update", () => {
+test("STARTED accepted after v2 lifecycle update", async () => {
   assert.ok(VALID_STATUSES.has("STARTED"), "STARTED must be a valid status");
   const request = minimalRequest();
-  const signedReceipt = makeSignedReceipt(F, { request });
+  const signedReceipt = await makeSignedReceipt(F, { request });
   const er = makeExecutionResult(signedReceipt, { status: "STARTED" });
-  const envelope = buildSignedExecutionResult(er, {
+  const envelope = await buildSignedExecutionResult(er, {
     authorityBundle: F.bundle,
     trustedRootFingerprint: F.trustedRootFingerprint,
     signingKeyId: F.resultKey.keyId,
@@ -884,17 +886,17 @@ test("STARTED accepted after v2 lifecycle update", () => {
     now: NOW,
     signedReceipt
   });
-  const r = verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
+  const r = await verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
   assert.strictEqual(r.valid, true, r.message);
   assert.strictEqual(r.status, "STARTED");
 });
 
-test("CANCELLED accepted after v2 lifecycle update", () => {
+test("CANCELLED accepted after v2 lifecycle update", async () => {
   assert.ok(VALID_STATUSES.has("CANCELLED"), "CANCELLED must be a valid status");
   const request = minimalRequest();
-  const signedReceipt = makeSignedReceipt(F, { request });
+  const signedReceipt = await makeSignedReceipt(F, { request });
   const er = makeExecutionResult(signedReceipt, { status: "CANCELLED", extraFields: { non_execution_reason: "USER_CANCELLED", ended_at: SIGNED_AT } });
-  const envelope = buildSignedExecutionResult(er, {
+  const envelope = await buildSignedExecutionResult(er, {
     authorityBundle: F.bundle,
     trustedRootFingerprint: F.trustedRootFingerprint,
     signingKeyId: F.resultKey.keyId,
@@ -904,7 +906,7 @@ test("CANCELLED accepted after v2 lifecycle update", () => {
     now: NOW,
     signedReceipt
   });
-  const r = verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
+  const r = await verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
   assert.strictEqual(r.valid, true, r.message);
   assert.strictEqual(r.status, "CANCELLED");
 });
@@ -914,10 +916,10 @@ test("CANCELLED accepted after v2 lifecycle update", () => {
 // ---------------------------------------------------------------------------
 console.log("\nBehavioral — valid signed result:");
 
-test("valid signed result verifies — all check fields present", () => {
-  const envelope = makeSignedResult(F);
-  const signedReceipt = makeSignedReceipt(F);
-  const r = verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
+test("valid signed result verifies — all check fields present", async () => {
+  const envelope = await makeSignedResult(F);
+  const signedReceipt = await makeSignedReceipt(F);
+  const r = await verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
   assert.strictEqual(r.valid, true, r.message);
   assert.strictEqual(r.key_role, "result");
   assert.strictEqual(r.trust_model, "offline-root-pinned");
@@ -933,12 +935,12 @@ test("valid signed result verifies — all check fields present", () => {
 // ---------------------------------------------------------------------------
 console.log("\nRegression — canonical determinism:");
 
-test("cross-platform canonical determinism — same inputs produce same payload hash", () => {
+test("cross-platform canonical determinism — same inputs produce same payload hash", async () => {
   const request = minimalRequest();
-  const F7 = makeBundle();
-  const signedReceipt = makeSignedReceipt(F7, { request });
+  const F7 = await makeBundle();
+  const signedReceipt = await makeSignedReceipt(F7, { request });
   const er = makeExecutionResult(signedReceipt);
-  const e1 = buildSignedExecutionResult(er, {
+  const e1 = await buildSignedExecutionResult(er, {
     authorityBundle: F7.bundle,
     trustedRootFingerprint: F7.trustedRootFingerprint,
     signingKeyId: F7.resultKey.keyId,
@@ -949,7 +951,7 @@ test("cross-platform canonical determinism — same inputs produce same payload 
     signedReceipt
   });
   // Build again with same inputs — payload hash must be identical.
-  const e2 = buildSignedExecutionResult(er, {
+  const e2 = await buildSignedExecutionResult(er, {
     authorityBundle: F7.bundle,
     trustedRootFingerprint: F7.trustedRootFingerprint,
     signingKeyId: F7.resultKey.keyId,
@@ -962,8 +964,8 @@ test("cross-platform canonical determinism — same inputs produce same payload 
   assert.strictEqual(e1.signature_payload_hash, e2.signature_payload_hash);
   // Signatures differ only due to Ed25519 randomness (non-deterministic scalar).
   // What matters is both pass verification.
-  const r1 = verifySignedExecutionResult(e1, { authorityBundle: F7.bundle, trustedRootFingerprint: F7.trustedRootFingerprint, now: NOW, signedReceipt });
-  const r2 = verifySignedExecutionResult(e2, { authorityBundle: F7.bundle, trustedRootFingerprint: F7.trustedRootFingerprint, now: NOW, signedReceipt });
+  const r1 = await verifySignedExecutionResult(e1, { authorityBundle: F7.bundle, trustedRootFingerprint: F7.trustedRootFingerprint, now: NOW, signedReceipt });
+  const r2 = await verifySignedExecutionResult(e2, { authorityBundle: F7.bundle, trustedRootFingerprint: F7.trustedRootFingerprint, now: NOW, signedReceipt });
   assert.strictEqual(r1.valid, true, r1.message);
   assert.strictEqual(r2.valid, true, r2.message);
 });
@@ -976,9 +978,9 @@ console.log("\nHostile — request hash three-way binding:");
 // Build an envelope manually (bypassing builder) where result and receipt_binding
 // both carry a wrong execution_request_hash but the receipt_hash is valid.
 // The current verifier must catch this via the three-way check.
-function makeEnvelopeWithWrongRequestHash(fixtures) {
+async function makeEnvelopeWithWrongRequestHash(fixtures) {
   const request = minimalRequest();
-  const signedReceipt = makeSignedReceipt(fixtures, { request });
+  const signedReceipt = await makeSignedReceipt(fixtures, { request });
   const correctRequestHash = signedReceipt.request_hash;
   const evilRequestHash = "e".repeat(64);
   const receiptHash = sha256Hex(signedReceipt);
@@ -1000,7 +1002,7 @@ function makeEnvelopeWithWrongRequestHash(fixtures) {
     evidence: []
   };
   const { result_hash: _rh, executor_signature: _es, ...erPayload } = erBody;
-  const result_hash = createHash("sha256").update(canonicalizeJson(erPayload), "utf8").digest("hex");
+  const result_hash = sha256(canonicalizeJson(erPayload));
   const er = { ...erBody, result_hash };
 
   // Build envelope body manually.
@@ -1035,19 +1037,19 @@ function makeEnvelopeWithWrongRequestHash(fixtures) {
   // Payload hash body = envelope without signature_payload_hash and verifiable_signature.
   const { signature_payload_hash: _sph, verifiable_signature: _vs, ...phBody } = envelopeBody;
   const phBodyStr = canonicalizeJson(phBody);
-  const sph = createHash("sha256").update(phBodyStr, "utf8").digest("hex");
+  const sph = sha256(phBodyStr);
   const withHash = { ...envelopeBody, signature_payload_hash: sph };
 
   const { verifiable_signature: _vs2, ...sigBodyObj } = withHash;
   const sigBodyStr = canonicalizeJson(sigBodyObj);
-  const sigValue = signCanonical(sigBodyStr, fixtures.resultKey.privatePem);
+  const sigValue = await signCanonical(sigBodyStr, fixtures.resultKey.privatePem);
 
   return { envelope: { ...withHash, verifiable_signature: { algorithm: "ED25519", key_id: fixtures.resultKey.keyId, value: sigValue } }, signedReceipt };
 }
 
-test("result + receipt_binding share wrong request_hash — verifier catches three-way mismatch", () => {
-  const { envelope, signedReceipt } = makeEnvelopeWithWrongRequestHash(F);
-  const r = verifySignedExecutionResult(envelope, {
+test("result + receipt_binding share wrong request_hash — verifier catches three-way mismatch", async () => {
+  const { envelope, signedReceipt } = await makeEnvelopeWithWrongRequestHash(F);
+  const r = await verifySignedExecutionResult(envelope, {
     authorityBundle: F.bundle,
     trustedRootFingerprint: F.trustedRootFingerprint,
     now: NOW,
@@ -1062,10 +1064,10 @@ test("result + receipt_binding share wrong request_hash — verifier catches thr
 // ---------------------------------------------------------------------------
 console.log("\nHostile — cross-role key separation:");
 
-test("buildAuthorityBundle rejects duplicate key_id across roles", () => {
+test("buildAuthorityBundle rejects duplicate key_id across roles", async () => {
   const root = { keyId: "root-cr", ...generateAuthorityKeyPair() };
   const sharedKey = { keyId: "shared-key", ...generateAuthorityKeyPair() };
-  assert.throws(() => buildAuthorityBundle({
+  await assert.rejects(async () => await buildAuthorityBundle({
     authorityId: "test",
     issuedAt: "2026-01-01T00:00:00.000Z",
     notAfter: FAR_FUTURE,
@@ -1078,10 +1080,10 @@ test("buildAuthorityBundle rejects duplicate key_id across roles", () => {
   }), /duplicate key_id/i);
 });
 
-test("buildAuthorityBundle rejects duplicate public key across roles", () => {
+test("buildAuthorityBundle rejects duplicate public key across roles", async () => {
   const root = { keyId: "root-cr2", ...generateAuthorityKeyPair() };
   const sharedKey = { ...generateAuthorityKeyPair() };
-  assert.throws(() => buildAuthorityBundle({
+  await assert.rejects(async () => await buildAuthorityBundle({
     authorityId: "test",
     issuedAt: "2026-01-01T00:00:00.000Z",
     notAfter: FAR_FUTURE,
@@ -1094,7 +1096,7 @@ test("buildAuthorityBundle rejects duplicate public key across roles", () => {
   }), /duplicate key fingerprint/i);
 });
 
-test("verifyAuthorityBundle rejects bundle where receipt key is reused as result key", () => {
+test("verifyAuthorityBundle rejects bundle where receipt key is reused as result key", async () => {
   // Build a cross-role conflict bundle manually (buildAuthorityBundle would throw).
   const root = { keyId: "root-xr", ...generateAuthorityKeyPair() };
   const receiptKey = { keyId: "xr-receipt", ...generateAuthorityKeyPair() };
@@ -1114,13 +1116,13 @@ test("verifyAuthorityBundle rejects bundle where receipt key is reused as result
     },
     revocation: []
   };
-  const corruptBundle = { ...corruptBody, signature: { algorithm: "ED25519", value: signCanonical(canonicalizeJson(corruptBody), root.privatePem) } };
-  const r = verifyAuthorityBundle(corruptBundle, { trustedRootFingerprint: fingerprintOf(root.publicPem), now: NOW });
+  const corruptBundle = { ...corruptBody, signature: { algorithm: "ED25519", value: await signCanonical(canonicalizeJson(corruptBody), root.privatePem) } };
+  const r = await verifyAuthorityBundle(corruptBundle, { trustedRootFingerprint: fingerprintOf(root.publicPem), now: NOW });
   assert.strictEqual(r.ok, false);
   assert.ok(r.reason === "CROSS_ROLE_KEY_FINGERPRINT_CONFLICT" || r.reason === "CROSS_ROLE_KEY_ID_CONFLICT", `got: ${r.reason}`);
 });
 
-test("verifySignedExecutionResult rejects bundle with cross-role key reuse", () => {
+test("verifySignedExecutionResult rejects bundle with cross-role key reuse", async () => {
   // Verify that the bundle-level cross-role check surfaces as SIGNED_RESULT_AUTHORITY_INVALID
   // in the signed result verifier.
   const root = { keyId: "root-xr2", ...generateAuthorityKeyPair() };
@@ -1141,14 +1143,14 @@ test("verifySignedExecutionResult rejects bundle with cross-role key reuse", () 
     },
     revocation: []
   };
-  const corruptBundle = { ...corruptBody, signature: { algorithm: "ED25519", value: signCanonical(canonicalizeJson(corruptBody), root.privatePem) } };
+  const corruptBundle = { ...corruptBody, signature: { algorithm: "ED25519", value: await signCanonical(canonicalizeJson(corruptBody), root.privatePem) } };
 
-  const envelope = makeSignedResult(F);
-  const r = verifySignedExecutionResult(envelope, {
+  const envelope = await makeSignedResult(F);
+  const r = await verifySignedExecutionResult(envelope, {
     authorityBundle: corruptBundle,
     trustedRootFingerprint: fingerprintOf(root.publicPem),
     now: NOW,
-    signedReceipt: makeSignedReceipt(F)
+    signedReceipt: await makeSignedReceipt(F)
   });
   assert.strictEqual(r.valid, false);
   // Cross-role check fires inside verifyAuthorityBundle, which is called by
@@ -1183,15 +1185,15 @@ function makeResultWithNestedEvidence(signedReceipt, evidenceItems) {
     evidence: evidenceItems
   };
   const { result_hash: _rh, executor_signature: _es, ...payload } = body;
-  const result_hash = createHash("sha256").update(canonicalizeJson(payload), "utf8").digest("hex");
+  const result_hash = sha256(canonicalizeJson(payload));
   return { ...body, result_hash };
 }
 
-function buildNestedEvidenceEnvelope(fixtures, evidenceItems) {
+async function buildNestedEvidenceEnvelope(fixtures, evidenceItems) {
   const request = minimalRequest();
-  const signedReceipt = makeSignedReceipt(fixtures, { request });
+  const signedReceipt = await makeSignedReceipt(fixtures, { request });
   const er = makeResultWithNestedEvidence(signedReceipt, evidenceItems);
-  const envelope = buildSignedExecutionResult(er, {
+  const envelope = await buildSignedExecutionResult(er, {
     authorityBundle: fixtures.bundle,
     trustedRootFingerprint: fixtures.trustedRootFingerprint,
     signingKeyId: fixtures.resultKey.keyId,
@@ -1204,47 +1206,47 @@ function buildNestedEvidenceEnvelope(fixtures, evidenceItems) {
   return { envelope, signedReceipt };
 }
 
-test("nested token in evidence object is rejected (recursive scan)", () => {
-  const { envelope, signedReceipt } = buildNestedEvidenceEnvelope(F, [
+test("nested token in evidence object is rejected (recursive scan)", async () => {
+  const { envelope, signedReceipt } = await buildNestedEvidenceEnvelope(F, [
     { type: "workflow_run", identifier: "run-1", metadata: { token: "ghp_secret" } }
   ]);
-  const r = verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
+  const r = await verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "SIGNED_RESULT_EVIDENCE_FORBIDDEN_FIELD");
 });
 
-test("nested Authorization (mixed case) in evidence is rejected (case-insensitive)", () => {
-  const { envelope, signedReceipt } = buildNestedEvidenceEnvelope(F, [
+test("nested Authorization (mixed case) in evidence is rejected (case-insensitive)", async () => {
+  const { envelope, signedReceipt } = await buildNestedEvidenceEnvelope(F, [
     { type: "workflow_run", identifier: "run-2", headers: { Authorization: "Bearer xyz" } }
   ]);
-  const r = verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
+  const r = await verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "SIGNED_RESULT_EVIDENCE_FORBIDDEN_FIELD");
 });
 
-test("array item with nested env field is rejected", () => {
-  const { envelope, signedReceipt } = buildNestedEvidenceEnvelope(F, [
+test("array item with nested env field is rejected", async () => {
+  const { envelope, signedReceipt } = await buildNestedEvidenceEnvelope(F, [
     { type: "log_archive", identifier: "archive-1", context: [{ env: { KEY: "VALUE" } }] }
   ]);
-  const r = verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
+  const r = await verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "SIGNED_RESULT_EVIDENCE_FORBIDDEN_FIELD");
 });
 
-test("nested url in evidence object is rejected", () => {
-  const { envelope, signedReceipt } = buildNestedEvidenceEnvelope(F, [
+test("nested url in evidence object is rejected", async () => {
+  const { envelope, signedReceipt } = await buildNestedEvidenceEnvelope(F, [
     { type: "artifact", identifier: "artifact-1", source: { url: "https://example.com/artifact" } }
   ]);
-  const r = verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
+  const r = await verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "SIGNED_RESULT_EVIDENCE_FORBIDDEN_FIELD");
 });
 
-test("clean nested evidence passes", () => {
-  const { envelope, signedReceipt } = buildNestedEvidenceEnvelope(F, [
+test("clean nested evidence passes", async () => {
+  const { envelope, signedReceipt } = await buildNestedEvidenceEnvelope(F, [
     { type: "workflow_run", identifier: "run-3", metadata: { run_number: 42, conclusion: "success" } }
   ]);
-  const r = verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
+  const r = await verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
   assert.strictEqual(r.valid, true, r.message);
 });
 
@@ -1256,7 +1258,7 @@ console.log("\nHostile — impossible non-execution results:");
 // Helper: manually craft a result with lifecycle fields that bypass builder.
 // Build a signed result envelope without calling buildSignedExecutionResult (no validation).
 // Used to test verifier-only checks by bypassing the builder's guards.
-function buildRawSignedEnvelope(fixtures, er, signedReceipt) {
+async function buildRawSignedEnvelope(fixtures, er, signedReceipt) {
   const authorityBundle = fixtures.bundle;
   const receiptHash = sha256Hex(signedReceipt);
   const resultKeyRecord = authorityBundle.keys.result[0];
@@ -1282,10 +1284,10 @@ function buildRawSignedEnvelope(fixtures, er, signedReceipt) {
     }
   };
   const phBodyStr = canonicalizeJson(envelopeBody);
-  const sph = createHash("sha256").update(phBodyStr, "utf8").digest("hex");
+  const sph = sha256(phBodyStr);
   const withHash = { ...envelopeBody, signature_payload_hash: sph };
   const { verifiable_signature: _vs, ...sigBodyObj } = withHash;
-  const sigValue = signCanonical(canonicalizeJson(sigBodyObj), fixtures.resultKey.privatePem);
+  const sigValue = await signCanonical(canonicalizeJson(sigBodyObj), fixtures.resultKey.privatePem);
   return { ...withHash, verifiable_signature: { algorithm: "ED25519", key_id: fixtures.resultKey.keyId, value: sigValue } };
 }
 
@@ -1308,14 +1310,14 @@ function makeImpossibleResult(signedReceipt, overrides) {
   };
   const merged = { ...base, ...overrides };
   const { result_hash: _rh, executor_signature: _es, ...payload } = merged;
-  return { ...merged, result_hash: createHash("sha256").update(canonicalizeJson(payload), "utf8").digest("hex") };
+  return { ...merged, result_hash: sha256(canonicalizeJson(payload)) };
 }
 
-function buildAndVerifyImpossibleResult(fixtures, receiptDecision, overrides) {
+async function buildAndVerifyImpossibleResult(fixtures, receiptDecision, overrides) {
   const request = minimalRequest();
-  const signedReceipt = makeSignedReceipt(fixtures, { decision: receiptDecision, request });
+  const signedReceipt = await makeSignedReceipt(fixtures, { decision: receiptDecision, request });
   const er = makeImpossibleResult(signedReceipt, { decision: receiptDecision, ...overrides });
-  const envelope = buildSignedExecutionResult(er, {
+  const envelope = await buildSignedExecutionResult(er, {
     authorityBundle: fixtures.bundle,
     trustedRootFingerprint: fixtures.trustedRootFingerprint,
     signingKeyId: fixtures.resultKey.keyId,
@@ -1328,10 +1330,10 @@ function buildAndVerifyImpossibleResult(fixtures, receiptDecision, overrides) {
   return { envelope, signedReceipt };
 }
 
-test("NOT_EXECUTED with effects fails at builder (validateExecutionResult)", () => {
+test("NOT_EXECUTED with effects fails at builder (validateExecutionResult)", async () => {
   // Builder calls validateExecutionResult, which now blocks effects on NOT_EXECUTED.
   const request = minimalRequest();
-  const signedReceipt = makeSignedReceipt(F, { decision: "REFUSE", request });
+  const signedReceipt = await makeSignedReceipt(F, { decision: "REFUSE", request });
   const receiptHash = sha256Hex(signedReceipt);
   const body = {
     schema_version: "mnde.execution_result.v2",
@@ -1352,9 +1354,9 @@ test("NOT_EXECUTED with effects fails at builder (validateExecutionResult)", () 
   assert.throws(() => buildExecutionResult(body), /effects must be empty.*NOT_EXECUTED/i);
 });
 
-test("NOT_EXECUTED with effects fails at verifier (manually re-signed, bypasses builder)", () => {
+test("NOT_EXECUTED with effects fails at verifier (manually re-signed, bypasses builder)", async () => {
   const request = minimalRequest();
-  const signedReceipt = makeSignedReceipt(F, { decision: "REFUSE", request });
+  const signedReceipt = await makeSignedReceipt(F, { decision: "REFUSE", request });
   // Manually craft the impossible result — bypasses builder validation.
   const er = makeImpossibleResult(signedReceipt, {
     decision: "REFUSE",
@@ -1363,13 +1365,13 @@ test("NOT_EXECUTED with effects fails at verifier (manually re-signed, bypasses 
     effects: [{ type: "deployment", resource_id: "svc", before: "sha256:" + "a".repeat(64), after: "sha256:" + "b".repeat(64) }]
   });
   // Build the signed envelope without calling buildSignedExecutionResult (no validation).
-  const envelope = buildRawSignedEnvelope(F, er, signedReceipt);
-  const r = verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
+  const envelope = await buildRawSignedEnvelope(F, er, signedReceipt);
+  const r = await verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "SIGNED_RESULT_RESULT_INVALID");
 });
 
-test("ALLOW + SUCCEEDED + non_execution_reason fails at builder", () => {
+test("ALLOW + SUCCEEDED + non_execution_reason fails at builder", async () => {
   assert.throws(() => buildExecutionResult({
     schema_version: "mnde.execution_result.v2",
     result_id: "result-bad-reason",
@@ -1388,17 +1390,17 @@ test("ALLOW + SUCCEEDED + non_execution_reason fails at builder", () => {
   }), /non_execution_reason must not be present.*SUCCEEDED/i);
 });
 
-test("ALLOW + SUCCEEDED + non_execution_reason fails at verifier (manually re-signed, bypasses builder)", () => {
+test("ALLOW + SUCCEEDED + non_execution_reason fails at verifier (manually re-signed, bypasses builder)", async () => {
   const request = minimalRequest();
-  const signedReceipt = makeSignedReceipt(F, { decision: "ALLOW", request });
+  const signedReceipt = await makeSignedReceipt(F, { decision: "ALLOW", request });
   const er = makeImpossibleResult(signedReceipt, {
     decision: "ALLOW",
     status: "SUCCEEDED",
     non_execution_reason: "MANUAL_ABORT"
   });
   // Build the signed envelope without calling buildSignedExecutionResult (no validation).
-  const envelope = buildRawSignedEnvelope(F, er, signedReceipt);
-  const r = verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
+  const envelope = await buildRawSignedEnvelope(F, er, signedReceipt);
+  const r = await verifySignedExecutionResult(envelope, { authorityBundle: F.bundle, trustedRootFingerprint: F.trustedRootFingerprint, now: NOW, signedReceipt });
   assert.strictEqual(r.valid, false);
   assert.strictEqual(r.code, "SIGNED_RESULT_RESULT_INVALID");
 });
@@ -1408,13 +1410,13 @@ test("ALLOW + SUCCEEDED + non_execution_reason fails at verifier (manually re-si
 // ---------------------------------------------------------------------------
 console.log("\nHostile — STARTED freshness:");
 
-test("STARTED without ended_at older than maxOpenStatusAgeMs is rejected", () => {
+test("STARTED without ended_at older than maxOpenStatusAgeMs is rejected", async () => {
   const request = minimalRequest();
-  const signedReceipt = makeSignedReceipt(F, { request });
+  const signedReceipt = await makeSignedReceipt(F, { request });
   const er = makeExecutionResult(signedReceipt, { status: "STARTED" });
   // signed_at = 2026-06-26T12:01:00Z, now = 2026-06-26T15:00:00Z (>3h later)
   const oldSignedAt = "2026-06-26T12:01:00.000Z";
-  const envelope = buildSignedExecutionResult(er, {
+  const envelope = await buildSignedExecutionResult(er, {
     authorityBundle: F.bundle,
     trustedRootFingerprint: F.trustedRootFingerprint,
     signingKeyId: F.resultKey.keyId,
@@ -1425,7 +1427,7 @@ test("STARTED without ended_at older than maxOpenStatusAgeMs is rejected", () =>
     signedReceipt
   });
   const nowLater = "2026-06-26T15:00:00.000Z"; // 3h after signed_at
-  const r = verifySignedExecutionResult(envelope, {
+  const r = await verifySignedExecutionResult(envelope, {
     authorityBundle: F.bundle,
     trustedRootFingerprint: F.trustedRootFingerprint,
     now: nowLater,
@@ -1436,12 +1438,12 @@ test("STARTED without ended_at older than maxOpenStatusAgeMs is rejected", () =>
   assert.strictEqual(r.code, "SIGNED_RESULT_STARTED_TOO_OLD");
 });
 
-test("STARTED within maxOpenStatusAgeMs is accepted", () => {
+test("STARTED within maxOpenStatusAgeMs is accepted", async () => {
   const request = minimalRequest();
-  const signedReceipt = makeSignedReceipt(F, { request });
+  const signedReceipt = await makeSignedReceipt(F, { request });
   const er = makeExecutionResult(signedReceipt, { status: "STARTED" });
   const oldSignedAt = "2026-06-26T12:01:00.000Z";
-  const envelope = buildSignedExecutionResult(er, {
+  const envelope = await buildSignedExecutionResult(er, {
     authorityBundle: F.bundle,
     trustedRootFingerprint: F.trustedRootFingerprint,
     signingKeyId: F.resultKey.keyId,
@@ -1452,7 +1454,7 @@ test("STARTED within maxOpenStatusAgeMs is accepted", () => {
     signedReceipt
   });
   const nowLater = "2026-06-26T12:30:00.000Z"; // 29min later
-  const r = verifySignedExecutionResult(envelope, {
+  const r = await verifySignedExecutionResult(envelope, {
     authorityBundle: F.bundle,
     trustedRootFingerprint: F.trustedRootFingerprint,
     now: nowLater,
@@ -1462,12 +1464,12 @@ test("STARTED within maxOpenStatusAgeMs is accepted", () => {
   assert.strictEqual(r.valid, true, r.message);
 });
 
-test("future signed_at beyond default clock skew is rejected", () => {
+test("future signed_at beyond default clock skew is rejected", async () => {
   const request = minimalRequest();
-  const signedReceipt = makeSignedReceipt(F, { request });
+  const signedReceipt = await makeSignedReceipt(F, { request });
   const er = makeExecutionResult(signedReceipt);
   const futureSignedAt = "2026-06-27T00:00:00.000Z"; // 12h in the future relative to now
-  const envelope = buildSignedExecutionResult(er, {
+  const envelope = await buildSignedExecutionResult(er, {
     authorityBundle: F.bundle,
     trustedRootFingerprint: F.trustedRootFingerprint,
     signingKeyId: F.resultKey.keyId,
@@ -1478,7 +1480,7 @@ test("future signed_at beyond default clock skew is rejected", () => {
     signedReceipt
   });
   // Verify with now = much earlier than signed_at.
-  const r = verifySignedExecutionResult(envelope, {
+  const r = await verifySignedExecutionResult(envelope, {
     authorityBundle: F.bundle,
     trustedRootFingerprint: F.trustedRootFingerprint,
     now: NOW, // 2026-06-26T12:01:00Z; futureSignedAt is ~12h later
@@ -1488,13 +1490,13 @@ test("future signed_at beyond default clock skew is rejected", () => {
   assert.strictEqual(r.code, "SIGNED_RESULT_SIGNED_AT_FUTURE");
 });
 
-test("future signed_at within clock skew is accepted", () => {
+test("future signed_at within clock skew is accepted", async () => {
   const request = minimalRequest();
-  const signedReceipt = makeSignedReceipt(F, { request });
+  const signedReceipt = await makeSignedReceipt(F, { request });
   const er = makeExecutionResult(signedReceipt);
   // signed_at is 60s in the future (within 300s default skew).
   const slightlyFuture = new Date(Date.parse(NOW) + 60_000).toISOString();
-  const envelope = buildSignedExecutionResult(er, {
+  const envelope = await buildSignedExecutionResult(er, {
     authorityBundle: F.bundle,
     trustedRootFingerprint: F.trustedRootFingerprint,
     signingKeyId: F.resultKey.keyId,
@@ -1504,7 +1506,7 @@ test("future signed_at within clock skew is accepted", () => {
     now: slightlyFuture,
     signedReceipt
   });
-  const r = verifySignedExecutionResult(envelope, {
+  const r = await verifySignedExecutionResult(envelope, {
     authorityBundle: F.bundle,
     trustedRootFingerprint: F.trustedRootFingerprint,
     now: NOW,
@@ -1518,7 +1520,7 @@ test("future signed_at within clock skew is accepted", () => {
 // ---------------------------------------------------------------------------
 console.log("\nHostile — malformed PEM:");
 
-test("bundle with malformed root public key returns invalid from verifyAuthorityBundle", () => {
+test("bundle with malformed root public key returns invalid from verifyAuthorityBundle", async () => {
   const malformedBundle = {
     schema_version: "mnde.authority.bundle.v1",
     authority_id: "test-malformed",
@@ -1529,12 +1531,12 @@ test("bundle with malformed root public key returns invalid from verifyAuthority
     revocation: [],
     signature: { algorithm: "ED25519", value: "a".repeat(128) }
   };
-  const r = verifyAuthorityBundle(malformedBundle, { trustedRootFingerprint: "a".repeat(64), now: NOW });
+  const r = await verifyAuthorityBundle(malformedBundle, { trustedRootFingerprint: "a".repeat(64), now: NOW });
   assert.strictEqual(r.ok, false);
   assert.strictEqual(r.reason, "MALFORMED_ROOT_KEY");
 });
 
-test("bundle with malformed result key PEM returns SIGNED_RESULT_KEY_MALFORMED from verifier", () => {
+test("bundle with malformed result key PEM returns SIGNED_RESULT_KEY_MALFORMED from verifier", async () => {
   // Build a valid bundle, then corrupt the result key PEM and re-sign.
   const root = { keyId: "root-mp", ...generateAuthorityKeyPair() };
   const receiptKey = { keyId: "receipt-mp", ...generateAuthorityKeyPair() };
@@ -1556,11 +1558,11 @@ test("bundle with malformed result key PEM returns SIGNED_RESULT_KEY_MALFORMED f
     },
     revocation: []
   };
-  const corruptBundle = { ...corruptBody, signature: { algorithm: "ED25519", value: signCanonical(canonicalizeJson(corruptBody), root.privatePem) } };
+  const corruptBundle = { ...corruptBody, signature: { algorithm: "ED25519", value: await signCanonical(canonicalizeJson(corruptBody), root.privatePem) } };
 
   // Build a valid signed result using the good fixtures, then verify against the corrupt bundle.
-  const envelope = makeSignedResult(F);
-  const signedReceipt = makeSignedReceipt(F);
+  const envelope = await makeSignedResult(F);
+  const signedReceipt = await makeSignedReceipt(F);
 
   // The corrupt bundle has a different authority_id and keys, so it will fail
   // before reaching the key PEM check. Instead, build an envelope against the
@@ -1574,7 +1576,7 @@ test("bundle with malformed result key PEM returns SIGNED_RESULT_KEY_MALFORMED f
   };
 
   const request = minimalRequest();
-  const mpReceipt = buildSignedExecutionReceipt(request, "ALLOW", {
+  const mpReceipt = await buildSignedExecutionReceipt(request, "ALLOW", {
     authorityBundle: corruptBundle,
     signingKeyId: receiptKey.keyId,
     signingPrivateKeyPem: receiptKey.privatePem
@@ -1613,13 +1615,13 @@ test("bundle with malformed result key PEM returns SIGNED_RESULT_KEY_MALFORMED f
     }
   };
   const phBodyStr = canonicalizeJson(envelopeBody);
-  const sph = createHash("sha256").update(phBodyStr, "utf8").digest("hex");
+  const sph = sha256(phBodyStr);
   const withHash = { ...envelopeBody, signature_payload_hash: sph };
   const { verifiable_signature: _vs2, ...sigBodyObj } = withHash;
-  const sigValue = signCanonical(canonicalizeJson(sigBodyObj), resultKey.privatePem);
+  const sigValue = await signCanonical(canonicalizeJson(sigBodyObj), resultKey.privatePem);
   const mpEnvelope = { ...withHash, verifiable_signature: { algorithm: "ED25519", key_id: resultKey.keyId, value: sigValue } };
 
-  const r = verifySignedExecutionResult(mpEnvelope, {
+  const r = await verifySignedExecutionResult(mpEnvelope, {
     authorityBundle: corruptBundle,
     trustedRootFingerprint: fingerprintOf(root.publicPem),
     now: NOW,
@@ -1632,6 +1634,7 @@ test("bundle with malformed result key PEM returns SIGNED_RESULT_KEY_MALFORMED f
 // ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
+await testChain;
 const passed = results.filter(Boolean).length;
 const failed = results.filter((r) => !r).length;
 console.log(`\n${passed} passed, ${failed} failed`);

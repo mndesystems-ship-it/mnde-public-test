@@ -17,7 +17,6 @@
 // exit, invalid hex, wrong length, signature that does not verify — fails closed.
 
 import { spawnSync } from "node:child_process";
-import { createPublicKey } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 import { fingerprintOf, findBundleKey, verifyCanonical } from "./bundle.mjs";
@@ -53,7 +52,7 @@ function loadPublicKeyPem(value) {
   } else {
     try { pem = readFileSync(value, "utf8"); } catch { throw new Error(`custody: cannot read MNDE_EXTERNAL_SIGNER_PUBLIC_KEY at ${value}`); }
   }
-  try { createPublicKey(pem); } catch { throw new Error("custody: MNDE_EXTERNAL_SIGNER_PUBLIC_KEY is not a valid public key"); }
+  try { fingerprintOf(pem); } catch { throw new Error("custody: MNDE_EXTERNAL_SIGNER_PUBLIC_KEY is not a valid public key"); }
   return pem;
 }
 
@@ -89,7 +88,7 @@ export function createExternalSignerCustody(env = process.env, options = {}) {
   const rawTimeout = Number(env.MNDE_EXTERNAL_SIGNER_TIMEOUT_MS);
   const timeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : DEFAULT_TIMEOUT_MS;
 
-  function signReceipt(payload) {
+  async function signReceipt(payload) {
     const bytes = Buffer.from(payload, "utf8");
     const result = spawnSync(argv[0], argv.slice(1), { input: bytes, timeout: timeoutMs, maxBuffer: 1024 * 1024 });
     // Timeout, ENOENT, and other spawn failures land here. Never include key material.
@@ -104,7 +103,7 @@ export function createExternalSignerCustody(env = process.env, options = {}) {
       throw new Error("custody: external signer did not return a 64-byte Ed25519 signature as hex");
     }
     // Verify the signature against the configured public key BEFORE accepting it.
-    if (!verifyCanonical(payload, sigHex, publicPem)) {
+    if (!(await verifyCanonical(payload, sigHex, publicPem))) {
       throw new Error("custody: external signer signature did not verify against the configured public key");
     }
     return { key_id: keyId, value: sigHex.toLowerCase(), fingerprint: entry.fingerprint };
@@ -122,6 +121,6 @@ export function createExternalSignerCustody(env = process.env, options = {}) {
     signApproval: notConfigured("approval"),
     getPublicBundle: () => structuredClone(bundle),
     // Startup self-test: actually invokes the signer and verifies the result.
-    selfTest: () => { signReceipt('{"mnde.external_signer.selftest":true}'); return true; }
+    selfTest: async () => { await signReceipt('{"mnde.external_signer.selftest":true}'); return true; }
   };
 }

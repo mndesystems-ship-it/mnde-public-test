@@ -40,10 +40,13 @@ bootstrapReceiptKeys({ repoRoot });
 
 const NOW = "2026-06-23T12:00:00.000Z";
 const results = [];
+let testChain = Promise.resolve();
 
 function test(name, fn) {
-  try { fn(); results.push(true); console.log(`  [PASS] ${name}`); }
-  catch (error) { results.push(false); console.log(`  [FAIL] ${name}: ${error.message}`); }
+  testChain = testChain.then(async () => {
+    try { await fn(); results.push(true); console.log(`  [PASS] ${name}`); }
+    catch (error) { results.push(false); console.log(`  [FAIL] ${name}: ${error.message}`); }
+  });
 }
 
 function basePolicy(version) {
@@ -56,11 +59,11 @@ function basePolicy(version) {
   };
 }
 
-function fixture() {
+async function fixture() {
   const root = { keyId: "root-1", ...generateAuthorityKeyPair() };
   const policyKey = { keyId: "policy-1", ...generateAuthorityKeyPair() };
   const approvalKey = { keyId: "approval-1", ...generateAuthorityKeyPair() };
-  const authorityBundle = buildAuthorityBundle({
+  const authorityBundle = await buildAuthorityBundle({
     authorityId: "audit-test-authority",
     issuedAt: "2026-01-01T00:00:00.000Z",
     notAfter: "2099-01-01T00:00:00.000Z",
@@ -72,8 +75,8 @@ function fixture() {
   return { root, policyKey, approvalKey, authorityBundle, statePath: join(dir, "state.json"), dir };
 }
 
-function signBundle(f, serial, policyDocument, extra = {}) {
-  return signPolicyBundle({
+async function signBundle(f, serial, policyDocument, extra = {}) {
+  return await signPolicyBundle({
     bundle_id: `ops-policy-${serial}`,
     policy_id: "ops-policy",
     serial,
@@ -83,8 +86,8 @@ function signBundle(f, serial, policyDocument, extra = {}) {
   }, { keyId: f.policyKey.keyId, privateKeyPem: f.policyKey.privatePem });
 }
 
-function activate(f, bundle) {
-  return activateSignedPolicyBundle({
+async function activate(f, bundle) {
+  return await activateSignedPolicyBundle({
     bundle,
     authorityBundle: f.authorityBundle,
     trustedRootFingerprint: f.authorityBundle.root_key.fingerprint,
@@ -112,16 +115,16 @@ console.log("MNDe audit remediation regression tests\n");
 // consistent sign → activate → offline-verify behaviour. The signed bundle
 // hashes the FULL policy_document; the offline verifier compares the same full
 // document. Either both sides include the extra field or neither does.
-test("M2: policy_document with extra declared fields activates and round-trips to offline verification", () => {
-  const f = fixture();
+test("M2: policy_document with extra declared fields activates and round-trips to offline verification", async () => {
+  const f = await fixture();
   try {
     // A policy_document with an extra declared field (e.g., metadata).
     const policy = { ...basePolicy("7.0.0"), metadata: { owner: "ops-team", tier: "production" } };
-    const bundle = signBundle(f, 7, policy);
+    const bundle = await signBundle(f, 7, policy);
 
     // Activation must succeed: the bundle is well-formed, the signature covers
     // the full policy_document including the extra field.
-    const activation = activate(f, bundle);
+    const activation = await activate(f, bundle);
     assert.equal(activation.ok, true, activation.reason);
     assert.equal(activation.policy.metadata?.owner, "ops-team");
 
@@ -130,7 +133,7 @@ test("M2: policy_document with extra declared fields activates and round-trips t
     const receipt = buildPolicyReceipt(baseRequest, activation.policy, {
       policyBundleProvenance: activation.policyBundleProvenance
     });
-    const historical = verifyHistoricalPolicyBundleProvenance({
+    const historical = await verifyHistoricalPolicyBundleProvenance({
       bundle,
       provenance: receipt.policy_bundle_provenance,
       policy: activation.policy,
@@ -141,15 +144,15 @@ test("M2: policy_document with extra declared fields activates and round-trips t
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test("M2: offline verification fails if a different policy_document (missing extra field) is supplied", () => {
-  const f = fixture();
+test("M2: offline verification fails if a different policy_document (missing extra field) is supplied", async () => {
+  const f = await fixture();
   try {
     const policyWithExtra = { ...basePolicy("7.0.0"), metadata: { owner: "ops-team" } };
     const policyWithout = basePolicy("7.0.0");
 
     // Sign with the extra field.
-    const bundle = signBundle(f, 7, policyWithExtra);
-    const activation = activate(f, bundle);
+    const bundle = await signBundle(f, 7, policyWithExtra);
+    const activation = await activate(f, bundle);
     assert.equal(activation.ok, true, activation.reason);
 
     const receipt = buildPolicyReceipt(baseRequest, activation.policy, {
@@ -157,7 +160,7 @@ test("M2: offline verification fails if a different policy_document (missing ext
     });
 
     // Supply the WRONG policy (without extra field) — must fail.
-    const historical = verifyHistoricalPolicyBundleProvenance({
+    const historical = await verifyHistoricalPolicyBundleProvenance({
       bundle,
       provenance: receipt.policy_bundle_provenance,
       policy: policyWithout,   // ← mismatch: no metadata field
@@ -175,15 +178,15 @@ test("M2: offline verification fails if a different policy_document (missing ext
 // policy_documents produce different policy_hash values and therefore different
 // decision_hash values — this is intentional. Per-receipt replay is deterministic:
 // replaying the SAME receipt against the SAME request+policy returns the same hash.
-test("M1: per-receipt replay is deterministic — same receipt verifies consistently", () => {
-  const f = fixture();
+test("M1: per-receipt replay is deterministic — same receipt verifies consistently", async () => {
+  const f = await fixture();
   try {
     const policyPath = join(f.dir, "policy.json");
     writeFileSync(policyPath, JSON.stringify(basePolicy("7.0.0")));
     const receipt = buildPolicyReceipt(baseRequest, basePolicy("7.0.0"));
     // Replay the same receipt twice — both must verify and produce the same hashes.
-    const r1 = verifyPolicyReceipt(receipt);
-    const r2 = verifyPolicyReceipt(receipt);
+    const r1 = await verifyPolicyReceipt(receipt);
+    const r2 = await verifyPolicyReceipt(receipt);
     assert.equal(r1.verified, true, r1.reason);
     assert.equal(r2.verified, true, r2.reason);
     assert.equal(receipt.request_hash, receipt.decision_output.request_hash);
@@ -192,8 +195,8 @@ test("M1: per-receipt replay is deterministic — same receipt verifies consiste
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test("M1: two receipts from different policy bundles have different policy_hash and decision_hash", () => {
-  const f = fixture();
+test("M1: two receipts from different policy bundles have different policy_hash and decision_hash", async () => {
+  const f = await fixture();
   try {
     const policyA = basePolicy("7.0.0");
     const policyB = { ...basePolicy("8.0.0"), rules: [{ rule_id: "deny-all", effect: "DENY", match: { field: "tool.tool_name", op: "eq", value: "read_status" } }] };
@@ -203,16 +206,16 @@ test("M1: two receipts from different policy bundles have different policy_hash 
     assert.notEqual(receiptA.policy_hash, receiptB.policy_hash);
     assert.notEqual(receiptA.decision_output.decision_hash, receiptB.decision_output.decision_hash);
     // But each receipt replays deterministically on its own.
-    assert.equal(verifyPolicyReceipt(receiptA).verified, true);
-    assert.equal(verifyPolicyReceipt(receiptB).verified, true);
+    assert.equal((await (await verifyPolicyReceipt(receiptA))).verified, true);
+    assert.equal((await (await verifyPolicyReceipt(receiptB))).verified, true);
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test("M1: receipts produced without bundle provenance (off-mode / legacy) still verify", () => {
+test("M1: receipts produced without bundle provenance (off-mode / legacy) still verify", async () => {
   // Regression: off-mode receipts must remain verifiable after provenance was added.
   const receipt = buildPolicyReceipt(baseRequest, basePolicy("7.0.0"));
   assert.equal("policy_bundle_provenance" in receipt, false, "off-mode receipt must not carry provenance");
-  assert.equal(verifyPolicyReceipt(receipt).verified, true);
+  assert.equal((await (await verifyPolicyReceipt(receipt))).verified, true);
 });
 
 // ── M4: stale manifest revocation freshness ───────────────────────────────────
@@ -221,10 +224,10 @@ test("M1: receipts produced without bundle provenance (off-mode / legacy) still 
 // not on the revocation list IN THIS BUNDLE. We surface this as
 // `revocation_freshness: "CURRENT_TO_BUNDLE"` rather than silently claiming
 // global revocation currency.
-test("M4: findBundleKey reports revocation_freshness CURRENT_TO_BUNDLE for non-revoked key", () => {
+test("M4: findBundleKey reports revocation_freshness CURRENT_TO_BUNDLE for non-revoked key", async () => {
   const root2 = { keyId: "root-x", ...generateAuthorityKeyPair() };
   const receiptK = { keyId: "receipt-x", ...generateAuthorityKeyPair() };
-  const b = buildAuthorityBundle({
+  const b = await buildAuthorityBundle({
     authorityId: "freshness-test",
     issuedAt: "2026-01-01T00:00:00.000Z",
     notAfter: "2099-01-01T00:00:00.000Z",
@@ -238,10 +241,10 @@ test("M4: findBundleKey reports revocation_freshness CURRENT_TO_BUNDLE for non-r
     "verifier must not claim global revocation currency — only current-to-bundle");
 });
 
-test("M4: verifyAgainstBundle propagates revocation_freshness on success", () => {
+test("M4: verifyAgainstBundle propagates revocation_freshness on success", async () => {
   const root2 = { keyId: "root-y", ...generateAuthorityKeyPair() };
   const policyK = { keyId: "policy-y", ...generateAuthorityKeyPair() };
-  const b = buildAuthorityBundle({
+  const b = await buildAuthorityBundle({
     authorityId: "freshness-policy-test",
     issuedAt: "2026-01-01T00:00:00.000Z",
     notAfter: "2099-01-01T00:00:00.000Z",
@@ -250,20 +253,20 @@ test("M4: verifyAgainstBundle propagates revocation_freshness on success", () =>
     revocation: []
   });
   const payload = '{"test":"freshness"}';
-  const sig = signCanonical(payload, policyK.privatePem);
-  const result = verifyAgainstBundle(payload, sig, "policy", "policy-y", NOW, b);
+  const sig = await signCanonical(payload, policyK.privatePem);
+  const result = await verifyAgainstBundle(payload, sig, "policy", "policy-y", NOW, b);
   assert.equal(result.ok, true, result.reason);
   assert.equal(result.revocation_freshness, "CURRENT_TO_BUNDLE",
     "verifyAgainstBundle must surface revocation_freshness from the bundle it used");
 });
 
-test("M4: a key revoked in a LATER bundle still appears valid in the OLDER bundle (staleness is real, honestly reported)", () => {
+test("M4: a key revoked in a LATER bundle still appears valid in the OLDER bundle (staleness is real, honestly reported)", async () => {
   // This test documents the known limitation: a stale bundle cannot know about
   // revocations issued after it. The verifier reports CURRENT_TO_BUNDLE, not
   // NOT_REVOKED_GLOBALLY.
   const root2 = { keyId: "root-z", ...generateAuthorityKeyPair() };
   const k = { keyId: "key-z", ...generateAuthorityKeyPair() };
-  const oldBundle = buildAuthorityBundle({
+  const oldBundle = await buildAuthorityBundle({
     authorityId: "stale-test",
     issuedAt: "2026-01-01T00:00:00.000Z",
     notAfter: "2099-01-01T00:00:00.000Z",
@@ -272,7 +275,7 @@ test("M4: a key revoked in a LATER bundle still appears valid in the OLDER bundl
     revocation: []
   });
   // Simulate a newer bundle that has revoked this key.
-  const newBundle = buildAuthorityBundle({
+  const newBundle = await buildAuthorityBundle({
     authorityId: "stale-test",
     issuedAt: "2026-06-01T00:00:00.000Z",
     notAfter: "2099-01-01T00:00:00.000Z",
@@ -282,20 +285,21 @@ test("M4: a key revoked in a LATER bundle still appears valid in the OLDER bundl
   });
 
   const payload = '{"test":"stale"}';
-  const sig = signCanonical(payload, k.privatePem);
+  const sig = await signCanonical(payload, k.privatePem);
 
   // Old bundle: key not revoked, but only CURRENT_TO_BUNDLE — not global.
-  const withOldBundle = verifyAgainstBundle(payload, sig, "receipt", k.keyId, NOW, oldBundle);
+  const withOldBundle = await verifyAgainstBundle(payload, sig, "receipt", k.keyId, NOW, oldBundle);
   assert.equal(withOldBundle.ok, true, withOldBundle.reason);
   assert.equal(withOldBundle.revocation_freshness, "CURRENT_TO_BUNDLE",
     "stale bundle must not claim global revocation currency");
 
   // New bundle: key is revoked.
-  const withNewBundle = verifyAgainstBundle(payload, sig, "receipt", k.keyId, NOW, newBundle);
+  const withNewBundle = await verifyAgainstBundle(payload, sig, "receipt", k.keyId, NOW, newBundle);
   assert.equal(withNewBundle.ok, false);
   assert.equal(withNewBundle.reason, "KEY_REVOKED");
 });
 
+await testChain;
 const failed = results.filter((ok) => !ok).length;
 console.log("");
 if (failed > 0) {

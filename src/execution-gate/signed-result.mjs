@@ -18,9 +18,8 @@
 // Role separation: only keys with role "result" may sign. Receipt keys, policy
 // keys, and approval keys cannot sign a result envelope.
 
-import { createHash } from "node:crypto";
-
 import { canonicalizeJson } from "../../shared/json.ts";
+import { sha256 } from "../crypto/provider.mjs";
 import { findBundleKey, fingerprintOf, signCanonical, verifyAuthorityBundle } from "../custody/index.mjs";
 import { verifySignedExecutionReceipt } from "./verify-signed-receipt.mjs";
 import { verifyExecutionResult } from "./verify-result.mjs";
@@ -43,7 +42,7 @@ function signatureBody(envelope) {
 }
 
 function sha256Hex(str) {
-  return createHash("sha256").update(str, "utf8").digest("hex");
+  return sha256(str);
 }
 
 // Build an mnde.signed_execution_result.v1 envelope.
@@ -61,7 +60,7 @@ function sha256Hex(str) {
 //
 // Returns the signed result envelope.
 // Throws on any precondition failure.
-export function buildSignedExecutionResult(executionResult, options) {
+export async function buildSignedExecutionResult(executionResult, options) {
   const {
     authorityBundle,
     trustedRootFingerprint,
@@ -87,13 +86,13 @@ export function buildSignedExecutionResult(executionResult, options) {
   }
 
   // ── 1. Verify the unsigned execution result ──────────────────────────────
-  const resultVerification = verifyExecutionResult(executionResult);
+  const resultVerification = await verifyExecutionResult(executionResult);
   if (!resultVerification.verified) {
     throw new Error(`buildSignedExecutionResult: execution_result is invalid — ${resultVerification.reason}`);
   }
 
   // ── 2. Verify the signed execution receipt ───────────────────────────────
-  const receiptVerification = verifySignedExecutionReceipt(signedReceipt, {
+  const receiptVerification = await verifySignedExecutionReceipt(signedReceipt, {
     authorityBundle,
     trustedRootFingerprint,
     now: now ?? signedAt
@@ -125,7 +124,7 @@ export function buildSignedExecutionResult(executionResult, options) {
   }
 
   // ── 5. Verify authority bundle ───────────────────────────────────────────
-  const bundleCheck = verifyAuthorityBundle(authorityBundle, {
+  const bundleCheck = await verifyAuthorityBundle(authorityBundle, {
     trustedRootFingerprint,
     now: now ?? signedAt
   });
@@ -180,7 +179,7 @@ export function buildSignedExecutionResult(executionResult, options) {
   // Sign the envelope that includes signature_payload_hash but excludes
   // verifiable_signature. Ed25519 signs canonical UTF-8 bytes directly.
   const sigBodyBytes = signatureBody(envelopeWithHash);
-  const signatureValue = signCanonical(sigBodyBytes, signingPrivateKeyPem);
+  const signatureValue = await signCanonical(sigBodyBytes, signingPrivateKeyPem);
 
   // ── 11. Assemble final envelope ──────────────────────────────────────────
   return {

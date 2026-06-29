@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { canonicalizeJson } from "../shared/json.ts";
+import { sha256 } from "../src/crypto/provider.mjs";
 
 const RECEIPT_LIMIT_DEFAULT = 100;
 const RECEIPT_LIMIT_MIN = 1;
@@ -193,7 +193,7 @@ export function createAuditBundle({ outputRoot, recentReceipts, replaySummary, m
     created_at: createdAt,
     files: files.map((file) => {
       const bytes = readFileSync(join(bundlePath, file));
-      return { file, sha256: createHash("sha256").update(bytes).digest("hex"), bytes: bytes.byteLength };
+      return { file, sha256: sha256(bytes), bytes: bytes.byteLength };
     })
   };
   writeJson("manifest.json", manifest);
@@ -201,5 +201,5 @@ export function createAuditBundle({ outputRoot, recentReceipts, replaySummary, m
 }
 
 export function canonicalHash(value) {
-  return createHash("sha256").update(canonicalizeJson(value)).digest("hex");
+  return sha256(canonicalizeJson(value));
 }

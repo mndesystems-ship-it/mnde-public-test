@@ -9,7 +9,7 @@
 // Checks run in a defined order so a partial failure produces the earliest
 // possible diagnosis.
 
-import { createHash } from "node:crypto";
+import { sha256 } from "../crypto/provider.mjs";
 
 import { canonicalizeJson } from "../../shared/json.ts";
 import { fingerprintOf, findBundleKey, verifyAuthorityBundle, verifyCanonical } from "../custody/index.mjs";
@@ -35,7 +35,7 @@ function canonicalPayloadWithoutSignature(receipt) {
 
 // sha256 hex of the canonical serialisation of an object.
 function sha256Hex(obj) {
-  return createHash("sha256").update(canonicalizeJson(obj), "utf8").digest("hex");
+  return sha256(canonicalizeJson(obj));
 }
 
 // Verify a custody-signed execution gate receipt.
@@ -47,7 +47,7 @@ function sha256Hex(obj) {
 //   originalRequest        — optional: if provided, request_hash is re-verified
 //
 // Returns { verified, reason?, checks: { [name]: { ok, detail? } } }
-export function verifySignedExecutionReceipt(receipt, options = {}) {
+export async function verifySignedExecutionReceipt(receipt, options = {}) {
   const { authorityBundle, trustedRootFingerprint, now = new Date().toISOString(), originalRequest } = options;
   const checks = {};
 
@@ -87,7 +87,7 @@ export function verifySignedExecutionReceipt(receipt, options = {}) {
     checks.authority_bundle = checkEntry(false, "authority bundle required");
     return fail(checks, "authority_bundle: authority bundle required");
   }
-  const bundleCheck = verifyAuthorityBundle(authorityBundle, { trustedRootFingerprint, now });
+  const bundleCheck = await verifyAuthorityBundle(authorityBundle, { trustedRootFingerprint, now });
   checks.authority_bundle = checkEntry(bundleCheck.ok, bundleCheck.ok ? undefined : bundleCheck.reason);
   if (!bundleCheck.ok) return fail(checks, `authority_bundle: ${bundleCheck.reason}`);
 
@@ -111,7 +111,7 @@ export function verifySignedExecutionReceipt(receipt, options = {}) {
 
   // ── 8. Signature verification ──────────────────────────────────────────────
   const canonicalPayload = canonicalPayloadWithoutSignature(receipt);
-  const sigOk = verifyCanonical(canonicalPayload, sig.value, keyResult.publicKey);
+  const sigOk = await verifyCanonical(canonicalPayload, sig.value, keyResult.publicKey);
   checks.signature = checkEntry(sigOk, sigOk ? undefined : "Ed25519 signature verification failed");
   if (!sigOk) return fail(checks, "signature: Ed25519 signature verification failed");
 

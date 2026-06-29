@@ -9,7 +9,7 @@
 // using canonicalizeJson, making the receipt tamper-evident without requiring
 // an external signing key in this slice.
 
-import { createHash } from "node:crypto";
+import { sha256 } from "../crypto/provider.mjs";
 
 import { canonicalizeJson } from "../../shared/json.ts";
 
@@ -57,9 +57,7 @@ export function buildExecutionGateReceipt({ request, requestHash, decision, refu
     }
   };
 
-  const receiptHash = createHash("sha256")
-    .update(canonicalizeJson(body), "utf8")
-    .digest("hex");
+  const receiptHash = sha256(canonicalizeJson(body));
 
   return { ...body, receipt_hash: receiptHash };
 }

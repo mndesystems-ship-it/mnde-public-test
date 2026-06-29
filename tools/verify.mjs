@@ -26,13 +26,13 @@ import { verifyPolicyReceipt, POLICY_RECEIPT_SCHEMA } from "../src/policy-engine
 import { verifyCustodyAttestation, SIGNED_RECEIPT_SCHEMA } from "../src/authority-signing/index.mjs";
 
 // Verify a receipt object (legacy / policy-engine / custody-signed envelope).
-export function verifyAnyReceiptObject(receipt, options = {}) {
+export async function verifyAnyReceiptObject(receipt, options = {}) {
   try {
     if (receipt?.schema_version === SIGNED_RECEIPT_SCHEMA) {
       return verifySignedEnvelope(receipt, options);
     }
     if (receipt?.schema_version === POLICY_RECEIPT_SCHEMA) {
-      const result = verifyPolicyReceipt(receipt, {
+      const result = await verifyPolicyReceipt(receipt, {
         trustAnchors: options.trustAnchors,
         approvalTrustAnchors: options.approvalTrustAnchors,
         historicalPolicyBundle: options.historicalPolicyBundle,
@@ -75,9 +75,9 @@ function innerEnvelopeOptions(envelope, options = {}) {
 
 // Verify a custody-signed envelope: BOTH the inner receipt and the production
 // custody attestation must verify. Fails closed if the authority bundle is absent.
-export function verifySignedEnvelope(envelope, options = {}) {
-  const attest = verifyCustodyAttestation(envelope, options);
-  const inner = attest.ok || envelope?.receipt ? verifyAnyReceiptObject(envelope?.receipt, innerEnvelopeOptions(envelope, options)) : { verified: false, reason: "no inner receipt" };
+export async function verifySignedEnvelope(envelope, options = {}) {
+  const attest = await verifyCustodyAttestation(envelope, options);
+  const inner = attest.ok || envelope?.receipt ? await verifyAnyReceiptObject(envelope?.receipt, innerEnvelopeOptions(envelope, options)) : { verified: false, reason: "no inner receipt" };
   const verified = Boolean(attest.ok) && Boolean(inner.verified);
   const reason = !attest.ok ? `attestation: ${attest.reason}` : (!inner.verified ? `inner receipt: ${inner.reason ?? "failed"}` : null);
   return {
@@ -94,7 +94,7 @@ export function verifySignedEnvelope(envelope, options = {}) {
   };
 }
 
-export function verifyAnyReceiptFile(filePath, options = {}) {
+export async function verifyAnyReceiptFile(filePath, options = {}) {
   let receipt;
   try {
     receipt = JSON.parse(readFileSync(filePath, "utf8").replace(/^﻿/, ""));
@@ -104,7 +104,7 @@ export function verifyAnyReceiptFile(filePath, options = {}) {
   return verifyAnyReceiptObject(receipt, options);
 }
 
-function main() {
+async function main() {
   const args = process.argv.slice(2);
   const valueOf = (flag) => {
     const i = args.indexOf(flag);
@@ -128,7 +128,7 @@ function main() {
   const authorityBundle = authorityBundlePath ? JSON.parse(readFileSync(authorityBundlePath, "utf8")) : undefined;
   const historicalPolicyBundle = historicalPolicyBundlePath ? JSON.parse(readFileSync(historicalPolicyBundlePath, "utf8")) : undefined;
   const policyAuthorityBundle = policyAuthorityBundlePath ? JSON.parse(readFileSync(policyAuthorityBundlePath, "utf8")) : undefined;
-  const result = verifyAnyReceiptFile(filePath, {
+  const result = await verifyAnyReceiptFile(filePath, {
     trustAnchors,
     approvalTrustAnchors,
     authorityBundle,
@@ -159,5 +159,8 @@ function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main();
+  main().catch((error) => {
+    process.stderr.write(`${error?.message ?? String(error)}\n`);
+    process.exit(1);
+  });
 }

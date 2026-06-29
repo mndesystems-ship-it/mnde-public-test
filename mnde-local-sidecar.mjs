@@ -318,7 +318,7 @@ let policyEngineConfigError = null;
 if (DECISION_ENGINE === "policy-engine") {
   try {
     const adapter = await import("./src/policy-engine/sidecar-adapter.mjs");
-    const peConfig = adapter.loadPolicyEngineConfig(process.env);
+    const peConfig = await adapter.loadPolicyEngineConfig(process.env);
     if (!peConfig.ok) policyEngineConfigError = peConfig.reason;
     else policyEngine = { decide: (body, opts) => adapter.decidePolicyEngine(body, peConfig, opts) };
     process.stdout.write(`MNDe decision engine: policy-engine${policyEngineConfigError ? ` (CONFIG ERROR: ${policyEngineConfigError})` : ""}\n`);
@@ -335,12 +335,12 @@ if (DECISION_ENGINE === "policy-engine") {
 // engines never sign and never import custody.
 const SIGNING_MODE = (process.env.MNDE_RECEIPT_SIGNING_MODE === "custody" || process.env.MNDE_RECEIPT_SIGNING_MODE === "external-signer") ? "custody" : "legacy";
 let signingConfig = { ok: true, mode: "legacy" };
-let signReceiptAdapter = (receipt) => ({ ok: true, receipt });
+let signReceiptAdapter = async (receipt) => ({ ok: true, receipt });
 let signingConfigError = null;
 if (SIGNING_MODE === "custody") {
   try {
     const mod = await import("./src/authority-signing/index.mjs");
-    signingConfig = mod.loadSigningConfig(process.env);
+    signingConfig = await mod.loadSigningConfig(process.env);
     signReceiptAdapter = mod.signReceiptForDelivery;
     if (!signingConfig.ok) signingConfigError = signingConfig.reason_code;
     process.stdout.write(`MNDe receipt signing: custody${signingConfigError ? ` (CONFIG ERROR: ${signingConfigError})` : ""}\n`);
@@ -353,7 +353,7 @@ if (SIGNING_MODE === "custody") {
 // Sign a built receipt for delivery. Legacy mode is a pass-through; custody mode
 // returns a signed envelope or fails closed with a distinct reason code. No
 // automatic downgrade to legacy when custody is selected.
-function signForDelivery(receipt) {
+async function signForDelivery(receipt) {
   if (SIGNING_MODE !== "custody") return { ok: true, receipt };
   if (signingConfigError) return { ok: false, reason_code: signingConfigError };
   return signReceiptAdapter(receipt, signingConfig, { now: new Date().toISOString() });
@@ -630,7 +630,7 @@ async function respondPolicyEngine(res, request, timings, totalStarted, caller) 
   }
   // Custody signing (opt-in) is applied to the built receipt before delivery and
   // fails closed: if custody is selected and signing fails, the request fails.
-  const signed = signForDelivery(outcome.receipt);
+  const signed = await signForDelivery(outcome.receipt);
   if (!signed.ok) {
     timings.total_server_ms = Math.max(0, Math.round(performance.now() - totalStarted));
     recordTimings(timings);
@@ -842,7 +842,7 @@ async function handleDecide(req, res) {
     }
     // Custody signing (opt-in), applied to the built receipt before delivery.
     // Fails closed: custody selected + signing failure => the request fails.
-    const signed = signForDelivery(result.receipt);
+    const signed = await signForDelivery(result.receipt);
     if (!signed.ok) {
       timings.total_server_ms = Math.max(0, Math.round(performance.now() - totalStarted));
       recordTimings(timings);

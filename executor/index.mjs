@@ -91,13 +91,13 @@ export function createMndeExecutor(config = {}) {
     return filePath;
   }
 
-  function offlineVerify(receiptPath) {
+  async function offlineVerify(receiptPath) {
     if (!verify) return null;
     try {
       // Unified verifier handles legacy pipeline, policy-engine, and custody-signed
       // receipts; legacy/PE receipts verify identically to before. A custody
       // envelope additionally needs the published authority bundle.
-      return verifyAnyReceiptFile(receiptPath, { authorityBundle: verifyAuthorityBundle }).verified;
+      return (await verifyAnyReceiptFile(receiptPath, { authorityBundle: verifyAuthorityBundle })).verified;
     } catch {
       return false;
     }
@@ -176,7 +176,7 @@ export function createMndeExecutor(config = {}) {
     let verified = null;
     if (decision.receipt) {
       receiptPath = persist(`receipt-${id}.json`, decision.receipt);
-      verified = offlineVerify(receiptPath);
+      verified = await offlineVerify(receiptPath);
     }
 
     // REFUSE — single source of truth. run() is unreachable here.

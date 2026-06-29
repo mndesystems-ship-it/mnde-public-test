@@ -14,7 +14,7 @@
 //
 // duration_ms is intentionally absent — compute it from started_at / ended_at.
 
-import { createHash } from "node:crypto";
+import { sha256 } from "../crypto/provider.mjs";
 
 import { canonicalizeJson } from "../../shared/json.ts";
 import { validateIdentityAssertion } from "../identity/assertion.mjs";
@@ -358,7 +358,7 @@ export function canonicalResultPayload(result) {
 
 // Compute the expected result_hash for a result object.
 export function computeResultHash(result) {
-  return createHash("sha256").update(canonicalResultPayload(result), "utf8").digest("hex");
+  return sha256(canonicalResultPayload(result));
 }
 
 // Build an mnde.execution_result.v2 object and compute its result_hash.

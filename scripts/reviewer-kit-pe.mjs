@@ -27,10 +27,10 @@ function peReq(tool) {
 async function decide(url, body) {
   return (await fetch(`${url}/v1/decisions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).json();
 }
-function verifyFile(receipt) {
+async function verifyFile(receipt) {
   const f = join(mkdtempSync(join(tmpdir(), "mnde-rkpe-")), "r.json");
   writeFileSync(f, JSON.stringify(receipt));
-  return verifyAnyReceiptFile(f).verified;
+  return (await verifyAnyReceiptFile(f)).verified;
 }
 
 async function main() {
@@ -39,12 +39,12 @@ async function main() {
   const sidecar = await startMndeSidecar({ url: "http://127.0.0.1:8787", env: { MNDE_DECISION_ENGINE: "policy-engine", MNDE_PE_POLICY: samplePolicy } });
   try {
     const allow = await decide(sidecar.url, peReq("read_status"));
-    const allowVerified = allow.receipt && verifyFile(allow.receipt);
+    const allowVerified = allow.receipt && await verifyFile(allow.receipt);
     console.log(`ALLOW: decision=${allow.decision} engine=${allow.decision_engine} receipt=${allowVerified ? "VERIFIED" : "NOT VERIFIED"}`);
     pass = pass && allow.decision === "ALLOW" && allow.decision_engine === "policy-engine" && allowVerified;
 
     const refuse = await decide(sidecar.url, peReq("recursive_delete"));
-    const refuseVerified = refuse.receipt && verifyFile(refuse.receipt);
+    const refuseVerified = refuse.receipt && await verifyFile(refuse.receipt);
     console.log(`REFUSE: decision=${refuse.decision} reason=${refuse.reason_code} receipt=${refuseVerified ? "VERIFIED" : "NOT VERIFIED"}`);
     pass = pass && refuse.decision === "REFUSE" && refuseVerified;
   } finally {

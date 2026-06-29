@@ -1,8 +1,7 @@
 // Builder for mnde.execution_ledger_entry.v1.
 
-import { createHash } from "node:crypto";
-
 import { canonicalizeJson } from "../../shared/json.ts";
+import { sha256 } from "../crypto/provider.mjs";
 import { findBundleKey, fingerprintOf, signCanonical, verifyAuthorityBundle } from "../custody/index.mjs";
 import {
   canonicalLedgerSignaturePayload,
@@ -16,7 +15,7 @@ import { verifySignedExecutionReceipt } from "./verify-signed-receipt.mjs";
 import { verifySignedExecutionResult } from "./verify-signed-result.mjs";
 
 function sha256Tagged(value) {
-  return `sha256:${createHash("sha256").update(canonicalizeJson(value), "utf8").digest("hex")}`;
+  return `sha256:${sha256(canonicalizeJson(value))}`;
 }
 
 function policyHashFromReceipt(receipt) {
@@ -33,8 +32,8 @@ function signerFromOptions(options, keyId) {
   if (options?.signLedger) return { signLedger: options.signLedger };
   if (options?.signingPrivateKeyPem) {
     return {
-      signLedger(payload) {
-        return { key_id: keyId, value: signCanonical(payload, options.signingPrivateKeyPem) };
+      async signLedger(payload) {
+        return { key_id: keyId, value: await signCanonical(payload, options.signingPrivateKeyPem) };
       }
     };
   }
@@ -42,7 +41,7 @@ function signerFromOptions(options, keyId) {
 }
 
 // Build a signed execution ledger entry.
-export function buildSignedLedgerEntry(options = {}) {
+export async function buildSignedLedgerEntry(options = {}) {
   const {
     authorityBundle,
     trustedRootFingerprint,
@@ -71,16 +70,16 @@ export function buildSignedLedgerEntry(options = {}) {
   const signer = signerFromOptions(options, signingKeyId);
   if (!signer) throw new Error("buildSignedLedgerEntry: custody.signLedger is required");
 
-  const bundleCheck = verifyAuthorityBundle(authorityBundle, { trustedRootFingerprint, now });
+  const bundleCheck = await verifyAuthorityBundle(authorityBundle, { trustedRootFingerprint, now });
   if (!bundleCheck.ok) throw new Error(`buildSignedLedgerEntry: authority bundle invalid: ${bundleCheck.reason}`);
 
   const keyResult = findBundleKey(authorityBundle, "ledger", signingKeyId, createdAt);
   if (!keyResult.ok) throw new Error(`buildSignedLedgerEntry: ledger signing key not usable: ${keyResult.reason}`);
 
-  const receiptCheck = verifySignedExecutionReceipt(signedReceipt, { authorityBundle, trustedRootFingerprint, now });
+  const receiptCheck = await verifySignedExecutionReceipt(signedReceipt, { authorityBundle, trustedRootFingerprint, now });
   if (!receiptCheck.verified) throw new Error(`buildSignedLedgerEntry: signed receipt invalid: ${receiptCheck.reason}`);
 
-  const resultCheck = verifySignedExecutionResult(signedExecutionResult, {
+  const resultCheck = await verifySignedExecutionResult(signedExecutionResult, {
     authorityBundle,
     trustedRootFingerprint,
     signedReceipt,
@@ -123,7 +122,7 @@ export function buildSignedLedgerEntry(options = {}) {
   const partial = { schema: LEDGER_SCHEMA, ledger_entry: ledgerEntry, authority };
   const signaturePayloadHash = ledgerSignaturePayloadHash(partial);
   const signaturePayload = canonicalLedgerSignaturePayload({ ...partial, signature_payload_hash: signaturePayloadHash });
-  const signature = signer.signLedger(signaturePayload);
+  const signature = await signer.signLedger(signaturePayload);
   if (!signature || typeof signature.value !== "string" || signature.value.length === 0) {
     throw new Error("buildSignedLedgerEntry: custody.signLedger returned no signature value");
   }

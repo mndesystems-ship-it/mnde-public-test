@@ -21,15 +21,18 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 bootstrapReceiptKeys({ repoRoot });
 
 const results = [];
+let testChain = Promise.resolve();
 function test(name, fn) {
-  try {
-    fn();
-    results.push(true);
-    console.log(`  [PASS] ${name}`);
-  } catch (error) {
-    results.push(false);
-    console.log(`  [FAIL] ${name}: ${error.message}`);
-  }
+  testChain = testChain.then(async () => {
+    try {
+      await fn();
+      results.push(true);
+      console.log(`  [PASS] ${name}`);
+    } catch (error) {
+      results.push(false);
+      console.log(`  [FAIL] ${name}: ${error.message}`);
+    }
+  });
 }
 function keypair() {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -125,25 +128,26 @@ test("disabled when no approval anchors: approval_required has no effect", () =>
   assert.equal(d.approval, undefined);
 });
 
-test("receipt round-trips with matching approval anchors", () => {
+test("receipt round-trips with matching approval anchors", async () => {
   const receipt = buildPolicyReceipt(request(), policy(), { approvals: [signed()], approvalTrustAnchors: approvalAnchors, now: NOW });
   assert.equal(receipt.approval_enforced, true);
   assert.equal(receipt.decision_output.decision, "ALLOW");
   assert.equal(receipt.decision_output.approval.verifications[0].approver, "carol");
-  assert.equal(verifyPolicyReceipt(receipt, { approvalTrustAnchors: approvalAnchors }).verified, true);
+  assert.equal((await verifyPolicyReceipt(receipt, { approvalTrustAnchors: approvalAnchors })).verified, true);
 });
 
-test("verifier rejects approval-enforced receipt without anchors", () => {
+test("verifier rejects approval-enforced receipt without anchors", async () => {
   const receipt = buildPolicyReceipt(request(), policy(), { approvals: [signed()], approvalTrustAnchors: approvalAnchors, now: NOW });
-  assert.equal(verifyPolicyReceipt(receipt).verified, false);
+  assert.equal((await verifyPolicyReceipt(receipt)).verified, false);
 });
 
-test("verifier with WRONG approval anchors does not accept the receipt", () => {
+test("verifier with WRONG approval anchors does not accept the receipt", async () => {
   const receipt = buildPolicyReceipt(request(), policy(), { approvals: [signed()], approvalTrustAnchors: approvalAnchors, now: NOW });
   const wrong = { approval_keys: [{ key_id: "approval-key-1", public_key: attackerKey.pub }] };
-  assert.equal(verifyPolicyReceipt(receipt, { approvalTrustAnchors: wrong }).verified, false);
+  assert.equal((await verifyPolicyReceipt(receipt, { approvalTrustAnchors: wrong })).verified, false);
 });
 
+await testChain;
 const failed = results.filter((ok) => !ok).length;
 console.log("");
 if (failed > 0) {

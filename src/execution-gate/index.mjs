@@ -80,7 +80,7 @@ export function evaluateExecutionGate(request) {
 //   policyProvenance       — optional policy bundle provenance object
 //
 // Returns { ok: true, receipt, signed: boolean } or { ok: false, errors }.
-export function authorizeAndSign(request, options = {}) {
+export async function authorizeAndSign(request, options = {}) {
   const validation = validateExecutionRequest(request);
   if (!validation.ok) {
     return { ok: false, errors: validation.errors };
@@ -93,7 +93,7 @@ export function authorizeAndSign(request, options = {}) {
 
   if (canSign) {
     try {
-      const receipt = buildSignedExecutionReceipt(request, decision, {
+      const receipt = await buildSignedExecutionReceipt(request, decision, {
         authorityBundle,
         signingKeyId,
         signingPrivateKeyPem,
