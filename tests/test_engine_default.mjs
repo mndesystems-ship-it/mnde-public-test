@@ -9,7 +9,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -71,6 +71,15 @@ async function main() {
   await test("unknown engine resolves to null (fail-closed signal)", () => {
     assert.equal(resolveDecisionEngine({ MNDE_DECISION_ENGINE: "nonsense" }), null);
     assert.equal(resolveDecisionEngine({ MNDE_DECISION_ENGINE: "  " }), "policy-engine"); // whitespace == unset
+  });
+
+  // ── lifecycle: legacy ecs.receipt.v2 stays verify-only (Chunk 2) ───────────
+  await test("legacy ecs.receipt.v2 receipt still verifies (verify-only, kind pipeline)", () => {
+    const legacy = JSON.parse(readFileSync(join(repoRoot, "examples", "receipts", "valid-receipt.json"), "utf8"));
+    assert.equal(legacy.schema_version, "ecs.receipt.v2", "fixture must be the legacy schema");
+    const v = verifyAnyReceiptObject(legacy);
+    assert.equal(v.verified, true, `legacy receipt must remain verifiable: ${v.reason ?? ""}`);
+    assert.equal(v.kind, "pipeline", "legacy receipt verifies via the pipeline verifier");
   });
 
   // ── live: unknown engine refuses to boot ───────────────────────────────────
