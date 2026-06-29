@@ -31,6 +31,19 @@ function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// MNDe canonical JSON is integer-only (see docs/number-model.md): decimals must be
+// represented as scaled integers or strings. Detect any non-safe-integer number
+// anywhere in a value so a request/policy that contains one is refused with a
+// DISTINCT reason rather than failing opaquely inside canonicalization. This
+// matches the HTTP boundary, where parseStrictJson already rejects non-integers
+// with ERR_INVALID_JSON_NUMBER; this guards the direct library/SDK call path.
+function hasNonIntegerNumber(value) {
+  if (typeof value === "number") return !Number.isSafeInteger(value);
+  if (Array.isArray(value)) return value.some(hasNonIntegerNumber);
+  if (isPlainObject(value)) return Object.values(value).some(hasNonIntegerNumber);
+  return false;
+}
+
 function canonicalHash(value) {
   return sha256(canonicalizeJson(value));
 }
@@ -261,6 +274,13 @@ export function evaluatePolicyRequest(request, policy, options = {}) {
 
     const policyError = validatePolicy(policy);
     if (policyError) return refuse(policyError, context);
+
+    // Integer-only canonical number model (frozen). A non-integer number cannot be
+    // represented in canonical form; refuse with a distinct reason instead of
+    // letting canonicalization fail opaquely (which would surface as INVALID_POLICY).
+    if (hasNonIntegerNumber(request) || hasNonIntegerNumber(policy)) {
+      return refuse("NON_INTEGER_NUMBER", context);
+    }
 
     const requestHash = canonicalHash(request);
     const policyHash = canonicalHash(policy);

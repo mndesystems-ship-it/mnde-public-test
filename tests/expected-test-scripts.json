@@ -17,6 +17,7 @@
   "test:mcp",
   "test:mcp-proxy",
   "test:nonce-replay",
+  "test:number-model",
   "test:onboarding",
   "test:policy-bundle-evidence-export",
   "test:policy-bundle-provenance",
