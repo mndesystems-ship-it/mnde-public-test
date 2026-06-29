@@ -5,7 +5,7 @@
 // Proves the infrastructure-first repositioning: a fresh user launches MNDe and
 // the sidecar serves a local operational dashboard at "/" with NO login, signup,
 // account creation, or cloud dependency. The dashboard answers one question —
-// "Is MNDe protecting execution right now?" — and reads only local status
+// "Is routed execution protected right now?" — and reads only local status
 // endpoints. The decision/receipt/replay/authority/policy paths are untouched.
 
 import assert from "node:assert/strict";
@@ -91,7 +91,7 @@ async function main() {
       contentType = res.headers.get("content-type") || "";
       assert.match(contentType, /text\/html/);
       html = await res.text();
-      assert.ok(html.includes("Is MNDe protecting execution right now?"), "headline question must be present");
+      assert.ok(html.includes("Is routed execution protected right now?"), "headline question must be present");
     });
 
     await test("GET /dashboard also serves the dashboard", async () => {

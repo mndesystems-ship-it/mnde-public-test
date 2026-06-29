@@ -207,8 +207,8 @@ export function createMndeExecutor(config = {}) {
     });
   }
 
-  // Turn a raw function into an MNDe-guarded tool. The raw function is captured
-  // in the closure and is never exposed — the only way to call it is through MNDe.
+  // Turn a raw function into an MNDe-guarded tool. Callers must not retain or
+  // invoke separate raw-function references for actions they intend MNDe to protect.
   function wrapTool(toolName, fn, defaults = {}) {
     if (typeof fn !== "function") throw new TypeError("mnde.wrapTool(name, fn) requires fn to be a function");
     const wrapped = (input, options = {}) =>

@@ -18,7 +18,7 @@ npm run test:shell     # policy + receipt tests (incl. tamper detection)
 | `rm -rf /` | **REFUSE** (`ERR_DENYLISTED`) | known-destructive |
 | `some-weird-command-never-seen-before` | **REFUSE** (`ERR_NOT_ALLOWLISTED`) | **unknown → not trusted** |
 
-The last row is the one a security team cares about. Not "did you catch `rm -rf`." **"What happens when you don't know?"** Answer: it doesn't run.
+The last row is the one a security team cares about. Not "did you catch `rm -rf`." **"What happens when you don't know?"** In this shell MCP path, the unknown command is refused before simulated execution.
 
 ## What it is
 

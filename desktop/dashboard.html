@@ -89,7 +89,7 @@
 
   <main>
     <div class="headline">
-      <div class="q">Is MNDe protecting execution right now?</div>
+      <div class="q">Is routed execution protected right now?</div>
       <div class="a"><span id="hl-dot" class="dot bad"></span><span id="hl-text">Checking local runtime…</span></div>
       <div class="sub" id="hl-sub">No account. No sign-in. No cloud. This reads the local sidecar only.</div>
     </div>
@@ -129,7 +129,7 @@
         <table><thead><tr><th>When</th><th>Decision</th><th>Tool</th><th>Reason</th><th>Decision hash</th></tr></thead>
         <tbody id="de-rows"><tr><td colspan="5" class="dim">No decisions yet.</td></tr></tbody></table>
       </div>
-      <div class="note">Every tool call is decided pre-execution. ALLOW runs once; REFUSE never runs. Each decision emits a signed receipt.</div>
+      <div class="note">Every routed tool call is decided pre-execution. ALLOW runs once; REFUSE does not run through MNDe. Each decision emits a signed receipt when receipt creation succeeds.</div>
     </section>
 
     <!-- POLICY -->
@@ -232,13 +232,13 @@
     const protecting = !!ready.ok && !health.fatal;
 
     if (protecting && !degraded) {
-      setDot($("hl-dot"), "ok"); $("hl-text").textContent = "Yes — MNDe is protecting execution"; $("hl-text").className = "ok-t";
-      $("hl-sub").textContent = "Every tool call is decided pre-execution and emits a signed receipt. No account. No cloud.";
+      setDot($("hl-dot"), "ok"); $("hl-text").textContent = "Yes — routed execution is protected"; $("hl-text").className = "ok-t";
+      $("hl-sub").textContent = "Every routed tool call is decided pre-execution and emits a signed receipt when receipt creation succeeds. No account. No cloud.";
     } else if (protecting && degraded) {
       setDot($("hl-dot"), "warn"); $("hl-text").textContent = "Degraded — protecting, with warnings"; $("hl-text").className = "warn-t";
       $("hl-sub").textContent = ready.degraded_reason || "runtime degraded";
     } else {
-      setDot($("hl-dot"), "bad"); $("hl-text").textContent = "No — execution is not protected"; $("hl-text").className = "bad-t";
+      setDot($("hl-dot"), "bad"); $("hl-text").textContent = "No — routed execution is not protected"; $("hl-text").className = "bad-t";
       $("hl-sub").textContent = ready.degraded_reason || "runtime fail-closed";
     }
 

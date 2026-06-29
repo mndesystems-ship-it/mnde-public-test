@@ -1318,9 +1318,9 @@ MNDE_PE_POLICY=examples/policy-engine/sample-policy.json \
 Guarantees: authentication runs before any decision work. A missing, malformed,
 or wrong token returns `401` with `REFUSE` / `ERR_UNAUTHENTICATED` and **no
 receipt** — an unauthenticated caller never reaches evaluation and never receives
-an ALLOW receipt. The MCP proxy does not forward an unauthenticated call. Tokens
-and identities are configuration and are never written into receipts. Works in
-both legacy and policy-engine decision modes.
+an ALLOW receipt. The MCP proxy does not forward an unauthenticated call. MNDe
+controlled receipt paths are designed and tested not to write configured bearer
+tokens into receipts. Works in both legacy and policy-engine decision modes.
 
 **Caveat:** bearer tokens are for local/pilot use. Production should use stronger
 caller identity — mTLS, OIDC, or signed client assertions. Note the distinction:

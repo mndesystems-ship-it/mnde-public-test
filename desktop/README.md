@@ -2,9 +2,9 @@
 
 The local, no-login operational view for MNDe. It answers exactly one question:
 
-> **Is MNDe protecting execution right now?**
+> **Is routed execution protected right now?**
 
-MNDe is local execution infrastructure, not a SaaS product. The dashboard is built to feel like a firewall / runtime / OS component: you launch it and immediately see whether execution is protected — **no login, no signup, no account, no email, no forced cloud**.
+MNDe is local execution infrastructure, not a SaaS product. The dashboard is built to feel like a firewall / runtime / OS component: you launch it and immediately see whether MNDe-routed execution is protected — **no login, no signup, no account, no email, no forced cloud**.
 
 ## How it runs
 
@@ -22,7 +22,7 @@ It reads only the sidecar's **unauthenticated local status endpoints** (`/readyz
 1. Launch the application (start the local sidecar).
 2. The sidecar starts / is connected to locally.
 3. Runtime status is verified via local endpoints.
-4. Protection status is displayed — within seconds, with no account.
+4. Routed protection status is displayed — within seconds, with no account.
 
 ## What it shows
 

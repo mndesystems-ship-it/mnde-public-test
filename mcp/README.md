@@ -61,7 +61,7 @@ for any tool you add — there is no code path where REFUSE executes it.
 
 ## Proxy mode — protect a server you did not write
 
-The hosted server above guards tools you define. **Proxy mode** ([mnde-mcp-proxy.mjs](./mnde-mcp-proxy.mjs)) puts MNDe in front of *any existing* MCP server: it relays every method to the upstream unchanged except `tools/call`, which it gates through MNDe. On REFUSE the call is never forwarded — zero changes to the upstream.
+The hosted server above guards tools you define. **Proxy mode** ([mnde-mcp-proxy.mjs](./mnde-mcp-proxy.mjs)) puts MNDe in front of an existing MCP server: it relays methods to the upstream unchanged except `tools/call`, which it gates through MNDe. On REFUSE the call is not forwarded through the proxy.
 
 ```
 Agent (MCP client) -> MNDe MCP proxy -> upstream MCP server

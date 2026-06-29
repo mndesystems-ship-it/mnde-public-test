@@ -66,7 +66,7 @@ The request is refused with `receipt: null` when any custody requirement fails:
 - signing failure
 - invalid custody provider configuration
 
-No private keys, bearer tokens, or signing material are written into receipts, logs, stdout, stderr, or error bodies.
+MNDe-controlled custody-signing paths are designed and tested not to write configured private keys, bearer tokens, or signing material into receipts or error bodies. Operators should still treat stdout, stderr, and host logs as sensitive and keep secrets out of request content and external tooling.
 
 ## Offline Verification
 

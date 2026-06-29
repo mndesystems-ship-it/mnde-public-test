@@ -65,7 +65,7 @@ Ephemeral in-process Ed25519 keys with a self-asserted root. Use it to develop a
 
 ### `file-backed-production` (opt-in)
 
-Loads a published bundle plus role private keys from the filesystem — keys live outside the codebase, are durable, and can be rotated and revoked. This is a real deployable mode and the reference for how a managed-KMS/HSM provider plugs in.
+Loads a published bundle plus role private keys from the filesystem — keys live outside the codebase, are durable, and can be rotated and revoked. This is the file-backed custody mode and the reference for how a managed-KMS/HSM provider plugs in.
 
 | Variable | Purpose |
 | --- | --- |
@@ -80,7 +80,7 @@ Missing, malformed, or non-matching configuration **fails closed** — `createCu
 
 ## Tier 2: external-signer custody
 
-`file-backed-production` keeps the receipt signing key on disk. For real production you usually want the private key in hardware — an HSM — where it can't be copied. External-signer custody does that **without a vendor SDK and without leaving Ed25519**: MNDe delegates signing to a command you supply.
+`file-backed-production` keeps the receipt signing key on disk. Higher-assurance deployments usually want the private key in hardware — an HSM — where it cannot be copied. External-signer custody supports that pattern **without a vendor SDK and without leaving Ed25519**: MNDe delegates signing to a command you supply.
 
 Enable it with:
 
@@ -215,7 +215,7 @@ Every re-issue advances `issued_at` (monotonic ordering) and stays **root-signed
 
 ## Threat model and guarantees
 
-- **No secrets in evidence or logs.** Private keys, tokens, and signing material never appear in bundles, receipts, logs, or error messages. Fail-closed errors reference paths and reasons only.
+- **Secret exposure controls.** MNDe-controlled custody, receipt, and error paths are designed and tested not to emit configured private keys, tokens, or signing material. Operators must still keep secrets out of request content, external tooling, screenshots, and general host logs.
 - **Trust is out of band.** A verifier trusts the root by a fingerprint it already holds. A bundle cannot vouch for itself, and a request/receipt cannot inject a trust anchor.
 - **Tamper-evident.** Any change to a bundle or a signed payload breaks verification with a specific reason code.
 - **Rotation and revocation.** Operable via the `mnde-authority` CLI (above): multiple keys per role with validity windows support rotation; the revocation list disables a key immediately, even within its window. Re-issued bundles stay root-signed and offline-verifiable.

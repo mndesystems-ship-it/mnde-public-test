@@ -22,7 +22,7 @@ const result = await mnde.execute({
 Ask MNDe first.
 If ALLOW, execute.
 If REFUSE, do not execute.
-Always return / store the receipt.
+Return and store the receipt when the sidecar returns one.
 Fail closed on anything ambiguous.
 ```
 
@@ -66,8 +66,9 @@ the decision request for advanced shaping (cost, approval state, resources).
 
 ### `mnde.wrapTool(name, fn)`
 
-Returns a guarded function: `wrapped(input) -> Promise<result>`. The raw `fn` is
-captured in a closure and never exposed — the only way to call it is through MNDe.
+Returns a guarded function: `wrapped(input) -> Promise<result>`. The returned
+wrapper does not expose the captured `fn`; callers must avoid retaining or using
+separate raw-function references for protected actions.
 
 ## The safety claim
 
@@ -90,8 +91,8 @@ await deleteBackups();
 await mnde.execute({ action: "delete_backups", input, run: () => deleteBackups() });
 ```
 
-This is covered explicitly in `tests/test_executor.mjs` (test 8) so it can never
-be claimed as protection by accident.
+This is covered explicitly in `tests/test_executor.mjs` (test 8) to prevent
+claims that direct raw-function calls are protected.
 
 ## Try it
 

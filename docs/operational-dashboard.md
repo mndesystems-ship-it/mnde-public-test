@@ -16,7 +16,7 @@ Removed as startup requirements:
 - No blocking authentication checks during startup
 - No "Get Started" marketing flow
 
-The first screen answers one question: **"Is MNDe protecting execution right now?"**
+The first screen answers one question: **"Is routed execution protected right now?"**
 
 ## Startup flow
 
