@@ -27,6 +27,7 @@ import { createHash } from "node:crypto";
 
 import { canonicalizeJson } from "../../shared/json.ts";
 import { findBundleKey, fingerprintOf, verifyAuthorityBundle, verifyCanonical } from "../custody/index.mjs";
+import { derivePassportSubjectId } from "../identity/passport.mjs";
 import { EVIDENCE_FORBIDDEN_FIELDS } from "./result.mjs";
 import { verifySignedExecutionReceipt } from "./verify-signed-receipt.mjs";
 import { verifyExecutionResult } from "./verify-result.mjs";
@@ -107,7 +108,7 @@ function collectForbiddenFields(value, found = [], seen = new WeakSet()) {
 }
 
 // Return shapes.
-function pass(checks, envelope, keyId, bundleFp, keyFp, revocationFreshness) {
+function pass(checks, envelope, keyId, bundleFp, keyFp, revocationFreshness, identityLevel, passportSubjectId) {
   return {
     valid: true,
     schema: SIGNED_RESULT_SCHEMA,
@@ -122,7 +123,8 @@ function pass(checks, envelope, keyId, bundleFp, keyFp, revocationFreshness) {
     key_id: keyId,
     key_role: "result",
     trust_model: SIGNED_RESULT_TRUST_MODEL,
-    identity_evidence: "ASSERTED_ONLY",
+    identity_evidence: identityLevel ?? "ASSERTED_ONLY",
+    passport_subject_id: passportSubjectId ?? null,
     revocation_freshness: revocationFreshness,
     checks
   };
@@ -275,6 +277,7 @@ export function verifySignedExecutionResult(envelope, options = {}) {
     return fail(checks, "SIGNED_RESULT_RESULT_INVALID", `execution_result invalid: ${resultCheck.reason}`);
   }
   check(checks, "execution_result", true);
+  const identityLevel = resultCheck.identity_level ?? "ASSERTED_ONLY";
 
   // ── 8. Verify signed execution receipt ────────────────────────────────────
   if (!isObject(envelope.execution_result)) {
@@ -470,5 +473,13 @@ export function verifySignedExecutionResult(envelope, options = {}) {
   }
   check(checks, "evidence_safety", true);
 
-  return pass(checks, envelope, auth.key_id, derivedBundleFp, derivedKeyFp, keyResult.revocation_freshness);
+  // ── 19. Derive passport_subject_id ────────────────────────────────────────
+  // Computed from the verified assertion's issuer + verified_identity and the
+  // envelope's authority_chain_id. Null when no identity_assertion is present.
+  // executor.id is NOT used — it is instance evidence, not the passport key.
+  const passportSubjectId = identityLevel === "ASSERTION_HASH_BOUND"
+    ? derivePassportSubjectId(er.executor?.identity_assertion, envelope.authority_chain_id)
+    : null;
+
+  return pass(checks, envelope, auth.key_id, derivedBundleFp, derivedKeyFp, keyResult.revocation_freshness, identityLevel, passportSubjectId);
 }

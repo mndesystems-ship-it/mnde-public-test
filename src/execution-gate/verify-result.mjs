@@ -21,10 +21,11 @@ import { createHash } from "node:crypto";
 
 import { canonicalizeJson } from "../../shared/json.ts";
 import { fingerprintOf, verifyCanonical } from "../custody/index.mjs";
+import { verifyIdentityAssertion } from "../identity/verify-assertion.mjs";
 import { canonicalResultPayload, computeResultHash, EXECUTION_RESULT_SCHEMA, validateExecutionResult } from "./result.mjs";
 
-function ok(checks) {
-  return { verified: true, reason: undefined, checks };
+function ok(checks, identityLevel = "ASSERTED_ONLY") {
+  return { verified: true, reason: undefined, identity_level: identityLevel, checks };
 }
 function fail(checks, reason) {
   return { verified: false, reason, checks };
@@ -140,10 +141,25 @@ export function verifyExecutionResult(result, options = {}) {
     checks.request_hash_binding = checkEntry(true, "not verified (originalRequest not provided)");
   }
 
-  // ── 8. Identity evidence annotation ──────────────────────────────────────
-  // Always record that identity is executor-asserted (never MNDe-verified).
-  checks.identity_evidence = checkEntry(true,
-    `executor.identity_evidence_asserted_only=true — identity type "${result.executor?.identity_evidence?.type}" is executor-reported; OIDC token verification must be performed out of band`);
+  // ── 8. Identity assertion (optional) ──────────────────────────────────────
+  // When executor.identity_assertion is present, verify its structure and
+  // assertion_hash integrity. This is the MNDe-side check: structural only,
+  // no network, no live issuer calls. The adapter already proved identity;
+  // MNDe verifies the proof record is intact.
+  const assertion = result.executor?.identity_assertion;
+  let identityLevel = "ASSERTED_ONLY";
+  if (assertion !== undefined && assertion !== null) {
+    const assertionCheck = verifyIdentityAssertion(assertion);
+    checks.identity_assertion = checkEntry(assertionCheck.valid,
+      assertionCheck.valid ? undefined : `${assertionCheck.code}: ${assertionCheck.message}`);
+    if (!assertionCheck.valid) {
+      return fail(checks, `identity_assertion: ${assertionCheck.code}: ${assertionCheck.message}`);
+    }
+    identityLevel = "ASSERTION_HASH_BOUND";
+  } else {
+    checks.identity_evidence = checkEntry(true,
+      `executor.identity_evidence_asserted_only=true — identity type "${result.executor?.identity_evidence?.type}" is executor-reported; OIDC token verification must be performed out of band`);
+  }
 
-  return ok(checks);
+  return ok(checks, identityLevel);
 }

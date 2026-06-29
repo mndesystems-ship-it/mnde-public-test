@@ -17,6 +17,7 @@
 import { createHash } from "node:crypto";
 
 import { canonicalizeJson } from "../../shared/json.ts";
+import { validateIdentityAssertion } from "../identity/assertion.mjs";
 
 export const EXECUTION_RESULT_SCHEMA = "mnde.execution_result.v2";
 
@@ -242,6 +243,15 @@ export function validateExecutionResult(result) {
     // identity_evidence_asserted_only must be true in v2
     if (result.executor.identity_evidence_asserted_only !== true) {
       errors.push("executor.identity_evidence_asserted_only must be true (identity is executor-asserted, not MNDe-verified)");
+    }
+    // identity_assertion — optional; when present must be structurally valid
+    if (result.executor.identity_assertion !== undefined && result.executor.identity_assertion !== null) {
+      const assertionValidation = validateIdentityAssertion(result.executor.identity_assertion);
+      if (!assertionValidation.ok) {
+        for (const e of assertionValidation.errors) {
+          errors.push(`executor.identity_assertion: ${e.message}`);
+        }
+      }
     }
   }
 

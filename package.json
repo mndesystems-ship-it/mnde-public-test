@@ -19,6 +19,7 @@
     "test:signed-policy-bundle": "node ./tests/test_signed_policy_bundle.mjs",
     "test:policy-bundle-provenance": "node ./tests/test_policy_bundle_provenance.mjs",
     "test:historical-policy-bundle": "node ./tests/test_historical_policy_bundle_verification.mjs",
+    "test:identity-assertion": "node ./tests/test_identity_assertion.mjs",
     "test:policy-bundle-evidence-export": "node ./tests/test_policy_bundle_evidence_export.mjs",
     "policy-bundle:evidence:export": "node ./tools/export-policy-bundle-evidence.mjs",
     "tester:init": "node ./scripts/setup.mjs",
@@ -77,6 +78,8 @@
     "test:fresh-setup": "node ./scripts/test-fresh-setup.mjs",
     "test:trust-anchor": "node ./tests/test_trust_anchor.mjs",
     "test:reviewer-kit": "node ./tests/test_cross_platform_reviewer.mjs",
-    "test:audit-remediation": "node ./tests/test_audit_remediation.mjs"
+    "test:audit-remediation": "node ./tests/test_audit_remediation.mjs",
+    "test:passport-subject": "node ./tests/test_passport_subject.mjs",
+    "test:executor-lifecycle": "node ./tests/test_executor_lifecycle.mjs"
   }
 }
