@@ -1,0 +1,24 @@
+# Claim Evidence Matrix
+
+This matrix covers significant product claims in the repository. Claims should not be repeated in marketing or sales material unless the confidence level and missing evidence are acceptable for the audience.
+
+| Claim | Supporting code | Supporting tests | Supporting documentation | Confidence | Missing evidence |
+| --- | --- | --- | --- | --- | --- |
+| MNDe is local pre-execution infrastructure. | `mnde-local-sidecar.mjs`, `executor/index.mjs`, `mcp/mnde-mcp-proxy.mjs`, `mcp/mnde-mcp-server.mjs` | `test:executor`, `test:mcp`, `test:mcp-proxy`, `test:dashboard` | `README.md`, `docs/execution-firewall-overview.md`, `docs/operational-dashboard.md` | High for local/routed integrations. | Production deployment reference architecture. |
+| Routed ALLOW actions execute once in the executor demo. | `executor/index.mjs` | `test:executor` | `executor/README.md` | High for tested executor path. | More language/runtime executors. |
+| Routed REFUSE actions do not execute or forward in tested integrations. | `executor/index.mjs`, `mcp/mnde-mcp-proxy.mjs`, `mcp/mnde-mcp-server.mjs`, `shell/policy.mjs` | `test:executor`, `test:mcp`, `test:mcp-proxy`, `test:shell` | `docs/integration-guide.md`, `docs/production-readiness.md` | High for tested integrations. | Coverage for every future integration. |
+| Receipts can be verified offline. | `tools/verify.mjs`, `tools/verify-receipt.mjs`, `src/policy-engine/receipt.mjs`, `src/execution-gate/verify-signed-receipt.mjs` | `test:receipt-verifier`, `test:policy-receipt`, `test:production-signing`, `test:execution-gate-signing` | `docs/independent-verification.md`, `docs/trust-anchored-verification.md` | High with required authority evidence. | Public authority bundle distribution process. |
+| Tamper detection works for supported signed artifacts. | `src/execution-gate/`, `src/policy-bundles/`, `src/custody/`, `src/policy-engine/receipt.mjs` | `test:signed-execution-result`, `test:execution-ledger`, `test:signed-policy-bundle`, `test:custody` | `docs/signed-execution-result-v1.md`, `docs/execution-ledger-v1.md`, `docs/key-custody.md` | High for covered formats. | Third-party verifier audit. |
+| Demo policy is intentionally small and illustrative. | `src/policy-engine/index.mjs`, `shell/policy.mjs`, `tests/fixtures/policy-engine/demo-policy.json` | `test:policy-engine`, `test:shell` | `README.md`, `docs/production-readiness.md`, `docs/demo-scenarios.md` | High. | Deployment-specific policy review process. |
+| Production profile refuses demo/dev custody material. | `src/authority-signing/preflight.mjs`, `scripts/init-production-authority.mjs` | `test:trust-root`, `test:authority-init` | `docs/key-custody.md`, `docs/production-readiness.md` | High for implemented pre-flight checks. | External operational runbook and deployment audit. |
+| File-backed custody supports signed receipts with published bundles. | `src/custody/index.mjs`, `src/custody/bundle.mjs`, `src/authority-signing/index.mjs` | `test:custody`, `test:production-signing` | `docs/key-custody.md`, `docs/live-receipt-signing.md` | High for file-backed mode. | KMS/HSM implementation is not present. |
+| External signer custody can keep keys outside the MNDe process. | `src/custody/external-signer.mjs` | `test:external-signer` | `docs/key-custody.md` | Medium-high for command contract. | Real HSM/KMS integration test. |
+| No automatic telemetry is implemented. | No analytics/telemetry dependencies or outbound service code identified; dashboard reads relative local endpoints. | `test:dashboard` checks no external origins. | `PRIVACY.md`, `docs/tester-id-implementation.md`, `docs/onboarding.md` | Medium-high. | Dedicated network egress test across all commands. |
+| Dashboard is local operational UI, not SaaS. | `desktop/dashboard.html`, `sidecar/production_api.mjs` | `test:dashboard` | `docs/operational-dashboard.md`, `ACCESSIBILITY.md` | High. | Full accessibility review. |
+| MNDe is not enterprise ready. | Enterprise identity and production requirements are documented as future/off by default. | `test:auth`, `test:identity-assertion` cover slices only. | `docs/production-readiness.md`, `docs/operational-dashboard.md`, `COMPLIANCE_SUMMARY.md` | High. | SOC 2/ISO/DPA/SLA/support/security package. |
+| MNDe is not government procurement ready. | No procurement implementation. | No procurement tests. | `ACCESSIBILITY.md`, `COMPLIANCE_SUMMARY.md` | High. | VPAT/ACR, SBOM release process, procurement docs, required controls. |
+| MNDe is evaluation-only. | `package.json` private package; `LICENSE` restricts production/sale. | Not a runtime behavior. | `LICENSE`, `TERMS.md` | High. | Signed evaluation agreement for each external evaluator. |
+
+## Claim Review Rule
+
+Before adding a public claim, add a row to this matrix with code, tests, documentation, confidence, and missing evidence. If those fields cannot be completed, narrow the claim or document it as a limitation.
