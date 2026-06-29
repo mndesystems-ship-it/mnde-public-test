@@ -108,7 +108,10 @@ async function main() {
     assert.equal(isPolicyEnforcementEnabled({ MNDE_DECISION_ENGINE: "legacy" }), false);
     assert.equal(isPolicyEnforcementEnabled({}), false);
     assert.equal(resolveDecisionEngine({ MNDE_DECISION_ENGINE: "legacy" }), "legacy");
-    assert.equal(resolveDecisionEngine({}), "legacy");
+    assert.equal(resolveDecisionEngine({}), "policy-engine"); // v1 default flipped to policy-engine
+    assert.equal(resolveDecisionEngine({ MNDE_DECISION_ENGINE: "nonsense" }), null); // unknown -> fail closed
+    // Unset still does NOT count as production-enforcement-enabled (production must be explicit).
+    assert.equal(isPolicyEnforcementEnabled({}), false);
     // every enforcement engine in the canonical set satisfies the production
     // policy requirement (a future backend added to the set is covered here, with
     // no change to the gate), so only the missing signed bundle is flagged.

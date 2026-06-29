@@ -14,13 +14,21 @@
 // enforcement backends here — this is the only place that should change.
 export const POLICY_ENFORCEMENT_ENGINES = new Set(["policy-engine"]);
 
-const DEFAULT_ENGINE = "legacy";
+// v1 canonical default. The general policy engine is the authority path; the
+// legacy GPU/compute pipeline is an explicit opt-in compatibility profile.
+export const DEFAULT_ENGINE = "policy-engine";
+export const LEGACY_ENGINE = "legacy";
+export const KNOWN_ENGINES = new Set(["policy-engine", "legacy"]);
 
-// Resolve the configured engine to a known value. Any value in the enforcement
-// set is returned as-is; anything else (including unset) is the legacy default.
+// Resolve MNDE_DECISION_ENGINE to a known engine.
+//   unset / empty            -> DEFAULT_ENGINE ("policy-engine")
+//   "policy-engine" / "legacy" -> itself
+//   any other value          -> null  (the caller MUST fail closed; never silently
+//                                       pick an engine for an unrecognized value)
 export function resolveDecisionEngine(env = process.env) {
   const raw = env.MNDE_DECISION_ENGINE;
-  return POLICY_ENFORCEMENT_ENGINES.has(raw) ? raw : DEFAULT_ENGINE;
+  if (raw === undefined || raw === null || String(raw).trim() === "") return DEFAULT_ENGINE;
+  return KNOWN_ENGINES.has(raw) ? raw : null;
 }
 
 // The security property the production gate cares about: is an enforced policy

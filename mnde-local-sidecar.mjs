@@ -280,6 +280,14 @@ function receiptPathForWorker(basePath) {
   }
 }
 
+// ── Decision-engine selection guard ──────────────────────────────────────────
+// Fail closed on an unrecognized MNDE_DECISION_ENGINE before forking, rather than
+// silently choosing an engine. Unset resolves to the v1 default (policy-engine).
+if (resolveDecisionEngine(process.env) === null) {
+  process.stderr.write(`\nMNDe refused to start — unknown MNDE_DECISION_ENGINE '${process.env.MNDE_DECISION_ENGINE}'. Valid values: 'policy-engine' (default), 'legacy'.\n\n`);
+  process.exit(1);
+}
+
 if (cluster.isPrimary && CLUSTER_MODE) {
   for (let i = 0; i < CLUSTER_WORKERS; i += 1) cluster.fork();
   cluster.on("exit", (worker, code) => {
@@ -309,19 +317,25 @@ if (AUTH_MODE === "bearer") {
   process.stdout.write(`MNDe caller auth: bearer${AUTH_CONFIG_ERROR ? ` (CONFIG ERROR: ${AUTH_CONFIG_ERROR})` : ` (${AUTH.tokens.size} token(s))`}\n`);
 }
 
-// Optional, opt-in decision engine. Default is "legacy" (the existing pipeline).
-// The policy-engine adapter is dynamically imported ONLY in policy-engine mode,
-// so legacy mode never loads it and its behavior is byte-for-byte unchanged.
+// Decision engine. v1 default is "policy-engine" (the canonical authority path);
+// "legacy" is the explicit opt-in compatibility profile. The policy-engine adapter
+// is dynamically imported ONLY in policy-engine mode, so legacy mode never loads it
+// and its behavior is byte-for-byte unchanged.
 const DECISION_ENGINE = resolveDecisionEngine(process.env);
 let policyEngine = null;
 let policyEngineConfigError = null;
+let policyConfigurationState = null; // deployment state (e.g. NO_POLICY_CONFIGURED); never written into receipts
 if (DECISION_ENGINE === "policy-engine") {
   try {
     const adapter = await import("./src/policy-engine/sidecar-adapter.mjs");
     const peConfig = adapter.loadPolicyEngineConfig(process.env);
     if (!peConfig.ok) policyEngineConfigError = peConfig.reason;
-    else policyEngine = { decide: (body, opts) => adapter.decidePolicyEngine(body, peConfig, opts) };
-    process.stdout.write(`MNDe decision engine: policy-engine${policyEngineConfigError ? ` (CONFIG ERROR: ${policyEngineConfigError})` : ""}\n`);
+    else {
+      policyEngine = { decide: (body, opts) => adapter.decidePolicyEngine(body, peConfig, opts) };
+      policyConfigurationState = peConfig.policy_configuration_state ?? null;
+    }
+    const stateNote = policyConfigurationState ? ` (${policyConfigurationState}: built-in default-deny policy active; every decision REFUSES until a policy is installed)` : "";
+    process.stdout.write(`MNDe decision engine: policy-engine${policyEngineConfigError ? ` (CONFIG ERROR: ${policyEngineConfigError})` : stateNote}\n`);
   } catch (error) {
     policyEngineConfigError = error instanceof Error ? error.message : String(error);
     process.stderr.write(`MNDe policy-engine adapter failed to load: ${policyEngineConfigError}\n`);
@@ -654,6 +668,8 @@ async function respondPolicyEngine(res, request, timings, totalStarted, caller) 
   response(res, 200, {
     schema_version: "mnde.api.response.v1",
     decision_engine: "policy-engine",
+    // Deployment state surfaced to operators only (API/logs); NOT in the signed receipt.
+    ...(policyConfigurationState ? { policy_configuration_state: policyConfigurationState } : {}),
     decision: outcome.decision,
     reason_code: outcome.reason_code,
     policy_id: outcome.receipt.decision_output.policy_id,
