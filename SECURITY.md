@@ -85,6 +85,10 @@ Do not include private keys, bearer tokens, credentials, unrelated local files, 
 
 Primary contact: the private beta coordinator or maintainer channel that provided access to this repository.
 
+Every private beta distribution must include a named security, privacy, and support contact supplied with the invite or written beta agreement.
+
+If no contact is supplied, testers should report issues through the distribution channel that provided the beta materials.
+
 If the project later publishes a dedicated security email or advisory intake, this file should be updated before public distribution.
 
 ## Expected Response Timeline

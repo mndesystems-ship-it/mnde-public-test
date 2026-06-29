@@ -65,3 +65,7 @@ Governing law and venue are not defined in this repository. They should be speci
 ## Contact Information
 
 Use the private beta coordinator or maintainer channel that provided access. If no contact has been assigned, request one before sharing sensitive artifacts or relying on MNDe in sensitive environments.
+
+Every private beta distribution must include a named security, privacy, and support contact supplied with the invite or written beta agreement.
+
+If no contact is supplied, testers should report issues through the distribution channel that provided the beta materials.

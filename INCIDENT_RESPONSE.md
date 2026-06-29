@@ -84,6 +84,10 @@ Use the procedures in [docs/key-custody.md](docs/key-custody.md). Revocation inv
 
 ## Communication Process
 
+Every private beta distribution must include a named security, privacy, and support contact supplied with the invite or written beta agreement.
+
+If no contact is supplied, testers should report issues through the distribution channel that provided the beta materials.
+
 Private beta communications should include:
 
 - What happened.

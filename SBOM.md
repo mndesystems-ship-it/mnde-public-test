@@ -8,7 +8,7 @@ Generated manually from the repository package files on 2026-06-28. No third-par
 | --- | --- | --- | --- | --- | --- |
 | `mnde-public-test` | `0.1.0` | Custom MNDe Public Testing License | MNDe project | `package.json sha256:2c97aee12399ca37ba19467cdc18cd2e863a9598e672a73a19ca44f541a49fc2` | `package.json`, `LICENSE` |
 | root lockfile | lockfileVersion `3` | Not applicable | MNDe project | `package-lock.json sha256:937b10825cdde04ca522cf336bec2ab9482c00d1ce3f8cbb7a9ea58ea0348725` | `package-lock.json` |
-| `@mnde/executor` | `0.1.0` | MIT in subpackage metadata | MNDe project | `executor/package.json sha256:56edadc3ee101759bc4353640f179b9040f09d1dc91f444f3852d55a0313bcff` | `executor/package.json` |
+| `@mnde/executor` | `0.1.0` | Custom MNDe Public Testing License via `../LICENSE` | MNDe project | `executor/package.json sha256:73ed0ead053b21f507509e1ee079935898101c09de884eb5a8cdccd9b84ac0c1` | `executor/package.json`, `LICENSE` |
 
 ## Third-Party Dependencies
 

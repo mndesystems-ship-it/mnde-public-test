@@ -15,7 +15,7 @@ The root [LICENSE](LICENSE) restricts use to evaluation and forbids sale, sublic
 | Package | Version | License | Supplier | Copyright owner | Attribution requirements | NOTICE requirements | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `mnde-public-test` | `0.1.0` | Custom MNDe Public Testing License | MNDe project | MNDe project | Preserve repository license | None identified | Known |
-| `@mnde/executor` | `0.1.0` | MIT in `executor/package.json` | MNDe project | MNDe project | Include MIT license text if distributed as a standalone package | None identified | Needs reconciliation with root evaluation-only license before distribution |
+| `@mnde/executor` | `0.1.0` | Custom MNDe Public Testing License via `../LICENSE` | MNDe project | MNDe project | Preserve repository license | None identified | Known |
 
 Root `package-lock.json` lists no third-party npm packages. `package.json` has no `dependencies` or `devDependencies`.
 
@@ -45,7 +45,6 @@ Documentation appears to be original repository content. No copied third-party p
 | Item | Issue | Required follow-up |
 | --- | --- | --- |
 | Root license | Custom evaluation-only license | Review before external redistribution or commercial use. |
-| `executor/package.json` MIT license | Subpackage license differs from root evaluation-only license | Decide whether executor is intended to be distributable under MIT, and add the exact MIT license text if it is packaged separately. |
 
 ## NOTICE Status
 

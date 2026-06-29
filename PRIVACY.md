@@ -110,3 +110,7 @@ Because the current repository is local evaluation software and not a hosted ser
 ## Contact Information
 
 Use the private beta coordinator or maintainer channel that provided access. If no privacy contact has been assigned, request one before sharing artifacts that may contain sensitive data.
+
+Every private beta distribution must include a named security, privacy, and support contact supplied with the invite or written beta agreement.
+
+If no contact is supplied, testers should report issues through the distribution channel that provided the beta materials.

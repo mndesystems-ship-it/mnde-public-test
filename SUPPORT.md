@@ -20,6 +20,10 @@ Do not send private keys, bearer tokens, credentials, browser history, or unrela
 
 Report security issues through the private beta coordinator or assigned security contact. If no private security contact exists, request one before sharing exploit details.
 
+Every private beta distribution must include a named security, privacy, and support contact supplied with the invite or written beta agreement.
+
+If no contact is supplied, testers should report issues through the distribution channel that provided the beta materials.
+
 See [SECURITY.md](SECURITY.md) for the full vulnerability reporting process.
 
 ## Bug Reporting
