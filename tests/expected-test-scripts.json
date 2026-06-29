@@ -22,6 +22,7 @@
   "test:policy-engine",
   "test:policy-receipt",
   "test:policy-trust",
+  "test:production-posture",
   "test:production-signing",
   "test:proxy-auth",
   "test:receipt-verifier",

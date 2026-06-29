@@ -15,6 +15,7 @@ import {
 } from "./audit/node_runtime.ts";
 import { boundaryReplayEndpointResponse } from "./shared/receipt-replay.mjs";
 import { parseRuntimeProfile } from "./shared/runtime-profile.mjs";
+import { resolveDecisionEngine } from "./shared/decision-engine.mjs";
 import {
   DeterministicWorkerPool,
   WORKER_POOL_SATURATED,
@@ -265,6 +266,20 @@ function receiptPathForWorker(basePath) {
   }
 }
 
+// ── Production posture pre-flight ─────────────────────────────────────────────
+// Complements the trust-root gate: in MNDE_PROFILE=production the decision
+// endpoint must ALSO require caller authentication and an enforced (signed-
+// bundle) policy engine. Runs in the primary before forking so a misconfiguration
+// fails fast rather than deferring to per-request denial. No-op outside production.
+{
+  const { assertProductionPosture } = await import("./src/production-posture-preflight.mjs");
+  const posture = await assertProductionPosture(process.env);
+  if (!posture.ok) {
+    process.stderr.write(`\nMNDe refused to start — production posture pre-flight failed.\n  reason_code: ${posture.reason_code}\n  ${posture.detail}\n\n`);
+    process.exit(1);
+  }
+}
+
 if (cluster.isPrimary && CLUSTER_MODE) {
   for (let i = 0; i < CLUSTER_WORKERS; i += 1) cluster.fork();
   cluster.on("exit", (worker, code) => {
@@ -297,7 +312,7 @@ if (AUTH_MODE === "bearer") {
 // Optional, opt-in decision engine. Default is "legacy" (the existing pipeline).
 // The policy-engine adapter is dynamically imported ONLY in policy-engine mode,
 // so legacy mode never loads it and its behavior is byte-for-byte unchanged.
-const DECISION_ENGINE = process.env.MNDE_DECISION_ENGINE === "policy-engine" ? "policy-engine" : "legacy";
+const DECISION_ENGINE = resolveDecisionEngine(process.env);
 let policyEngine = null;
 let policyEngineConfigError = null;
 if (DECISION_ENGINE === "policy-engine") {

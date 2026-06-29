@@ -14,6 +14,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { buildAuthorityBundle, generateAuthorityKeyPair } from "../src/custody/index.mjs";
+import { signPolicyBundle } from "../src/policy-bundles/index.mjs";
 import { assertTrustRoot, detectDevKeyPath } from "../src/authority-signing/preflight.mjs";
 import { startMndeSidecar } from "../executor/sidecar-harness.mjs";
 
@@ -54,6 +55,37 @@ function writeProductionCustody(dir) {
     MNDE_AUTHORITY_BUNDLE: bundlePath,
     MNDE_RECEIPT_SIGNING_KEY: keyPath,
     MNDE_RECEIPT_KEY_ID: receipt.keyId
+  };
+}
+
+// Production now ALSO requires caller auth + an enforced signed-bundle policy
+// engine (production posture pre-flight). These extras make a fully-configured
+// production sidecar boot under the stricter posture.
+const PROD_AUTH_TOKEN = "tr-caller-token";
+function productionEnforcementExtras(dir) {
+  const root = { keyId: "pe-root-1", ...generateAuthorityKeyPair() };
+  const policyKey = { keyId: "policy-1", ...generateAuthorityKeyPair() };
+  const authorityBundle = buildAuthorityBundle({
+    authorityId: "mnde-tr-pe", issuedAt: "2026-01-01T00:00:00.000Z", notAfter: "2099-01-01T00:00:00.000Z", root,
+    policyKeys: [{ keyId: policyKey.keyId, publicPem: policyKey.publicPem, validFrom: "2026-01-01T00:00:00.000Z", validUntil: "2099-01-01T00:00:00.000Z" }]
+  });
+  const bundle = signPolicyBundle({
+    bundle_id: "ops-policy-10-10.0.0", policy_id: "ops-policy", serial: 10, issued_at: "2026-06-23T12:00:00.000Z",
+    policy_document: { schema_version: "1.0", policy_id: "ops-policy", version: "10.0.0", state: "ACTIVE", rules: [{ rule_id: "allow-status", effect: "ALLOW", match: { field: "tool.tool_name", op: "eq", value: "read_status" } }] }
+  }, { keyId: policyKey.keyId, privateKeyPem: policyKey.privatePem });
+  const policyBundlePath = join(dir, "policy-bundle.json");
+  const authorityBundlePath = join(dir, "pe-authority-bundle.json");
+  writeFileSync(policyBundlePath, JSON.stringify(bundle), "utf8");
+  writeFileSync(authorityBundlePath, JSON.stringify(authorityBundle), "utf8");
+  return {
+    MNDE_SIDECAR_AUTH: "bearer",
+    MNDE_SIDECAR_AUTH_TOKENS: JSON.stringify({ [PROD_AUTH_TOKEN]: "tr-caller" }),
+    MNDE_DECISION_ENGINE: "policy-engine",
+    MNDE_PE_POLICY_BUNDLE: policyBundlePath,
+    MNDE_PE_AUTHORITY_BUNDLE: authorityBundlePath,
+    MNDE_PE_POLICY_BUNDLE_STATE: join(dir, "pe-bundle-state.json"),
+    MNDE_PE_TRUSTED_ROOT_FINGERPRINT: authorityBundle.root_key.fingerprint,
+    MNDE_PE_BUNDLE_NOW: "2026-06-23T12:00:00.000Z"
   };
 }
 
@@ -161,18 +193,18 @@ async function main() {
     assert.match(message, /ERR_TRUST_ROOT_REQUIRES_CUSTODY|refused to start/);
   });
 
-  await test("sidecar STARTS in production profile with valid custody", async () => {
+  await test("sidecar STARTS in production with valid custody + caller auth + enforced policy", async () => {
     const dir = mkdtempSync(join(tmpdir(), "mnde-tr-"));
     let sc = null;
     try {
-      const env = { ...writeProductionCustody(dir), MNDE_BIND_PORT: "8792" };
+      const env = { ...writeProductionCustody(dir), ...productionEnforcementExtras(dir), MNDE_BIND_PORT: "8792" };
       sc = await startMndeSidecar({ url: "http://127.0.0.1:8792", env });
       const res = await fetch(`${sc.url}/v1/decisions`, {
-        method: "POST", headers: { "content-type": "application/json" },
+        method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${PROD_AUTH_TOKEN}` },
         body: JSON.stringify({ schema_version: "1.0", request_id: "tr-1", timestamp: "2026-06-14T00:00:00.000Z", principal: { id: "u" }, agent: { id: "a" }, tool: { tool_name: "read_status" }, parameters: {}, environment: {}, context: {} })
       });
       const body = await res.json();
-      assert.ok(body.decision === "ALLOW" || body.decision === "REFUSE", "sidecar serves decisions under valid production custody");
+      assert.ok(body.decision === "ALLOW" || body.decision === "REFUSE", "sidecar serves decisions under a fully-configured production profile");
     } finally {
       if (sc) await sc.stop();
       rmSync(dir, { recursive: true, force: true });
