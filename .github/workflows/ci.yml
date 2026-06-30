@@ -22,7 +22,12 @@ jobs:
         # actions/setup-node@v4
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: "24"
+          # Pinned: the floating "24" advanced to 24.17.0, which ships an undici
+          # regression that asserts (`!this.paused`) when a server closes a socket
+          # at the end of a response — every fetch-based suite (e.g. test:dashboard)
+          # then crashes on teardown with exit 1. 24.14.1 is verified green on the
+          # full suite. Revisit when a newer 24.x fixes the undici teardown assert.
+          node-version: "24.14.1"
           cache: npm
 
       - name: Install

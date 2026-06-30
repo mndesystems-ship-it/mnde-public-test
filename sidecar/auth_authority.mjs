@@ -21,7 +21,10 @@ const SENSITIVE_PATHS = new Map([
   ["/audit/bundle", "export_audit"],
   ["/replay/recent", "replay_decisions"],
   ["/receipts/verify", "verify_receipts"],
-  ["/verify", "verify_receipts"]
+  ["/verify", "verify_receipts"],
+  ["/ledger/head", "inspect_receipts"],
+  ["/ledger/verify", "verify_receipts"],
+  ["/ledger/export", "export_audit"]
 ]);
 
 const ASSERTION_ISSUER = "mnde-desktop";
