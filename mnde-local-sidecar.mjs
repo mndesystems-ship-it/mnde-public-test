@@ -16,6 +16,8 @@ import {
 import { boundaryReplayEndpointResponse } from "./shared/receipt-replay.mjs";
 import { parseRuntimeProfile } from "./shared/runtime-profile.mjs";
 import { resolveDecisionEngine } from "./shared/decision-engine.mjs";
+import { ledgerStartupGate, isLedgerDisabled } from "./src/execution-ledger/paths.mjs";
+import { resolveLedgerRuntime, recordReceiptInLedger, ledgerResponseMeta, ledgerHeadResponse, ledgerVerifyResponse, ledgerExportResponse } from "./src/execution-ledger/sidecar.mjs";
 import {
   DeterministicWorkerPool,
   WORKER_POOL_SATURATED,
@@ -342,6 +344,24 @@ if (DECISION_ENGINE === "policy-engine") {
   }
 }
 
+// Execution ledger (V1 integrity layer). Default-on. Appends one tamper-evident,
+// hash-chained entry per finalized receipt — a SEPARATE layer that never touches
+// the receipt format, signing, or standalone verification. Disabling it is a
+// development-only convenience and fails closed at startup under MNDE_PROFILE=
+// production. Append failure fails the request closed in production.
+const ledgerGate = ledgerStartupGate(process.env);
+if (!ledgerGate.ok) {
+  process.stderr.write(`\nMNDe refused to start — ${ledgerGate.detail}\n  reason_code: ${ledgerGate.code}\n\n`);
+  process.exit(1);
+}
+const LEDGER_RUNTIME = resolveLedgerRuntime(process.env, receiptQueue.config.path);
+const LEDGER_ENGINE = { name: DECISION_ENGINE === "legacy" ? "mnde-legacy-pipeline" : "mnde-policy-engine", version: null };
+if (LEDGER_RUNTIME.enabled) {
+  process.stdout.write(`MNDe execution ledger: enabled (${LEDGER_RUNTIME.ledgerPath})\n`);
+} else {
+  process.stdout.write(`MNDe execution ledger: DISABLED (MNDE_EXECUTION_LEDGER=off; non-production only)\n`);
+}
+
 // Optional, opt-in live receipt signing. Default "legacy" keeps receipt bytes
 // unchanged. The custody signing adapter is dynamically imported ONLY in custody
 // mode, so legacy mode never loads custody and stays byte-for-byte identical.
@@ -468,7 +488,10 @@ async function persistRefusal(reason_code, extra = {}, timings = {}) {
     counters.receipt_refusals += 1;
     return { ok: false, reason_code: queued.reason_code, receipt };
   }
-  if (RECEIPT_QUEUE_CONFIG.durability_mode === "strict_audit") {
+  if (LEDGER_RUNTIME.enabled) {
+    const ledger = await recordReceiptInLedger({ runtime: LEDGER_RUNTIME, receipt, durable: queued.durable, profile: RUNTIME_PROFILE, engine: LEDGER_ENGINE, flush: () => receiptQueue.flush() });
+    if (ledger.failClosed) return { ok: false, reason_code: ledger.code, receipt };
+  } else if (RECEIPT_QUEUE_CONFIG.durability_mode === "strict_audit") {
     await queued.durable;
   }
   return { ok: true, receipt };
@@ -660,7 +683,18 @@ async function respondPolicyEngine(res, request, timings, totalStarted, caller) 
     await fail(res, queued.reason_code, 200, {}, timings);
     return;
   }
-  if (RECEIPT_QUEUE_CONFIG.durability_mode === "strict_audit") {
+  let ledgerMeta = null;
+  if (LEDGER_RUNTIME.enabled) {
+    const ledger = await recordReceiptInLedger({ runtime: LEDGER_RUNTIME, receipt: signed.receipt, durable: queued.durable, profile: RUNTIME_PROFILE, engine: LEDGER_ENGINE, flush: () => receiptQueue.flush() });
+    if (ledger.failClosed) {
+      counters.receipt_refusals += 1;
+      timings.total_server_ms = Math.max(0, Math.round(performance.now() - totalStarted));
+      recordTimings(timings);
+      await fail(res, ledger.code, 200, {}, timings);
+      return;
+    }
+    ledgerMeta = ledgerResponseMeta(ledger);
+  } else if (RECEIPT_QUEUE_CONFIG.durability_mode === "strict_audit") {
     await queued.durable;
   }
   timings.total_server_ms = Math.max(0, Math.round(performance.now() - totalStarted));
@@ -668,6 +702,8 @@ async function respondPolicyEngine(res, request, timings, totalStarted, caller) 
   response(res, 200, {
     schema_version: "mnde.api.response.v1",
     decision_engine: "policy-engine",
+    // Ledger status lives OUTSIDE the receipt (never mutates receipt bytes).
+    ...(ledgerMeta ? { ledger: ledgerMeta } : {}),
     // Deployment state surfaced to operators only (API/logs); NOT in the signed receipt.
     ...(policyConfigurationState ? { policy_configuration_state: policyConfigurationState } : {}),
     decision: outcome.decision,
@@ -867,7 +903,18 @@ async function handleDecide(req, res) {
       }, timings);
       return;
     }
-    if (RECEIPT_QUEUE_CONFIG.durability_mode === "strict_audit") {
+    let ledgerMeta = null;
+    if (LEDGER_RUNTIME.enabled) {
+      const ledger = await recordReceiptInLedger({ runtime: LEDGER_RUNTIME, receipt: signed.receipt, durable: queued.durable, profile: RUNTIME_PROFILE, engine: LEDGER_ENGINE, flush: () => receiptQueue.flush() });
+      if (ledger.failClosed) {
+        counters.receipt_refusals += 1;
+        timings.total_server_ms = Math.max(0, Math.round(performance.now() - totalStarted));
+        recordTimings(timings);
+        await fail(res, ledger.code, 200, { request_hash: result.receipt.request_hash, decision_hash: result.receipt.decision_output.decision_hash, timings, raw_body: raw }, timings);
+        return;
+      }
+      ledgerMeta = ledgerResponseMeta(ledger);
+    } else if (RECEIPT_QUEUE_CONFIG.durability_mode === "strict_audit") {
       const durable = await queued.durable;
       timings.persistence_flush_ms = durable.persistence_flush_ms ?? 0;
     }
@@ -876,7 +923,8 @@ async function handleDecide(req, res) {
     const apiBody = apiResponseFromReceipt(result.receipt);
     // Deliver the custody-signed envelope in place of the inner receipt.
     if (apiBody.receipt && signed.receipt !== result.receipt) apiBody.receipt = signed.receipt;
-    response(res, 200, { ...apiBody, ...(SIGNING_MODE === "custody" ? { receipt_signing: "custody" } : {}), ...(req._mndeCaller ? { authenticated_caller: req._mndeCaller.id } : {}), timings }, timings);
+    // Ledger status lives OUTSIDE the receipt (never mutates receipt bytes).
+    response(res, 200, { ...apiBody, ...(ledgerMeta ? { ledger: ledgerMeta } : {}), ...(SIGNING_MODE === "custody" ? { receipt_signing: "custody" } : {}), ...(req._mndeCaller ? { authenticated_caller: req._mndeCaller.id } : {}), timings }, timings);
   } catch (error) {
     if (error?.message?.startsWith("ERR_RECEIPT_FLUSH_FAILED")) counters.flush_failures += 1;
     if (error?.message === WORKER_TIMEOUT) counters.request_timeout_refusals += 1;
@@ -1244,6 +1292,36 @@ const server = http.createServer(async (req, res) => {
       policy_activation: true,
       audit_bundle: true
     }));
+    return;
+  }
+  // Execution-ledger read endpoints. Gated the same way as the receipt
+  // endpoints: head ~ inspect_receipts (production-read), verify ~ verify_receipts,
+  // export ~ export_audit. Export is never exposed without authority gating.
+  if (req.method === "GET" && pathname === "/ledger/head") {
+    if (!authorizeProductionRead(req, res, pathname, "ledger.head")) return;
+    response(res, 200, ledgerHeadResponse(LEDGER_RUNTIME));
+    return;
+  }
+  if (req.method === "GET" && pathname === "/ledger/verify") {
+    const authz = authorizeRequest(req, pathname);
+    if (!authz.ok) {
+      response(res, 403, refusalBody(authz.reason, authz.actor, "ledger.verify"));
+      return;
+    }
+    const result = ledgerVerifyResponse(LEDGER_RUNTIME);
+    auditAuthority(pathname, authz, result.ok ? "ALLOW" : "REFUSE", `entries:${result.entries_checked}`, null, result.ok ? null : result.errors[0]?.code);
+    response(res, 200, result);
+    return;
+  }
+  if (req.method === "GET" && pathname === "/ledger/export") {
+    const authz = authorizeRequest(req, pathname);
+    if (!authz.ok) {
+      response(res, 403, refusalBody(authz.reason, authz.actor, "ledger.export"));
+      return;
+    }
+    const result = ledgerExportResponse(LEDGER_RUNTIME);
+    auditAuthority(pathname, authz, "ALLOW", `entries:${result.entry_count}`, null, null);
+    response(res, 200, result);
     return;
   }
   await fail(res, "ERR_NOT_FOUND", 404);
