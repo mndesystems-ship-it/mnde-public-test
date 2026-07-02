@@ -10,6 +10,10 @@ import { readFileSync } from "node:fs";
 
 import { constantTimeEqual } from "../crypto/provider.mjs";
 
+const FAILED_AUTH_THRESHOLD = 5;
+const FAILED_AUTH_WINDOW_MS = 60_000;
+const failedAuthBySource = new Map();
+
 // Load auth config from env. Fails closed (ok:false) if bearer mode is enabled
 // but no usable tokens are configured.
 export function loadAuthConfig(env) {
@@ -73,4 +77,31 @@ export function authenticate(headers, authConfig) {
   const identity = matchToken(authConfig.tokens, token);
   if (!identity) return { ok: false, reason: "invalid_token" };
   return { ok: true, caller: { id: identity.id, label: identity.label } };
+}
+
+function recentFailures(source, now) {
+  const cutoff = now - FAILED_AUTH_WINDOW_MS;
+  const attempts = (failedAuthBySource.get(source) ?? []).filter((at) => at > cutoff);
+  if (attempts.length > 0) failedAuthBySource.set(source, attempts);
+  else failedAuthBySource.delete(source);
+  return attempts;
+}
+
+export function authSourceForRequest(req) {
+  return req?.socket?.remoteAddress || "unknown";
+}
+
+export function isAuthThrottled(source, now = Date.now()) {
+  return recentFailures(source, now).length >= FAILED_AUTH_THRESHOLD;
+}
+
+export function recordAuthFailure(source, now = Date.now()) {
+  const attempts = recentFailures(source, now);
+  attempts.push(now);
+  failedAuthBySource.set(source, attempts);
+  return attempts.length >= FAILED_AUTH_THRESHOLD;
+}
+
+export function clearAuthFailures(source) {
+  failedAuthBySource.delete(source);
 }

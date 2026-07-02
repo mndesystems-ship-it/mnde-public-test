@@ -65,7 +65,17 @@ Identity code remains available for **future enterprise features** but is **off 
 - Centralized audit
 - Policy distribution
 
-Sidecar caller authentication (`MNDE_SIDECAR_AUTH=bearer`) is opt-in and off by default; enabling it gates the decision API for machine callers — it does **not** add a login screen to the dashboard. See [Sidecar Caller Authentication](mnde-policy-engine-production-spec-v1.md).
+MNDe does not currently provide a public login or account system. Private beta access is local sidecar access or bearer-protected machine access. Enabling sidecar caller authentication (`MNDE_SIDECAR_AUTH=bearer`) gates the decision API for machine callers — it does **not** add a login screen to the dashboard. Public web login requires a separate IdP/OIDC-backed authentication layer in front of MNDe. Production sidecar mode requires bearer auth. See [Sidecar Caller Authentication](mnde-policy-engine-production-spec-v1.md).
+
+## Browser origins (CORS): deny by default
+
+The sidecar rejects any request carrying an `Origin` header that is not explicitly allowlisted (`ERR_UNAUTHORIZED_ORIGIN`), and returns CORS headers only for allowlisted origins. The allowlist is empty by default — no browser origin is trusted implicitly. To let a browser page served from another local origin call the sidecar, set:
+
+```
+MNDE_ALLOWED_ORIGINS=http://127.0.0.1:8080,http://localhost:8080
+```
+
+Non-browser callers (no `Origin` header) are unaffected. The dashboard served by the sidecar itself uses same-origin GET requests and needs no CORS configuration. Earlier builds implicitly trusted `http://127.0.0.1:8080` and `http://localhost:8080`; that implicit trust is removed — any page on those origins could previously issue cross-origin requests to the sidecar. Verified by `npm run test:dashboard`.
 
 ## What did NOT change
 

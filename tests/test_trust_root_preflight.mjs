@@ -165,10 +165,15 @@ async function main() {
     const dir = mkdtempSync(join(tmpdir(), "mnde-tr-"));
     let sc = null;
     try {
-      const env = { ...(await writeProductionCustody(dir)), MNDE_BIND_PORT: "8792" };
+      const env = {
+        ...(await writeProductionCustody(dir)),
+        MNDE_SIDECAR_AUTH: "bearer",
+        MNDE_SIDECAR_AUTH_TOKENS: JSON.stringify({ "trust-root-token": "trust-root-test-caller" }),
+        MNDE_BIND_PORT: "8792"
+      };
       sc = await startMndeSidecar({ url: "http://127.0.0.1:8792", env });
       const res = await fetch(`${sc.url}/v1/decisions`, {
-        method: "POST", headers: { "content-type": "application/json" },
+        method: "POST", headers: { "content-type": "application/json", authorization: "Bearer trust-root-token" },
         body: JSON.stringify({ schema_version: "1.0", request_id: "tr-1", timestamp: "2026-06-14T00:00:00.000Z", principal: { id: "u" }, agent: { id: "a" }, tool: { tool_name: "read_status" }, parameters: {}, environment: {}, context: {} })
       });
       const body = await res.json();

@@ -78,6 +78,25 @@ function authorityAssertion(privateKey, overrides = {}) {
   return `${payloadPart}.${signaturePart}`;
 }
 
+function tamperAssertion(assertion) {
+  const parts = assertion.split(".");
+  const sig = parts[1];
+  parts[1] = sig.slice(0, -1) + (sig.endsWith("A") ? "B" : "A");
+  return parts.join(".");
+}
+
+async function assertGenericAuthRefusal(url, path, headers = {}) {
+  const res = await fetch(`${url}${path}`, { headers });
+  assert.equal(res.status, 403);
+  const body = await res.json();
+  assert.equal(body.reason_code, "ERR_AUTH_REFUSED");
+  assert.equal(body.reason, "ERR_AUTH_REFUSED");
+  const text = JSON.stringify(body);
+  for (const leaked of ["ERR_AUTH_REQUIRED", "ERR_AUTH_ASSERTION_MALFORMED", "ERR_AUTH_SIGNATURE_INVALID", "ERR_AUTH_EXPIRED", "ERR_AUTH_REPLAY", "ERR_AUTHZ_REFUSED"]) {
+    assert.ok(!text.includes(leaked), `external response leaked ${leaked}`);
+  }
+}
+
 async function main() {
   console.log("MNDe operational dashboard (no login)\n");
 
@@ -90,6 +109,9 @@ async function main() {
       assert.equal(res.status, 200);
       contentType = res.headers.get("content-type") || "";
       assert.match(contentType, /text\/html/);
+      assert.ok((res.headers.get("content-security-policy") || "").includes("frame-ancestors 'none'"));
+      assert.equal(res.headers.get("x-content-type-options"), "nosniff");
+      assert.equal(res.headers.get("referrer-policy"), "no-referrer");
       html = await res.text();
       assert.ok(html.includes("Is routed execution protected right now?"), "headline question must be present");
     });
@@ -137,6 +159,11 @@ async function main() {
       }
     });
 
+    await test("default CORS is off: localhost origins receive no allow-origin header", async () => {
+      const res = await fetch(`${sc.url}/readyz`, { headers: { origin: "http://127.0.0.1:8080" } });
+      assert.equal(res.headers.get("access-control-allow-origin"), null);
+    });
+
     await test("decision path is unchanged — sidecar still decides and signs", async () => {
       const res = await fetch(`${sc.url}/v1/decisions`, {
         method: "POST",
@@ -150,6 +177,23 @@ async function main() {
     await sc.stop();
   }
 
+  const corsConfigured = await startMndeSidecar({ url: "http://127.0.0.1:8795", env: { MNDE_BIND_PORT: "8795", MNDE_ALLOWED_ORIGINS: "http://127.0.0.1:8080" } });
+  try {
+    await test("configured allowed origin receives CORS headers", async () => {
+      const res = await fetch(`${corsConfigured.url}/readyz`, { headers: { origin: "http://127.0.0.1:8080" } });
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get("access-control-allow-origin"), "http://127.0.0.1:8080");
+      assert.equal(res.headers.get("vary"), "Origin");
+    });
+
+    await test("unlisted origin receives no CORS allow-origin header", async () => {
+      const res = await fetch(`${corsConfigured.url}/readyz`, { headers: { origin: "http://evil.local:8080" } });
+      assert.equal(res.headers.get("access-control-allow-origin"), null);
+    });
+  } finally {
+    await corsConfigured.stop();
+  }
+
   const prodDir = mkdtempSync(join(tmpdir(), "mnde-dashboard-prod-"));
   let prod = null;
   try {
@@ -160,6 +204,8 @@ async function main() {
       url: "http://127.0.0.1:8796",
       env: {
         ...(await writeProductionCustody(prodDir)),
+        MNDE_SIDECAR_AUTH: "bearer",
+        MNDE_SIDECAR_AUTH_TOKENS: JSON.stringify({ "dashboard-prod-token": "dashboard-test-caller" }),
         MNDE_BIND_PORT: "8796",
         MNDE_AUTH_ASSERTION_PUBLIC_KEY_B64: Buffer.from(publicDer).subarray(-32).toString("base64url"),
         MNDE_AUTH_AUDIT_LOG: auditLog,
@@ -194,6 +240,18 @@ async function main() {
       assert.equal(res.status, 200);
       const body = await res.json();
       assert.equal(body.schema_version, "mnde.sidecar_identity.v1");
+    });
+
+    await test("production authority failures return uniform external auth errors", async () => {
+      await assertGenericAuthRefusal(prod.url, "/identity");
+      await assertGenericAuthRefusal(prod.url, "/identity", { "x-mnde-authority-assertion": "malformed.assertion" });
+      await assertGenericAuthRefusal(prod.url, "/identity", { "x-mnde-authority-assertion": tamperAssertion(authorityAssertion(privateKey, { capabilities: ["view_runtime"], roles: ["OPERATOR"] })) });
+      await assertGenericAuthRefusal(prod.url, "/identity", { "x-mnde-authority-assertion": authorityAssertion(privateKey, { issued_at: Date.now() - 3_000, expires_at: Date.now() - 1_000, capabilities: ["view_runtime"], roles: ["OPERATOR"] }) });
+      const replayed = authorityAssertion(privateKey, { capabilities: ["view_runtime"], roles: ["OPERATOR"] });
+      const first = await fetch(`${prod.url}/identity`, { headers: { "x-mnde-authority-assertion": replayed } });
+      assert.equal(first.status, 200);
+      await assertGenericAuthRefusal(prod.url, "/identity", { "x-mnde-authority-assertion": replayed });
+      await assertGenericAuthRefusal(prod.url, "/identity", { "x-mnde-authority-assertion": authorityAssertion(privateKey, { capabilities: ["view_dashboard"], roles: ["VIEWER"] }) });
     });
   } finally {
     if (prod) await prod.stop();

@@ -280,6 +280,33 @@ assertStartupDirectoryPermissions([
   { name: "auth audit log", dir: dirname(AUTH_AUDIT_LOG_PATH) }
 ]);
 
+// Optional, opt-in caller authentication. Default "off" (legacy-compatible).
+const {
+  authSourceForRequest,
+  authenticate,
+  clearAuthFailures,
+  isAuthThrottled,
+  loadAuthConfig,
+  recordAuthFailure
+} = await import("./src/sidecar-auth/index.mjs");
+const AUTH = loadAuthConfig(process.env);
+const AUTH_MODE = AUTH.mode;
+const AUTH_CONFIG_ERROR = AUTH.ok ? null : AUTH.reason;
+const runtimeProfileResult = parseRuntimeProfile(process.env.MNDE_PROFILE);
+if (!runtimeProfileResult.ok) {
+  process.stderr.write(`\nMNDe refused to start — ${runtimeProfileResult.detail}\n`);
+  process.exit(1);
+}
+const RUNTIME_PROFILE = runtimeProfileResult.profile;
+if (RUNTIME_PROFILE === "production" && (AUTH_MODE !== "bearer" || AUTH_CONFIG_ERROR)) {
+  process.stderr.write("\nMNDe refused to start — production sidecar mode requires MNDE_SIDECAR_AUTH=bearer with a valid bearer token configuration.\n");
+  if (AUTH_CONFIG_ERROR) process.stderr.write(`  ${AUTH_CONFIG_ERROR}\n`);
+  process.exit(1);
+}
+if (AUTH_MODE === "bearer") {
+  process.stdout.write(`MNDe caller auth: bearer${AUTH_CONFIG_ERROR ? ` (CONFIG ERROR: ${AUTH_CONFIG_ERROR})` : ` (${AUTH.tokens.size} token(s))`}\n`);
+}
+
 if (cluster.isPrimary && CLUSTER_MODE) {
   for (let i = 0; i < CLUSTER_WORKERS; i += 1) cluster.fork();
   cluster.on("exit", (worker, code) => {
@@ -292,21 +319,6 @@ if (cluster.isPrimary && CLUSTER_MODE) {
 }
 if (cluster.isPrimary && CLUSTER_MODE) {
   await new Promise(() => {});
-}
-
-// Optional, opt-in caller authentication. Default "off" (legacy-compatible).
-const { loadAuthConfig, authenticate } = await import("./src/sidecar-auth/index.mjs");
-const AUTH = loadAuthConfig(process.env);
-const AUTH_MODE = AUTH.mode;
-const AUTH_CONFIG_ERROR = AUTH.ok ? null : AUTH.reason;
-const runtimeProfileResult = parseRuntimeProfile(process.env.MNDE_PROFILE);
-if (!runtimeProfileResult.ok) {
-  process.stderr.write(`\nMNDe refused to start — ${runtimeProfileResult.detail}\n`);
-  process.exit(1);
-}
-const RUNTIME_PROFILE = runtimeProfileResult.profile;
-if (AUTH_MODE === "bearer") {
-  process.stdout.write(`MNDe caller auth: bearer${AUTH_CONFIG_ERROR ? ` (CONFIG ERROR: ${AUTH_CONFIG_ERROR})` : ` (${AUTH.tokens.size} token(s))`}\n`);
 }
 
 // Optional, opt-in decision engine. Default is "legacy" (the existing pipeline).
@@ -603,11 +615,15 @@ function authorizeProductionRead(req, res, pathname, target) {
   if (RUNTIME_PROFILE !== "production") return true;
   const authz = authorizeRequest(req, pathname, target);
   if (!authz.ok) {
-    response(res, 403, refusalBody(authz.reason, authz.actor, target));
+    response(res, 403, externalAuthRefusalBody(target));
     return false;
   }
   auditAuthority(pathname, authz, "ALLOW", target, null, null);
   return true;
+}
+
+function externalAuthRefusalBody(target = null) {
+  return refusalBody("ERR_AUTH_REFUSED", null, target);
 }
 
 // Policy-engine decision path (opt-in). Fails closed on config errors or engine
@@ -677,12 +693,20 @@ async function handleDecide(req, res) {
       response(res, 503, { schema_version: "mnde.api.response.v1", decision: "REFUSE", reason_code: "ERR_AUTH_CONFIG_INVALID", receipt: null });
       return;
     }
-    const authResult = authenticate(req.headers, AUTH);
-    if (!authResult.ok) {
+    const authSource = authSourceForRequest(req);
+    if (isAuthThrottled(authSource)) {
       counters.auth_failures = (counters.auth_failures ?? 0) + 1;
       response(res, 401, { schema_version: "mnde.api.response.v1", decision: "REFUSE", reason_code: "ERR_UNAUTHENTICATED", receipt: null });
       return;
     }
+    const authResult = authenticate(req.headers, AUTH);
+    if (!authResult.ok) {
+      counters.auth_failures = (counters.auth_failures ?? 0) + 1;
+      recordAuthFailure(authSource);
+      response(res, 401, { schema_version: "mnde.api.response.v1", decision: "REFUSE", reason_code: "ERR_UNAUTHENTICATED", receipt: null });
+      return;
+    }
+    clearAuthFailures(authSource);
     req._mndeCaller = authResult.caller;
   }
   const totalStarted = performance.now();
@@ -894,7 +918,7 @@ async function handleDecide(req, res) {
 async function handleVerify(req, res) {
   const authz = authorizeRequest(req, new URL(req.url, `http://${HOST}:${PORT}`).pathname);
   if (!authz.ok) {
-    response(res, 403, refusalBody(authz.reason, authz.actor, "receipt.verify"));
+    response(res, 403, externalAuthRefusalBody("receipt.verify"));
     return;
   }
   try {
@@ -931,8 +955,11 @@ function serveDashboard(req, res) {
     ...corsHeadersForOrigin(req.headers.origin),
     "cache-control": "no-store",
     "connection": "close",
+    "content-security-policy": "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; img-src 'self' data:; connect-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'",
     "content-length": html.byteLength,
-    "content-type": "text/html; charset=utf-8"
+    "content-type": "text/html; charset=utf-8",
+    "referrer-policy": "no-referrer",
+    "x-content-type-options": "nosniff"
   });
   res.end(html);
 }
@@ -953,7 +980,7 @@ function verifyPolicyTrust(publicKeyHex, policyDocument, signatureHex) {
 async function handlePolicyActivate(req, res) {
   const authz = authorizeRequest(req, "/policy/activate");
   if (!authz.ok) {
-    response(res, 403, refusalBody(authz.reason, authz.actor, "policy.activate"));
+    response(res, 403, externalAuthRefusalBody("policy.activate"));
     return;
   }
   try {
@@ -1185,7 +1212,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && pathname === "/replay/recent") {
     const authz = authorizeRequest(req, pathname);
     if (!authz.ok) {
-      response(res, 403, refusalBody(authz.reason, authz.actor, "replay.recent"));
+      response(res, 403, externalAuthRefusalBody("replay.recent"));
       return;
     }
     try {
@@ -1216,7 +1243,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && pathname === "/audit/bundle") {
     const authz = authorizeRequest(req, pathname);
     if (!authz.ok) {
-      response(res, 403, refusalBody(authz.reason, authz.actor, "audit.bundle"));
+      response(res, 403, externalAuthRefusalBody("audit.bundle"));
       return;
     }
     try {

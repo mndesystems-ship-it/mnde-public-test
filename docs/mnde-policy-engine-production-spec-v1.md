@@ -1294,7 +1294,7 @@ existing pipeline decides, and the policy-engine path is inactive.
 The sidecar can authenticate the caller of `/v1/decisions`, selected by
 `MNDE_SIDECAR_AUTH`:
 
-- `off` (default) — unauthenticated, legacy-compatible. Unchanged.
+- `off` (default in local mode) — unauthenticated, legacy-compatible. Production sidecar mode refuses to start in this mode.
 - `bearer` (opt-in) — requires `Authorization: Bearer <token>`. The token is
   validated against configuration only; the caller identity is the configured
   token label, and is mapped into the policy-engine `principal`.
@@ -1322,8 +1322,14 @@ an ALLOW receipt. The MCP proxy does not forward an unauthenticated call. MNDe
 controlled receipt paths are designed and tested not to write configured bearer
 tokens into receipts. Works in both legacy and policy-engine decision modes.
 
-**Caveat:** bearer tokens are for local/pilot use. Production should use stronger
-caller identity — mTLS, OIDC, or signed client assertions. Note the distinction:
+`MNDE_PROFILE=production` requires `MNDE_SIDECAR_AUTH=bearer` and a valid
+`MNDE_SIDECAR_AUTH_TOKENS` or `MNDE_SIDECAR_AUTH_TOKENS_FILE` configuration.
+Local development may remain unauthenticated.
+
+**Caveat:** MNDe does not currently provide a public login, account, password,
+password reset, MFA, browser session, or email-verification system. Private beta
+uses local sidecar access or bearer-protected machine access. Public web login
+requires a separate IdP/OIDC-backed authentication layer. Note the distinction:
 **approvals prove who approved an action; caller authentication proves who asked.**
 
 ### Authenticated proxy / executor

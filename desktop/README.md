@@ -46,7 +46,7 @@ Removed entirely: Login, Sign In, Create Account, Welcome, Get Started.
 
 ## Enterprise identity is optional and OFF by default
 
-Identity / team features — **Microsoft Entra ID, Okta, SSO, team management, centralized audit, policy distribution** — are reserved for future enterprise use and are **disabled by default**. MNDe enforces decisions and signs receipts with none of them. Sidecar caller authentication (`MNDE_SIDECAR_AUTH`) is likewise off by default; enabling it never adds a login screen to this dashboard.
+Identity / team features — **Microsoft Entra ID, Okta, SSO, team management, centralized audit, policy distribution** — are reserved for future enterprise use and are **disabled by default**. MNDe enforces decisions and signs receipts with none of them. MNDe does not currently provide a public login or account system. Private beta uses local sidecar access or bearer-protected machine access; production sidecar mode requires `MNDE_SIDECAR_AUTH=bearer`. Enabling bearer auth never adds a login screen to this dashboard.
 
 ## Guarantees preserved
 

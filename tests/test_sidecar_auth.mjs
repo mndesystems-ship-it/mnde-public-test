@@ -8,13 +8,15 @@
 // caller, and the MCP proxy does not forward an unauthenticated call.
 
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { startMndeSidecar } from "../executor/sidecar-harness.mjs";
 import { createStdioClient } from "../mcp/stdio-client.mjs";
 import { reviewerRequest } from "../scripts/reviewer-request.mjs";
+import { buildAuthorityBundle, generateAuthorityKeyPair } from "../src/custody/index.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const samplePolicy = join(repoRoot, "examples", "policy-engine", "sample-policy.json");
@@ -38,6 +40,45 @@ async function post(url, body, headers = {}) {
 }
 function peReq(tool, extra = {}) {
   return { schema_version: "1.0", request_id: `req-${tool}`, timestamp: new Date().toISOString(), principal: { id: "from-body" }, agent: { id: "a" }, tool: { tool_name: tool }, parameters: {}, environment: {}, context: {}, ...extra };
+}
+
+async function writeProductionCustody(dir) {
+  const root = { keyId: "prod-root", ...generateAuthorityKeyPair() };
+  const receipt = { keyId: "prod-receipt-1", ...generateAuthorityKeyPair() };
+  const bundle = await buildAuthorityBundle({
+    authorityId: "acme-prod-auth",
+    issuedAt: "2026-06-14T00:00:00.000Z",
+    notAfter: "2099-01-01T00:00:00.000Z",
+    root,
+    receiptKeys: [{ keyId: receipt.keyId, publicPem: receipt.publicPem, validFrom: "2020-01-01T00:00:00.000Z", validUntil: "2099-01-01T00:00:00.000Z" }]
+  });
+  const bundlePath = join(dir, "authority.bundle.json");
+  const keyPath = join(dir, "receipt.key.pem");
+  writeFileSync(bundlePath, JSON.stringify(bundle), "utf8");
+  writeFileSync(keyPath, receipt.privatePem, "utf8");
+  return {
+    MNDE_PROFILE: "production",
+    MNDE_RECEIPT_SIGNING_MODE: "custody",
+    MNDE_KEY_CUSTODY: "file-backed-production",
+    MNDE_AUTHORITY_BUNDLE: bundlePath,
+    MNDE_RECEIPT_SIGNING_KEY: keyPath,
+    MNDE_RECEIPT_KEY_ID: receipt.keyId
+  };
+}
+
+async function expectSidecarStartFailure(options, pattern) {
+  let started = null;
+  let caught = null;
+  try {
+    started = await startMndeSidecar(options);
+  } catch (error) {
+    caught = error;
+  } finally {
+    if (started) await started.stop();
+  }
+  assert.equal(started, null, "sidecar should not have started");
+  assert.ok(caught, "startup should fail");
+  assert.match(String(caught.message), pattern);
 }
 
 async function main() {
@@ -123,6 +164,59 @@ async function main() {
     });
   } finally {
     await pe.stop();
+  }
+
+  await test("bearer: repeated bad tokens throttle the source with uniform failure", async () => {
+    const throttled = await startMndeSidecar({ url: "http://127.0.0.1:8800", env: { MNDE_SIDECAR_AUTH: "bearer", MNDE_SIDECAR_AUTH_TOKENS: TOKENS_JSON, MNDE_BIND_PORT: "8800" } });
+    try {
+      for (let i = 0; i < 5; i += 1) {
+        const { status, body } = await post(throttled.url, reviewerRequest({ requestId: `bad-${i}`, tool: "read_status" }), { authorization: "Bearer wrong-token" });
+        assert.equal(status, 401);
+        assert.equal(body.reason_code, "ERR_UNAUTHENTICATED");
+        assert.equal(body.receipt ?? null, null);
+      }
+      const { status, body } = await post(throttled.url, reviewerRequest({ requestId: "valid-after-throttle", tool: "read_status" }), { authorization: `Bearer ${TOKEN}` });
+      assert.equal(status, 401);
+      assert.equal(body.reason_code, "ERR_UNAUTHENTICATED");
+      assert.equal(body.receipt ?? null, null);
+    } finally {
+      await throttled.stop();
+    }
+  });
+
+  const prodNoAuthDir = mkdtempSync(join(tmpdir(), "mnde-auth-prod-noauth-"));
+  try {
+    await test("production with auth off refuses startup", async () => {
+      await expectSidecarStartFailure({
+        url: "http://127.0.0.1:8801",
+        env: { ...(await writeProductionCustody(prodNoAuthDir)), MNDE_BIND_PORT: "8801" }
+      }, /MNDE_SIDECAR_AUTH=bearer/);
+    });
+  } finally {
+    rmSync(prodNoAuthDir, { recursive: true, force: true });
+  }
+
+  const prodBearerDir = mkdtempSync(join(tmpdir(), "mnde-auth-prod-bearer-"));
+  let prodBearer = null;
+  try {
+    await test("production with bearer auth and token config starts", async () => {
+      prodBearer = await startMndeSidecar({
+        url: "http://127.0.0.1:8802",
+        env: { ...(await writeProductionCustody(prodBearerDir)), MNDE_SIDECAR_AUTH: "bearer", MNDE_SIDECAR_AUTH_TOKENS: TOKENS_JSON, MNDE_BIND_PORT: "8802" }
+      });
+      const res = await fetch(`${prodBearer.url}/readyz`);
+      assert.equal(res.status, 200);
+    });
+
+    await test("production /v1/decisions refuses requests without Authorization", async () => {
+      const { status, body } = await post(prodBearer.url, reviewerRequest({ requestId: "prod-missing-auth", tool: "read_status" }));
+      assert.equal(status, 401);
+      assert.equal(body.reason_code, "ERR_UNAUTHENTICATED");
+      assert.equal(body.receipt ?? null, null);
+    });
+  } finally {
+    if (prodBearer) await prodBearer.stop();
+    rmSync(prodBearerDir, { recursive: true, force: true });
   }
 
   const failed = results.filter((ok) => !ok).length;

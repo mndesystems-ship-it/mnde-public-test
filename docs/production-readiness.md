@@ -47,7 +47,7 @@ Production deployments require a stable published authority bundle distributed t
 MNDe will not enter live enforcement while signing with development keys. A deterministic pre-flight (`src/authority-signing/preflight.mjs`) runs once before the decision server accepts traffic:
 
 - `MNDE_PROFILE` unset or `local` (default): demo/local mode — legacy signing or `local-demo` custody allowed; behavior unchanged; custody is not loaded.
-- `MNDE_PROFILE=production`: MNDe **refuses to start** unless `MNDE_RECEIPT_SIGNING_MODE=custody`, `MNDE_KEY_CUSTODY=file-backed-production`, a valid published authority bundle + signing key are configured, and no demo/dev key material is detected. Failures are fail-closed with distinct `ERR_TRUST_ROOT_*` reason codes and an actionable message; there is no automatic downgrade to legacy/dev-key signing.
+- `MNDE_PROFILE=production`: MNDe **refuses to start** unless `MNDE_RECEIPT_SIGNING_MODE=custody`, `MNDE_KEY_CUSTODY=file-backed-production`, a valid published authority bundle + signing key are configured, no demo/dev key material is detected, and `MNDE_SIDECAR_AUTH=bearer` has a valid bearer token configuration. Failures are fail-closed with distinct trust-root reason codes or a production auth startup refusal; there is no automatic downgrade to legacy/dev-key signing or unauthenticated production decisions.
 
 Required production environment and reason codes are documented in [Key Custody](key-custody.md). Verified by `npm run test:trust-root`.
 
@@ -113,6 +113,8 @@ Production use should define:
 - audit logging for administrative actions
 
 The public tester may use local test identity and local authority material. That is not a production authentication model.
+
+MNDe does not currently provide a public login, account, password, password reset, MFA, browser session, or email-verification system. Private beta deployments use local sidecar access or bearer-protected machine access. Public web login requires a separate IdP/OIDC-backed authentication layer before exposing MNDe through a web product.
 
 ## Key Rotation Approach
 

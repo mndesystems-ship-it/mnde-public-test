@@ -1,16 +1,16 @@
-export const ALLOWED_CORS_ORIGINS = new Set([
-  "http://127.0.0.1:8080",
-  "http://localhost:8080"
-]);
-
 export const ERR_UNAUTHORIZED_ORIGIN = "ERR_UNAUTHORIZED_ORIGIN";
 
+export function allowedCorsOrigins(env = process.env) {
+  const raw = env.MNDE_ALLOWED_ORIGINS ?? "";
+  return new Set(raw.split(/[\s,]+/).map((origin) => origin.trim()).filter(Boolean));
+}
+
 export function isAllowedCorsOrigin(origin) {
-  return origin === undefined || origin === null || origin === "" || ALLOWED_CORS_ORIGINS.has(origin);
+  return origin === undefined || origin === null || origin === "" || allowedCorsOrigins().has(origin);
 }
 
 export function corsHeadersForOrigin(origin) {
-  if (!origin || !ALLOWED_CORS_ORIGINS.has(origin)) return {};
+  if (!origin || !allowedCorsOrigins().has(origin)) return {};
   return {
     "access-control-allow-origin": origin,
     "vary": "Origin"
