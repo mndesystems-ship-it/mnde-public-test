@@ -60,7 +60,9 @@ const validAuthorities = [
     authority_id: "tmp_file_delete_authority",
     issued_to: "user_123",
     valid_from: "2026-06-01T00:00:00Z",
-    valid_until: "2026-07-01T00:00:00Z"
+    valid_until: "2026-07-01T00:00:00Z",
+    // Bound authority statement: valid only for this subject and action.
+    scope: { subject: "user_123", tool_name: "delete_file" }
   }
 ];
 

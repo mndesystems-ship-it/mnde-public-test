@@ -61,7 +61,10 @@ function basePolicy() {
   };
 }
 function grant(overrides = {}) {
-  return { authority_id: "grant-deploy", valid_from: "2026-01-01T00:00:00.000Z", valid_until: "2026-12-31T00:00:00.000Z", ...overrides };
+  // A grant is a BOUND authority statement: it names the subject and action it is
+  // valid for (see grantScopeReason in the policy engine). Bound to alice/deploy
+  // to match request().
+  return { authority_id: "grant-deploy", valid_from: "2026-01-01T00:00:00.000Z", valid_until: "2026-12-31T00:00:00.000Z", scope: { subject: "alice", tool_name: "deploy" }, ...overrides };
 }
 
 test("unsigned policy is refused when trust anchors are required", () => {

@@ -245,20 +245,91 @@ function evaluateExpression(expr, request, depth = 0, maxDepth = 8) {
   return evaluateLeaf(expr, request);
 }
 
-function authorityStatus(requiredIds, authorities, now, rejectedById = {}) {
+function identityId(identity) {
+  if (typeof identity === "string") return identity.length > 0 ? identity : null;
+  return isPlainObject(identity) && typeof identity.id === "string" && identity.id.length > 0 ? identity.id : null;
+}
+
+function principalId(request) {
+  const principal = isPlainObject(request?.principal) ? request.principal : {};
+  if (typeof principal.id === "string" && principal.id.length > 0) return principal.id;
+  if (typeof principal.principal_id === "string" && principal.principal_id.length > 0) return principal.principal_id;
+  return null;
+}
+
+function requestTenant(request) {
+  const principal = isPlainObject(request?.principal) ? request.principal : {};
+  return typeof principal.tenant_id === "string" && principal.tenant_id.length > 0 ? principal.tenant_id : null;
+}
+
+// Deterministic authority-grant binding. A signed grant is NOT a bearer token: it
+// only satisfies an authority requirement for the exact subject, tenant, tool,
+// resource, and request it is bound to (all carried inside the signed grant.scope,
+// so they cannot be altered without breaking the signature). A grant missing a
+// required binding (subject, tool) is UNBOUND and can never satisfy a requirement.
+// This mirrors the authenticated-approval scope model (authenticated-approvals.mjs)
+// so the same replay resistance applies to authority grants. Nonce single-use is
+// enforced at the stateful sidecar layer, because a pure, deterministically
+// replayable function cannot consume a nonce; see grant-nonce-store.mjs.
+export function grantScopeReason(grant, request) {
+  const scope = isPlainObject(grant?.scope) ? grant.scope : null;
+  if (!scope) return "AUTHORITY_UNBOUND";
+
+  const subject = identityId(scope.subject ?? scope.principal);
+  if (!subject) return "AUTHORITY_UNBOUND";
+  if (subject !== principalId(request)) return "AUTHORITY_SUBJECT_MISMATCH";
+
+  const tool = typeof scope.tool_name === "string" ? scope.tool_name : (typeof scope.tool === "string" ? scope.tool : null);
+  if (!tool) return "AUTHORITY_UNBOUND";
+  if (tool !== "*" && tool !== request?.tool?.tool_name) return "AUTHORITY_TOOL_MISMATCH";
+
+  const grantTenant = typeof scope.tenant === "string" ? scope.tenant : null;
+  const reqTenant = requestTenant(request);
+  if (grantTenant !== null) {
+    if (grantTenant !== reqTenant) return "AUTHORITY_TENANT_MISMATCH";
+  } else if (reqTenant !== null) {
+    // A tenant-scoped request must be satisfied by a tenant-bound grant; a
+    // tenant-less grant cannot be reused inside a tenant context.
+    return "AUTHORITY_TENANT_MISMATCH";
+  }
+
+  if (typeof scope.resource === "string" && scope.resource !== "*") {
+    const reqResource = isPlainObject(request?.parameters) && typeof request.parameters.resource === "string" ? request.parameters.resource : null;
+    if (scope.resource !== reqResource) return "AUTHORITY_RESOURCE_MISMATCH";
+  }
+
+  if (typeof scope.request_id === "string" && scope.request_id !== request?.request_id) {
+    return "AUTHORITY_REQUEST_MISMATCH";
+  }
+
+  return null;
+}
+
+function authorityTimeReason(authority, now) {
+  if (!isValidTimestamp(authority?.valid_from) || !isValidTimestamp(authority?.valid_until) || !isValidTimestamp(now)) return "AUTHORITY_EXPIRED";
+  if (Date.parse(authority.valid_until) <= Date.parse(now)) return "AUTHORITY_EXPIRED";
+  if (Date.parse(authority.valid_from) > Date.parse(now)) return "AUTHORITY_EXPIRED";
+  return null;
+}
+
+function authorityStatus(requiredIds, authorities, now, request, rejectedById = {}) {
   if (!Array.isArray(requiredIds) || requiredIds.length === 0) return { ok: true };
   for (const id of requiredIds) {
-    const authority = authorities.find((candidate) => candidate?.authority_id === id);
-    if (!authority) return { ok: false, reason: rejectedById[id] ?? "AUTHORITY_REQUIRED" };
-    if (!isValidTimestamp(authority.valid_from) || !isValidTimestamp(authority.valid_until) || !isValidTimestamp(now)) {
-      return { ok: false, reason: "AUTHORITY_EXPIRED" };
+    const candidates = authorities.filter((candidate) => candidate?.authority_id === id);
+    if (candidates.length === 0) return { ok: false, reason: rejectedById[id] ?? "AUTHORITY_REQUIRED" };
+    // A requirement is satisfied only if SOME grant for this id is both in-window
+    // and bound to this exact request. Report the most specific failure otherwise.
+    let reason = null;
+    let matched = false;
+    for (const authority of candidates) {
+      const timeReason = authorityTimeReason(authority, now);
+      if (timeReason) { reason = timeReason; continue; }
+      const bindingReason = grantScopeReason(authority, request);
+      if (bindingReason) { reason = bindingReason; continue; }
+      matched = true;
+      break;
     }
-    if (Date.parse(authority.valid_until) <= Date.parse(now)) {
-      return { ok: false, reason: "AUTHORITY_EXPIRED" };
-    }
-    if (Date.parse(authority.valid_from) > Date.parse(now)) {
-      return { ok: false, reason: "AUTHORITY_EXPIRED" };
-    }
+    if (!matched) return { ok: false, reason: reason ?? "AUTHORITY_REQUIRED" };
   }
   return { ok: true };
 }
@@ -347,7 +418,7 @@ export function evaluatePolicyRequest(request, policy, options = {}) {
 
     let lastFailure = null;
     for (const rule of allowRules) {
-      const authority = authorityStatus(rule.authority_required, effectiveAuthorities, now, rejectedById);
+      const authority = authorityStatus(rule.authority_required, effectiveAuthorities, now, request, rejectedById);
       if (!authority.ok) { lastFailure = authority.reason; continue; }
       const approval = approvalStatusForRule(rule);
       if (!approval.ok) { lastFailure = approval.reason; continue; }

@@ -14,6 +14,7 @@ Onboarding must never weaken:
 - policy hashing
 - replay verification
 - trust-anchored authority verification
+- authority-grant binding (a signed grant is valid only for its bound subject, tenant, tool, resource, and request; see the binding invariant in `mnde-policy-engine-production-spec-v1.md`)
 - fail-closed behavior
 - refusal reasons
 - offline verification

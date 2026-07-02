@@ -125,7 +125,9 @@ function authorityGrant(f) {
   return signAuthorityGrant({
     authority_id: "tmp_file_delete_authority",
     valid_from: "2026-01-01T00:00:00.000Z",
-    valid_until: "2026-12-31T00:00:00.000Z"
+    valid_until: "2026-12-31T00:00:00.000Z",
+    // Bound to the operator principal and delete_file action of deleteRequest().
+    scope: { subject: "operator", tool_name: "delete_file" }
   }, { keyId: f.approvalKey.keyId, privateKeyPem: f.approvalKey.privatePem });
 }
 

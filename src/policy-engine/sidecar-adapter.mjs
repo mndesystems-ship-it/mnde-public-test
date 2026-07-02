@@ -11,6 +11,8 @@
 import { readFileSync } from "node:fs";
 
 import { buildPolicyReceipt } from "./receipt.mjs";
+import { grantScopeReason } from "./index.mjs";
+import { reserveGrantNonce } from "./grant-nonce-store.mjs";
 import { loadSignedPolicyBundleConfig } from "../policy-bundles/index.mjs";
 import { parseRuntimeProfile } from "../../shared/runtime-profile.mjs";
 import { DEFAULT_DENY_POLICY, POLICY_CONFIGURATION_STATE_NO_POLICY, POLICY_SOURCE_BUILTIN } from "./default-deny.mjs";
@@ -45,6 +47,10 @@ export function loadPolicyEngineConfig(env) {
   const profileResult = parseRuntimeProfile(env.MNDE_PROFILE);
   if (!profileResult.ok) return { ok: false, reason: profileResult.detail };
   const production = profileResult.profile === "production";
+  // Optional cross-process store for grant nonce single-use. When unset, nonce
+  // single-use is enforced in-process only (dev/test); production deployments
+  // should set MNDE_PE_GRANT_NONCE_DIR to a durable, shared path.
+  const grantNonceDir = typeof env.MNDE_PE_GRANT_NONCE_DIR === "string" && env.MNDE_PE_GRANT_NONCE_DIR.length > 0 ? env.MNDE_PE_GRANT_NONCE_DIR : null;
   // Signed bundles are opt-in. The legacy MNDE_PE_POLICY path stays unchanged
   // unless an operator explicitly supplies a bundle path.
   if (env.MNDE_PE_POLICY_BUNDLE) {
@@ -59,7 +65,8 @@ export function loadPolicyEngineConfig(env) {
       signedPolicyBundle: signed.signedPolicyBundle,
       policyBundleProvenance: signed.policyBundleProvenance,
       trustAnchors: trustConfig.trustAnchors,
-      approvalTrustAnchors: trustConfig.approvalTrustAnchors
+      approvalTrustAnchors: trustConfig.approvalTrustAnchors,
+      grantNonceDir
     };
   }
   if (production) return { ok: false, reason: "ERR_PE_PRODUCTION_REQUIRES_SIGNED_POLICY_BUNDLE" };
@@ -79,7 +86,8 @@ export function loadPolicyEngineConfig(env) {
       policy_source: POLICY_SOURCE_BUILTIN,
       policy_configuration_state: POLICY_CONFIGURATION_STATE_NO_POLICY,
       trustAnchors: trustConfig.trustAnchors,
-      approvalTrustAnchors: trustConfig.approvalTrustAnchors
+      approvalTrustAnchors: trustConfig.approvalTrustAnchors,
+      grantNonceDir
     };
   }
   let policy;
@@ -90,7 +98,7 @@ export function loadPolicyEngineConfig(env) {
   }
   const trustConfig = loadOptionalTrustConfig(env);
   if (!trustConfig.ok) return trustConfig;
-  return { ok: true, production, policy, trustAnchors: trustConfig.trustAnchors, approvalTrustAnchors: trustConfig.approvalTrustAnchors };
+  return { ok: true, production, policy, trustAnchors: trustConfig.trustAnchors, approvalTrustAnchors: trustConfig.approvalTrustAnchors, grantNonceDir };
 }
 
 // Accept either a native policy-engine request or the legacy decision envelope.
@@ -124,15 +132,40 @@ export function decidePolicyEngine(body, config, options = {}) {
   // Signed artifacts attached to the request. Anchors are config-only (above).
   const authorities = Array.isArray(body?.mnde_authorities) ? body.mnde_authorities : (Array.isArray(body?.authorities) ? body.authorities : []);
   const approvals = Array.isArray(body?.mnde_approvals) ? body.mnde_approvals : (Array.isArray(body?.approvals) ? body.approvals : []);
-  const receipt = buildPolicyReceipt(request, config.policy, {
-    authorities,
+  const receiptOptions = {
     trustAnchors: config.trustAnchors,
     rejectLegacyAuthorities: config.production,
     approvals,
     approvalTrustAnchors: config.approvalTrustAnchors,
     policyBundleProvenance: config.policyBundleProvenance,
     now
-  });
+  };
+  const receipt = buildPolicyReceipt(request, config.policy, { ...receiptOptions, authorities });
+
+  // Runtime single-use enforcement for nonce-bearing grants. The engine has
+  // already bound each grant to this exact request (subject/tenant/tool/resource/
+  // request_id); here we additionally guarantee a nonce-bearing grant cannot be
+  // used twice. Only grants that actually bound to this request are consumed. On
+  // reuse we REBUILD the decision with the reused grants removed, so the emitted
+  // REFUSE receipt is fully reproducible offline (its embedded authorities no
+  // longer include the consumed grant). This keeps nonce state OUT of the
+  // deterministic receipt while still failing replay closed.
+  if (receipt.decision_output.decision === "ALLOW") {
+    const nonceMs = Number.isNaN(Date.parse(now)) ? Date.now() : Date.parse(now);
+    const reused = new Set();
+    for (const grant of authorities) {
+      if (!grant || typeof grant.nonce !== "string") continue;
+      if (grantScopeReason(grant, request) !== null) continue; // did not bind to this request
+      const reservation = reserveGrantNonce(grant.nonce, { dir: config.grantNonceDir, now: nonceMs });
+      if (!reservation.ok) reused.add(grant);
+    }
+    if (reused.size > 0) {
+      const remaining = authorities.filter((grant) => !reused.has(grant));
+      const refused = buildPolicyReceipt(request, config.policy, { ...receiptOptions, authorities: remaining });
+      return { decision: refused.decision_output.decision, reason_code: "AUTHORITY_NONCE_REUSED", receipt: refused };
+    }
+  }
+
   return {
     decision: receipt.decision_output.decision,
     reason_code: receipt.decision_output.reason_code,

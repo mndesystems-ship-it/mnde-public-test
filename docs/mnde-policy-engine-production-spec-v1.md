@@ -591,6 +591,43 @@ REFUSE
 AUTHORITY_SIGNATURE_INVALID
 ```
 
+### Binding invariant (enforced)
+
+**A signed authority grant is not a bearer token.** A grant that is validly signed
+and in-window satisfies an `authority_required` entry *only* when it is bound to
+the exact request being decided. Binding is carried inside the signed `scope`
+object (and an optional top-level `nonce`), so it cannot be altered without
+breaking the signature. The engine enforces, in order:
+
+| Binding | Grant field | Rule | Reason on mismatch |
+|---|---|---|---|
+| Subject | `scope.subject` (or `scope.principal`) | required; must equal `principal.id` (falls back to `principal.principal_id`) | `AUTHORITY_SUBJECT_MISMATCH` (missing → `AUTHORITY_UNBOUND`) |
+| Tool / action | `scope.tool_name` (or `scope.tool`) | required; must equal `tool.tool_name` or be `"*"` | `AUTHORITY_TOOL_MISMATCH` (missing → `AUTHORITY_UNBOUND`) |
+| Tenant | `scope.tenant` | if present must equal `principal.tenant_id`; a tenant-scoped request cannot be satisfied by a tenant-less grant | `AUTHORITY_TENANT_MISMATCH` |
+| Resource | `scope.resource` | if present must equal `parameters.resource` or be `"*"` | `AUTHORITY_RESOURCE_MISMATCH` |
+| Request (one-shot) | `scope.request_id` | if present must equal `request_id` | `AUTHORITY_REQUEST_MISMATCH` |
+| Replay (single-use) | `nonce` | consumed once at the sidecar; a second use is refused | `AUTHORITY_NONCE_REUSED` |
+
+Subject and tool are **mandatory**: a grant that omits them is `AUTHORITY_UNBOUND`
+and can never satisfy a requirement. This closes cross-principal / cross-tenant /
+cross-tool / cross-resource / cross-request replay of a stolen grant (grants are
+disclosed inside every receipt, so they must not be reusable).
+
+Subject/tenant/tool/resource/request bindings are **deterministic** and are
+re-checked during offline receipt verification and replay. Nonce single-use is a
+**runtime** layer (a pure, replayable function cannot consume a nonce); it is
+enforced at the sidecar via `src/policy-engine/grant-nonce-store.mjs`, backed by
+`MNDE_PE_GRANT_NONCE_DIR` for cross-process durability. A nonce-reuse refusal
+rebuilds the decision without the consumed grant, so the emitted REFUSE receipt
+still verifies offline.
+
+**Compatibility:** grants issued before this invariant carried no `scope` and are
+now `AUTHORITY_UNBOUND` — they no longer satisfy authority requirements, and any
+prior ALLOW receipt that depended on an unbound grant will replay as REFUSE (fail
+closed). Re-issue grants with a bound `scope`. The `issued_to` field and the
+array-shaped `scope.tools`/`environments`/`regions` shown above remain
+informational and are **not** yet enforced (tracked for V1.1).
+
 ## Authority Chain
 
 Authority chain example:

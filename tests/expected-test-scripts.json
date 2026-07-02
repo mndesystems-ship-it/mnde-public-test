@@ -1,6 +1,7 @@
 [
   "test:approvals",
   "test:auth",
+  "test:authority-binding",
   "test:authority-init",
   "test:ci-contract",
   "test:conformance",

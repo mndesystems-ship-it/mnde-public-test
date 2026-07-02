@@ -281,6 +281,7 @@ See [docs/feedback-workflow.md](docs/feedback-workflow.md).
 - The bundled decision policy is small and illustrative: a denylist of patterns plus cost and runtime-drift checks, and a deny-by-default list for the shell example. It is not a complete policy for any specific deployment. See [docs/production-readiness.md](docs/production-readiness.md).
 - The manual-approval threshold and the shell `APPROVAL_REQUIRED` decision are gated on a request field (`hold_state`) supplied by the caller. There is no authenticated approver binding yet.
 - The `orbit_intent.signatures` field is shape-validated but not cryptographically verified.
+- Authority grants are **bound** authority statements, not bearer tokens: a signed, in-window grant satisfies a rule's `authority_required` only for the subject, tenant, tool, resource, and request encoded in its signed `scope` (nonce-bearing grants are additionally single-use). Grants issued before this change carried no `scope` and are now rejected as `AUTHORITY_UNBOUND`; re-issue them with a bound scope. See the binding invariant in [docs/mnde-policy-engine-production-spec-v1.md](docs/mnde-policy-engine-production-spec-v1.md).
 - Verification in this repository chains to a locally generated test authority. A published authority bundle for use outside this repository does not exist yet.
 - Enforcement is cooperative: MNDe evaluates an action only when the caller routes it through MNDe (executor, MCP server, or proxy). It is not OS-level and does not stop a process that bypasses it.
 

@@ -35,6 +35,7 @@
     "test:approvals": "node ./tests/test_authenticated_approvals.mjs",
     "test:sidecar-pe": "node ./tests/test_sidecar_pe_mode.mjs",
     "test:auth": "node ./tests/test_sidecar_auth.mjs",
+    "test:authority-binding": "node ./tests/test_authority_binding.mjs",
     "test:proxy-auth": "node ./tests/test_proxy_auth.mjs",
     "test:custody": "node ./tests/test_custody.mjs",
     "test:engine-default": "node ./tests/test_engine_default.mjs",
