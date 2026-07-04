@@ -1398,6 +1398,25 @@ server.listen(PORT, HOST, L0_LIMITS.enable ? L0_LIMITS.backlog : Number.parseInt
   socketRegistry.start();
   watchdog.start();
   process.stdout.write(`MNDe local sidecar listening on http://${HOST}:${PORT} worker=${cluster.worker?.id ?? 0} durability=${RECEIPT_QUEUE_CONFIG.durability_mode}\n`);
+  // One-time development-mode warning: a non-production profile with caller
+  // authentication off serves unauthenticated decisions over HTTP. Printed once
+  // at startup (first worker only under cluster mode), on stderr like other
+  // warnings; never repeated at request time. Production cannot reach this
+  // state — the posture pre-flight requires caller auth before listen.
+  if (RUNTIME_PROFILE !== "production" && AUTH_MODE === "off" && (cluster.worker?.id ?? 0) <= 1) {
+    process.stderr.write([
+      "",
+      "!! WARNING: MNDe caller authentication is DISABLED (development default).",
+      "!! This sidecar accepts unauthenticated decision requests over HTTP from",
+      "!! any process that can reach it.",
+      "!!   - Intended for local development and testing only.",
+      "!!   - Do not expose this instance to other machines or the Internet.",
+      "!!   - Production requires authenticated access: MNDE_PROFILE=production",
+      "!!     with MNDE_SIDECAR_AUTH=bearer and configured tokens.",
+      "",
+      ""
+    ].join("\n"));
+  }
 });
 
 function recordTimings(timings) {

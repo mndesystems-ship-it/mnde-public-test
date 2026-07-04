@@ -152,6 +152,34 @@ async function main() {
     assert.match(handle.out(), /Stopped\./);
   });
 
+  const AUTH_WARNING = "WARNING: MNDe caller authentication is DISABLED";
+
+  await test("7. local profile without auth prints the development warning exactly once", async () => {
+    const handle = runLauncher({ MNDE_BIND_PORT: "8816" });
+    try {
+      await waitForOutput(handle.out, "Status: READY");
+      await waitForOutput(handle.err, AUTH_WARNING, 5_000);
+      const occurrences = handle.err().split(AUTH_WARNING).length - 1;
+      assert.equal(occurrences, 1, "warning must appear exactly once at startup");
+    } finally {
+      await stopLauncher(handle);
+    }
+  });
+
+  await test("8. local profile with bearer auth enabled prints no warning", async () => {
+    const handle = runLauncher({
+      MNDE_BIND_PORT: "8817",
+      MNDE_SIDECAR_AUTH: "bearer",
+      MNDE_SIDECAR_AUTH_TOKENS: JSON.stringify({ "launcher-test-token": "launcher-caller" })
+    });
+    try {
+      await waitForOutput(handle.out, "Status: READY");
+      assert.ok(!handle.err().includes(AUTH_WARNING), "warning must not appear when caller auth is enabled");
+    } finally {
+      await stopLauncher(handle);
+    }
+  });
+
   const failed = results.filter((ok) => !ok).length;
   console.log("");
   if (failed > 0) {

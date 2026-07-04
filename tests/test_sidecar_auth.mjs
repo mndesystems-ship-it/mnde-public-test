@@ -264,6 +264,12 @@ async function main() {
       assert.equal(body.reason_code, "ERR_AUTHZ_REFUSED");
     });
 
+    await test("production: no development-mode auth warning on startup", async () => {
+      // Startup already succeeded (the harness waited for readiness). The
+      // development warning must never appear in a production boot.
+      assert.ok(!prod.getStderr().includes("WARNING: MNDe caller authentication is DISABLED"));
+    });
+
     await test("production: /readyz reports readiness without operational metadata", async () => {
       const res = await fetch(`${prod.url}/readyz`);
       assert.equal(res.status, 200, "/readyz must stay open for readiness probes");
