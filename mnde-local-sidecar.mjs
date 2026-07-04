@@ -610,6 +610,7 @@ function isDecisionRoute(pathname) {
 function authorityActionName(pathname) {
   if (pathname === "/policy/activate") return "policy.activate";
   if (pathname === "/audit/bundle") return "audit.bundle";
+  if (pathname === "/replay") return "replay.decision";
   if (pathname === "/replay/recent") return "replay.recent";
   if (pathname === "/receipts/verify" || pathname === "/verify") return "receipt.verify";
   return pathname;
@@ -1247,6 +1248,10 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (req.method === "POST" && pathname === "/replay") {
+    // Production requires an authority assertion with replay_decisions (same
+    // authorization model as /replay/recent, production-scoped so the local
+    // reviewer-kit/demo replay flow is unchanged). Nonce single-use applies.
+    if (!authorizeProductionRead(req, res, pathname, "replay.decision")) return;
     await handleReplay(req, res);
     return;
   }

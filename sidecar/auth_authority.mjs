@@ -19,6 +19,7 @@ const SENSITIVE_PATHS = new Map([
   ["/receipts/recent", "inspect_receipts"],
   ["/policy/activate", "activate_policy"],
   ["/audit/bundle", "export_audit"],
+  ["/replay", "replay_decisions"],
   ["/replay/recent", "replay_decisions"],
   ["/receipts/verify", "verify_receipts"],
   ["/verify", "verify_receipts"],
