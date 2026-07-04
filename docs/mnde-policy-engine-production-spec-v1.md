@@ -21,7 +21,7 @@ Current implementation slice:
 - basic decision hash
 - first authority checks for required and expired authority
 
-Current implementation does not yet include signed policy verification, authority signature verification, revocation checking, threshold signer enforcement, simulation mode, lockdown mode, or full production conformance vectors.
+Current implementation does not yet include signed policy verification, authority signature verification, revocation checking, threshold signer enforcement, simulation mode, lockdown mode, the extended operator set, or full production conformance vectors. The implemented operator set is `eq`, `neq`, `contains`, `prefix`, `path_prefix`, `exists`, and `missing` (see [Supported Operators](#supported-operators)); every other operator, policy state, and mode named in this specification is a production target, not current behavior.
 
 ## Purpose
 
@@ -335,6 +335,8 @@ Allowed states:
 
 Only `ACTIVE` and `LOCKDOWN` evaluate.
 
+**Implemented in current V1:** only `ACTIVE`. The current engine accepts `ACTIVE` policies; any other state value returns `REFUSE` / `INVALID_POLICY`. **Planned, not implemented in current V1:** the `DRAFT`, `REVOKED`, `EXPIRED`, and `LOCKDOWN` states and their state-specific reason codes below.
+
 `DRAFT` returns:
 
 ```text
@@ -357,6 +359,8 @@ POLICY_EXPIRED
 ```
 
 ## Lockdown State
+
+**Planned, not implemented in current V1.** The current engine does not implement the `LOCKDOWN` state; a policy in this state is rejected with `REFUSE` / `INVALID_POLICY`. The behavior below is the production target.
 
 `LOCKDOWN` is an emergency mode.
 
@@ -473,17 +477,36 @@ POLICY_LIMIT_EXCEEDED
 
 ## Supported Operators
 
+### Implemented in current V1
+
+These operators are implemented in `src/policy-engine/index.mjs` and are the only operators accepted today. Any other operator returns `REFUSE` / `INVALID_POLICY`.
+
+- `eq` — strict equality
+- `neq` — strict inequality
+- `contains` — array membership (attribute value is an array containing the operand)
+- `prefix` — string prefix
+- `path_prefix` — normalized path-prefix containment
+- `exists` — attribute is present
+- `missing` — attribute is absent
+
+Unsupported operator returns:
+
+```text
+REFUSE
+INVALID_POLICY
+```
+
+### Planned, not implemented in current V1
+
+The following operators are production targets. They are not present in the engine today and a policy that uses one is rejected with `REFUSE` / `INVALID_POLICY`.
+
 String operators:
 
-- `eq`
-- `neq`
-- `prefix`
 - `suffix`
 - `contains_string`
 
 Array operators:
 
-- `contains`
 - `contains_all`
 - `contains_any`
 
@@ -493,7 +516,6 @@ Numeric operators:
 - `lte`
 - `gt`
 - `gte`
-- `eq`
 
 Time operators:
 
@@ -503,21 +525,8 @@ Time operators:
 
 Path operators:
 
-- `path_prefix`
 - `path_exact`
 - `path_denied_prefix`
-
-Existence operators:
-
-- `exists`
-- `missing`
-
-Unsupported operator returns:
-
-```text
-REFUSE
-INVALID_POLICY
-```
 
 ## Conflict Resolution
 
@@ -806,6 +815,8 @@ Signature envelope:
 
 Policy activation requires valid signatures.
 
+**Threshold signer enforcement is planned, not implemented in current V1.** The current engine does not enforce a multi-signer signature threshold; the threshold examples and the `POLICY_SIGNATURE_THRESHOLD_NOT_MET` reason code below are a production target.
+
 Threshold examples:
 
 - 1 of 1
@@ -994,6 +1005,8 @@ LIMIT_EXCEEDED
 ```
 
 ## Policy Simulation
+
+**Planned, not implemented in current V1.** The current engine does not provide a simulation mode. The behavior below is the production target.
 
 Simulation evaluates without execution.
 

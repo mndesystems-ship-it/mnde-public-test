@@ -16,6 +16,5 @@ Start here:
 
 Release and safety review:
 
-- `release-891ceda-onboarding.md`
 - `release-checklist.md`
 - `security-review-checklist.md`

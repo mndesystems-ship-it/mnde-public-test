@@ -312,7 +312,6 @@ These exist as architecture or concepts in the repository but are not claimed as
 - [Onboarding security model](docs/security-model.md)
 - [Trust-anchored receipt verification](docs/trust-anchored-verification.md)
 - [Production readiness notes](docs/production-readiness.md)
-- [Release note: safe MCP onboarding](docs/release-891ceda-onboarding.md)
 - [Demo scenarios](docs/demo-scenarios.md)
 - [Tester ID implementation](docs/tester-id-implementation.md)
 - [Release checklist](docs/release-checklist.md)
