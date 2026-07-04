@@ -1188,9 +1188,19 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (req.method === "GET" && pathname === "/readyz") {
+    const snapshot = readinessSnapshot();
+    // Production returns the readiness signal only. The detailed payload leaks
+    // operational intelligence to any local caller (policy hash/version, queue
+    // depths, worker topology, saturation thresholds); in production that
+    // telemetry stays available through the authority-gated /metrics and
+    // /identity endpoints. Local/dev keeps the full payload unchanged.
+    if (RUNTIME_PROFILE === "production") {
+      response(res, 200, { ok: snapshot.ok, degraded: snapshot.degraded });
+      return;
+    }
     const socketMetrics = socketRegistry.metrics();
     response(res, 200, {
-      ...readinessSnapshot(),
+      ...snapshot,
       max_inflight: MAX_INFLIGHT,
       shed_inflight: Math.min(SHED_INFLIGHT, MAX_INFLIGHT),
       sockets: telemetrySafe(socketMetrics),

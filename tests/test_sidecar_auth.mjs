@@ -143,6 +143,16 @@ async function main() {
       assert.equal(status, 200);
       assert.equal(body.schema_version, "mnde.receipt_replay.v1");
     });
+    await test("local profile: /readyz keeps the detailed readiness payload", async () => {
+      const res = await fetch(`${off.url}/readyz`);
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(typeof body.ok, "boolean");
+      assert.equal(typeof body.degraded, "boolean");
+      for (const field of ["active_policy_version", "policy_hash", "receipt_queue", "worker_pool", "watchdog", "sockets", "max_inflight", "shed_inflight", "durability_mode"]) {
+        assert.ok(field in body, `local /readyz must keep detailed field: ${field}`);
+      }
+    });
   } finally {
     await off.stop();
   }
@@ -252,6 +262,17 @@ async function main() {
       const { status, body } = await postReplay(prod.url, { "x-mnde-authority-assertion": viewer });
       assert.equal(status, 403);
       assert.equal(body.reason_code, "ERR_AUTHZ_REFUSED");
+    });
+
+    await test("production: /readyz reports readiness without operational metadata", async () => {
+      const res = await fetch(`${prod.url}/readyz`);
+      assert.equal(res.status, 200, "/readyz must stay open for readiness probes");
+      const body = await res.json();
+      // Readiness still reported correctly on a healthy production boot...
+      assert.equal(body.ok, true);
+      assert.equal(body.degraded, false);
+      // ...and NOTHING else: the payload is exactly the readiness signal.
+      assert.deepEqual(Object.keys(body).sort(), ["degraded", "ok"]);
     });
 
     await test("production: valid replay_decisions assertion reaches the replay handler", async () => {
