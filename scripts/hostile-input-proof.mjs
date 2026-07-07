@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { verifyReceiptFile, verificationPassed } from "../tools/verify-receipt.mjs";
+import { verifyAnyReceiptFile } from "../tools/verify.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const artifactsRoot = join(repoRoot, "reviewer-kit", "artifacts");
@@ -46,7 +46,7 @@ for (const testCase of cases) {
   let verified = false;
   if (receipt) {
     writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, "utf8");
-    verified = verificationPassed(verifyReceiptFile(receiptPath));
+    verified = verifyAnyReceiptFile(receiptPath).verified;
   }
   const pass = result.body?.decision === "REFUSE" &&
     result.body?.receipt_persisted === true &&

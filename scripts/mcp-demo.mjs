@@ -12,7 +12,7 @@ import { join } from "node:path";
 
 import { startMndeSidecar } from "../executor/sidecar-harness.mjs";
 import { createStdioClient } from "../mcp/stdio-client.mjs";
-import { verificationPassed, verifyReceiptFile } from "../tools/verify-receipt.mjs";
+import { verifyAnyReceiptFile } from "../tools/verify.mjs";
 
 const SIDECAR_URL = "http://127.0.0.1:8787";
 const MARKER = join(process.cwd(), "mnde-receipts", "mcp-demo-destruction-marker.txt");
@@ -31,7 +31,7 @@ function envelopeOf(call) {
 function receiptVerifies(envelope) {
   if (!envelope.receiptPath) return false;
   try {
-    return verificationPassed(verifyReceiptFile(envelope.receiptPath));
+    return verifyAnyReceiptFile(envelope.receiptPath).verified;
   } catch {
     return false;
   }

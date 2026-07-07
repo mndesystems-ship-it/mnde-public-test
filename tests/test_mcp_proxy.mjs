@@ -11,7 +11,7 @@ import { join } from "node:path";
 
 import { startMndeSidecar } from "../executor/sidecar-harness.mjs";
 import { createStdioClient } from "../mcp/stdio-client.mjs";
-import { verificationPassed, verifyReceiptFile } from "../tools/verify-receipt.mjs";
+import { verifyAnyReceiptFile } from "../tools/verify.mjs";
 
 const SIDECAR_URL = "http://127.0.0.1:8787";
 const RECEIPTS_DIR = "./mnde-receipts/mcp-proxy-tests";
@@ -97,7 +97,7 @@ async function main() {
 
     await test("6. receipt verifies offline", async () => {
       assert.ok(allowEnv?.receiptPath, "need a receipt from the ALLOW call");
-      assert.equal(verificationPassed(verifyReceiptFile(allowEnv.receiptPath)), true);
+      assert.equal(verifyAnyReceiptFile(allowEnv.receiptPath).verified, true);
     });
   } finally {
     await proxy.stop();

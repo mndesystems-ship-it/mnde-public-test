@@ -1303,18 +1303,20 @@ effect, so existing behavior and tests are byte-for-byte preserved.
 
 The sidecar supports two decision engines, selected by `MNDE_DECISION_ENGINE`:
 
-- `legacy` (default) — the existing pipeline. Unchanged and byte-for-byte
-  compatible; the policy-engine adapter is not even loaded.
-- `policy-engine` (opt-in) — `/v1/decisions` (and therefore the MCP proxy and
+- `policy-engine` (default) — `/v1/decisions` (and therefore the MCP proxy and
   executor) route through the policy engine and return a signed
   `mnde.pe.receipt.v1` receipt that verifies offline through `npm run verify`.
+  All demos and the reviewer kit run this engine by default, deciding against
+  `examples/policy-engine/sample-policy.json` when no policy is configured.
+- `legacy` (explicit opt-in) — the compatibility pipeline. Unchanged and
+  byte-for-byte compatible; the policy-engine adapter is not even loaded.
 
 Policy-engine mode configuration (sidecar/env/flag only — never the request body):
 
 | Variable | Meaning |
 |---|---|
 | `MNDE_DECISION_ENGINE=policy-engine` | enable the policy-engine path |
-| `MNDE_PE_POLICY` | path to the active policy (required) |
+| `MNDE_PE_POLICY` | path to the active policy (unset → the built-in default-deny policy is active and every decision REFUSES) |
 | `MNDE_PE_TRUST_ANCHORS` | policy/authority trust anchors (optional; enables the cryptographic authority chain) |
 | `MNDE_PE_APPROVAL_TRUST_ANCHORS` | approval trust anchors (optional; enables authenticated approvals) |
 
@@ -1323,11 +1325,8 @@ Signed artifacts (authority grants, approvals) may be attached to the request as
 request body** — only from the configuration above.
 
 ```bash
-MNDE_DECISION_ENGINE=policy-engine \
-MNDE_PE_POLICY=examples/policy-engine/sample-policy.json \
-  npm run sidecar
-# in another terminal:
-npm run reviewer-kit:pe        # optional policy-engine-mode reviewer kit
+npm run reviewer-kit           # one-command policy-engine proof path
+npm run reviewer-kit:pe        # minimal ALLOW/REFUSE policy-engine check
 ```
 
 Fail-closed guarantees in policy-engine mode: a malformed or missing configured
@@ -1335,9 +1334,10 @@ file (`ERR_PE_CONFIG_INVALID`), an engine error (`ERR_PE_DECISION_FAILED`),
 invalid signatures, bad/expired approvals, or unmatched rules all REFUSE. A
 REFUSE is never forwarded by the proxy.
 
-**Caveat:** these policy-engine guarantees apply to live traffic only when
-`MNDE_DECISION_ENGINE=policy-engine` is set. In the default `legacy` mode the
-existing pipeline decides, and the policy-engine path is inactive.
+**Caveat:** these policy-engine guarantees apply to live traffic only under the
+default `policy-engine` engine. When `MNDE_DECISION_ENGINE=legacy` is set
+explicitly, the compatibility pipeline decides and the policy-engine path is
+inactive.
 
 ## Sidecar Caller Authentication
 

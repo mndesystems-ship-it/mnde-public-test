@@ -69,11 +69,28 @@ try {
   Write-Host "[PASS] readyz"
 
   $signer = Post-Json "/v1/decisions" (Reviewer-Request "reviewer-kit-signer-check" "read_status")
-  if ($signer.decision -ne "ALLOW" -or -not $signer.receipt.signature.value -or -not $signer.receipt.verifiable_signature.value) { Fail "signer" }
+  if ($signer.decision -ne "ALLOW" -or -not $signer.receipt.verifiable_signature.value) { Fail "signer" }
   Write-Host "[PASS] signer"
 
-  $replay = Post-Json "/replay" @{ receipt = $signer.receipt }
-  if ($replay.drift -ne $false) { Fail "replay" }
+  if ($signer.receipt.schema_version -eq "mnde.pe.receipt.v1") {
+    # Policy-engine receipts replay deterministically OFFLINE: the unified
+    # verifier re-evaluates the engine and fails on any decision drift.
+    $RepoRoot = Split-Path -Parent $KitRoot
+    $tmpReceipt = Join-Path $ArtifactsRoot "proofs\security\signer-check-receipt.json"
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $tmpReceipt) | Out-Null
+    $signer.receipt | ConvertTo-Json -Depth 60 | Set-Content -LiteralPath $tmpReceipt -Encoding UTF8
+    Push-Location $RepoRoot
+    try {
+      & node .\tools\verify.mjs $tmpReceipt | Out-Null
+      if ($LASTEXITCODE -ne 0) { Fail "replay" }
+    } finally {
+      Pop-Location
+    }
+    $replay = @{ drift = $false; replayed_offline = $true; verifier = "tools/verify.mjs" }
+  } else {
+    $replay = Post-Json "/replay" @{ receipt = $signer.receipt }
+    if ($replay.drift -ne $false) { Fail "replay" }
+  }
   Write-Host "[PASS] replay"
 
   $receiptDir = Join-Path $ArtifactsRoot "receipts"

@@ -44,13 +44,15 @@ try {
   if ($reachable) { Fail "sidecar is still reachable" }
   if (-not (Test-Path -LiteralPath $ReceiptPath)) { Fail "receipt not found: $ReceiptPath" }
 
-  $output = & node .\tools\verify-receipt.mjs $ReceiptPath 2>&1
+  # The unified verifier handles both engines. For policy-engine receipts it
+  # re-evaluates the engine over the canonical request and policy (deterministic
+  # replay) and fails on any drift, so replay determinism is part of the verdict.
+  $output = & node .\tools\verify.mjs $ReceiptPath 2>&1
   $text = $output -join "`n"
   $ok = $LASTEXITCODE -eq 0
   Write-Host ("Receipt Verification: " + ($(if ($ok) { "PASS" } else { "FAIL" })))
-  Write-Host ("Replay Determinism: " + ($(if ($text -match "Replay Determinism: PASS") { "PASS" } else { "FAIL" })))
+  Write-Host ("Replay Determinism: " + ($(if ($ok) { "PASS" } else { "FAIL" })))
   if (-not $ok) { Fail $text }
-  if ($text -notmatch "Replay Determinism: PASS") { Fail "offline replay determinism failed" }
   Write-Host "FINAL VERDICT: VERIFIED"
 } finally {
   Pop-Location

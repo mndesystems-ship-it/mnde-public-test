@@ -84,8 +84,21 @@ async function main() {
       try {
         await client.request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } });
         client.notify("notifications/initialized", {});
-        const allow = await client.request("tools/call", { name: "read_status", arguments: {} });
-        const allowEnv = JSON.parse(allow.content.find((c) => { try { return JSON.parse(c.text).mnde; } catch { return false; } }).text).mnde;
+        // Under full-suite load the single-worker test sidecar can shed the call
+        // (REFUSE ERR_SYSTEM_SATURATED — transient admission control, by design).
+        // Retry ONLY that refusal; any other REFUSE must fail the test.
+        let allowEnv;
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+          const allow = await client.request("tools/call", { name: "read_status", arguments: {} });
+          allowEnv = JSON.parse(allow.content.find((c) => { try { return JSON.parse(c.text).mnde; } catch { return false; } }).text).mnde;
+          if (allowEnv.decision === "ALLOW") break;
+          let reason = null;
+          try {
+            reason = JSON.parse(readFileSync(allowEnv.receiptPath, "utf8")).decision_output?.reason_code;
+          } catch { /* no receipt -> not a saturation shed */ }
+          if (reason !== "ERR_SYSTEM_SATURATED") break;
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        }
         assert.equal(allowEnv.decision, "ALLOW");
         const allowReceipt = JSON.parse(readFileSync(allowEnv.receiptPath, "utf8"));
         assert.equal(allowReceipt.schema_version, "mnde.pe.receipt.v1");

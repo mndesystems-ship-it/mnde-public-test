@@ -28,7 +28,7 @@
     "reviewer-kit:allow": "powershell -NoProfile -ExecutionPolicy Bypass -File ./reviewer-kit/allow-demo.ps1",
     "reviewer-kit:refuse": "powershell -NoProfile -ExecutionPolicy Bypass -File ./reviewer-kit/refuse-demo.ps1",
     "desktop-smoke": "node ./scripts/desktop-smoke.mjs",
-    "verify-receipt": "node ./tools/verify-receipt.mjs",
+    "verify-receipt": "node ./tools/verify.mjs",
     "verify": "node ./tools/verify.mjs",
     "test:policy-receipt": "node ./tests/test_policy_receipt.mjs",
     "test:policy-trust": "node ./tests/test_policy_trust.mjs",

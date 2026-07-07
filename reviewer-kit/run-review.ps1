@@ -131,6 +131,12 @@ function Start-Sidecar {
   $env:MNDE_WORKER_POOL_SIZE = "1"
   $env:MNDE_WORKER_QUEUE_MAX_DEPTH = "16"
   $env:MNDE_AUTH_AUDIT_LOG = Join-Path $ArtifactsRoot "logs\auth-audit.jsonl"
+  # v1 default engine is the policy engine; without a policy it runs the built-in
+  # default-deny and every decision (including the ALLOW demo) REFUSES. Decide
+  # against the repo demo policy unless the environment selected one (or legacy).
+  if ([string]::IsNullOrWhiteSpace($env:MNDE_PE_POLICY) -and [string]::IsNullOrWhiteSpace($env:MNDE_PE_POLICY_BUNDLE) -and ($env:MNDE_DECISION_ENGINE -ne "legacy")) {
+    $env:MNDE_PE_POLICY = Join-Path $RepoRoot "examples\policy-engine\sample-policy.json"
+  }
   $process = Start-Process -FilePath "node" -ArgumentList "mnde-local-sidecar.mjs" -WorkingDirectory $RepoRoot -RedirectStandardOutput $OutLog -RedirectStandardError $ErrLog -PassThru -WindowStyle Hidden
   $script:SidecarStarted = $true
   Set-Content -LiteralPath $PidFile -Value ([string]$process.Id) -Encoding ASCII

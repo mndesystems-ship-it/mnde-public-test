@@ -11,7 +11,7 @@ import { join } from "node:path";
 
 import { startMndeSidecar } from "../executor/sidecar-harness.mjs";
 import { createStdioClient } from "../mcp/stdio-client.mjs";
-import { verificationPassed, verifyReceiptFile } from "../tools/verify-receipt.mjs";
+import { verifyAnyReceiptFile } from "../tools/verify.mjs";
 
 const SIDECAR_URL = "http://127.0.0.1:8787";
 const RECEIPTS_DIR = "./mnde-receipts/mcp-tests";
@@ -80,7 +80,7 @@ async function main() {
       const env = envelopeOf(call);
       assert.equal(env.decision, "ALLOW");
       assert.equal(env.executed, true);
-      assert.equal(verificationPassed(verifyReceiptFile(env.receiptPath)), true);
+      assert.equal(verifyAnyReceiptFile(env.receiptPath).verified, true);
     });
 
     await test("REFUSE tool call does NOT run the tool (marker absent across the wire)", async () => {
@@ -93,7 +93,7 @@ async function main() {
       assert.equal(env.decision, "REFUSE");
       assert.equal(env.executed, false);
       assert.equal(existsSync(MARKER), false, "the destructive tool must not have run");
-      assert.equal(verificationPassed(verifyReceiptFile(env.receiptPath)), true);
+      assert.equal(verifyAnyReceiptFile(env.receiptPath).verified, true);
     });
 
     await test("unknown tool returns a JSON-RPC error", async () => {

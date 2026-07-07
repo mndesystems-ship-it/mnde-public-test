@@ -11,7 +11,7 @@ import { existsSync, rmSync } from "node:fs";
 
 import { createMndeExecutor } from "../executor/index.mjs";
 import { startMndeSidecar } from "../executor/sidecar-harness.mjs";
-import { verificationPassed, verifyReceiptFile } from "../tools/verify-receipt.mjs";
+import { verifyAnyReceiptFile } from "../tools/verify.mjs";
 
 const SIDECAR_URL = "http://127.0.0.1:8787";
 const RECEIPTS_DIR = "./mnde-receipts/executor-tests";
@@ -72,24 +72,35 @@ async function main() {
 
     await test("6. Receipt verifies offline", async () => {
       assert.ok(allowReceiptPath, "need an ALLOW receipt from test 1");
-      assert.equal(verificationPassed(verifyReceiptFile(allowReceiptPath)), true);
-    });
-
-    await test("7. Duplicate execution_id refuses the second run", async () => {
-      const id = `exec-dup-${Date.now()}`;
-      let ranA = false;
-      let ranB = false;
-      const a = await mnde.execute({ action: "read_status", input: {}, executionId: id, run: async () => { ranA = true; return "a"; } });
-      const b = await mnde.execute({ action: "read_status", input: {}, executionId: id, run: async () => { ranB = true; return "b"; } });
-      assert.equal(a.decision, "ALLOW");
-      assert.equal(ranA, true);
-      assert.equal(b.decision, "REFUSE");
-      assert.equal(b.executed, false);
-      assert.equal(ranB, false, "the second run of a consumed execution_id must NOT execute");
-      assert.equal(b.reason, "ERR_EXECUTION_ID_REPLAYED");
+      assert.equal(verifyAnyReceiptFile(allowReceiptPath).verified, true);
     });
   } finally {
     await sidecar.stop();
+  }
+
+  // Execution-id single-use is a LEGACY pipeline feature (the policy engine's
+  // replay protection is grant scope-binding + nonce single-use, covered by
+  // test_authority_binding). Pin the legacy engine explicitly for this case.
+  {
+    const legacySidecar = await startMndeSidecar({ url: SIDECAR_URL, testerId: "EXEC-TEST-001", env: { MNDE_DECISION_ENGINE: "legacy" } });
+    const legacyMnde = createMndeExecutor({ sidecarUrl: SIDECAR_URL, receiptsDir: RECEIPTS_DIR });
+    try {
+      await test("7. Duplicate execution_id refuses the second run (legacy engine)", async () => {
+        const id = `exec-dup-${Date.now()}`;
+        let ranA = false;
+        let ranB = false;
+        const a = await legacyMnde.execute({ action: "read_status", input: {}, executionId: id, run: async () => { ranA = true; return "a"; } });
+        const b = await legacyMnde.execute({ action: "read_status", input: {}, executionId: id, run: async () => { ranB = true; return "b"; } });
+        assert.equal(a.decision, "ALLOW");
+        assert.equal(ranA, true);
+        assert.equal(b.decision, "REFUSE");
+        assert.equal(b.executed, false);
+        assert.equal(ranB, false, "the second run of a consumed execution_id must NOT execute");
+        assert.equal(b.reason, "ERR_EXECUTION_ID_REPLAYED");
+      });
+    } finally {
+      await legacySidecar.stop();
+    }
   }
 
   await test("4. Missing sidecar fails closed", async () => {

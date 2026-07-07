@@ -12,6 +12,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { bootstrapReceiptKeys } from "../scripts/bootstrap_dev_receipt_keys.mjs";
+import { resolveDecisionEngine } from "../shared/decision-engine.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -40,13 +41,19 @@ export async function startMndeSidecar({
     MNDE_WORKER_QUEUE_MAX_DEPTH: "16",
     MNDE_TESTER_ID: testerId,
     MNDE_INSTALLATION_ID: installationId,
-    // v1 makes policy-engine the sidecar default. These harness-based demos/tests
-    // exercise the legacy GPU pipeline, so pin the legacy compatibility engine
-    // explicitly unless an ambient or caller value selects a different engine.
-    MNDE_DECISION_ENGINE: process.env.MNDE_DECISION_ENGINE ?? "legacy",
+    // v1 default: the policy engine is the canonical decision path. The legacy
+    // compatibility pipeline is an explicit opt-in (MNDE_DECISION_ENGINE=legacy).
+    MNDE_DECISION_ENGINE: process.env.MNDE_DECISION_ENGINE ?? "policy-engine",
     // Caller overrides last (e.g. MNDE_DECISION_ENGINE, MNDE_PE_POLICY, MNDE_BIND_PORT).
     ...extraEnv
   };
+  // Under policy-engine with no policy selected, the sidecar runs the built-in
+  // default-deny and every decision REFUSES. Harness runs are demos/tests, so
+  // supply the repo demo policy instead; any caller/ambient policy or bundle
+  // selection wins.
+  if (resolveDecisionEngine(env) === "policy-engine" && !env.MNDE_PE_POLICY && !env.MNDE_PE_POLICY_BUNDLE) {
+    env.MNDE_PE_POLICY = join(repoRoot, "examples", "policy-engine", "sample-policy.json");
+  }
 
   const child = spawn(process.execPath, ["mnde-local-sidecar.mjs"], {
     cwd: repoRoot,

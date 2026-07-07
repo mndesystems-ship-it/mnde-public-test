@@ -4,7 +4,13 @@ import { existsSync, renameSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { verifyReceiptFile, verificationPassed } from "../tools/verify-receipt.mjs";
+import { verifyAnyReceiptFile } from "../tools/verify.mjs";
+
+// Unified verification across engines: live reviewer-kit receipts are
+// policy-engine receipts; the committed demo fixture is a legacy receipt.
+function verifies(path) {
+  return verifyAnyReceiptFile(path).verified;
+}
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const artifactsRoot = join(repoRoot, "reviewer-kit", "artifacts");
@@ -33,8 +39,8 @@ assert((reviewer.stdout ?? "").includes("FINAL VERDICT: PASS"), "reviewer kit di
 
 const allowPath = join(artifactsRoot, "receipts", "allow-receipt.json");
 const refusePath = join(artifactsRoot, "receipts", "refuse-receipt.json");
-assert(verificationPassed(verifyReceiptFile(allowPath)), "ALLOW receipt did not verify");
-assert(verificationPassed(verifyReceiptFile(refusePath)), "REFUSE receipt did not verify");
+assert(verifies(allowPath), "ALLOW receipt did not verify");
+assert(verifies(refusePath), "REFUSE receipt did not verify");
 
 let sidecarClosed = false;
 for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -64,17 +70,17 @@ function withManifestRemoved(manifestPath, label, fn) {
   }
 }
 
-assert(verificationPassed(verifyReceiptFile(demoReceiptPath)), "demo receipt did not verify before authority isolation tests");
-assert(verificationPassed(verifyReceiptFile(allowPath)), "live reviewer-kit receipt did not verify before authority isolation tests");
+assert(verifies(demoReceiptPath), "demo receipt did not verify before authority isolation tests");
+assert(verifies(allowPath), "live reviewer-kit receipt did not verify before authority isolation tests");
 
 withManifestRemoved(demoManifestPath, "demo", () => {
-  assert(!verificationPassed(verifyReceiptFile(demoReceiptPath)), "removing demo authority should break demo fixture verification");
-  assert(verificationPassed(verifyReceiptFile(allowPath)), "removing demo authority should not break live reviewer-kit receipt verification");
+  assert(!verifies(demoReceiptPath), "removing demo authority should break demo fixture verification");
+  assert(verifies(allowPath), "removing demo authority should not break live reviewer-kit receipt verification");
 });
 
 withManifestRemoved(localManifestPath, "local tester", () => {
-  assert(!verificationPassed(verifyReceiptFile(allowPath)), "removing local tester authority should break live reviewer-kit receipt verification");
-  assert(verificationPassed(verifyReceiptFile(demoReceiptPath)), "removing local tester authority should not break demo fixture verification");
+  assert(!verifies(allowPath), "removing local tester authority should break live reviewer-kit receipt verification");
+  assert(verifies(demoReceiptPath), "removing local tester authority should not break demo fixture verification");
 });
 
 console.log("PASS cross-platform reviewer tests");

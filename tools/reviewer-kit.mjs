@@ -5,7 +5,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { reviewerRequest } from "../scripts/reviewer-request.mjs";
-import { verifyReceiptFile, verificationPassed } from "./verify-receipt.mjs";
+import { resolveDecisionEngine } from "../shared/decision-engine.mjs";
+import { verifyAnyReceiptFile } from "./verify.mjs";
+
+const PE_RECEIPT_SCHEMA = "mnde.pe.receipt.v1";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const artifactsRoot = join(repoRoot, "reviewer-kit", "artifacts");
@@ -102,11 +105,16 @@ function startSidecar() {
     MNDE_WORKER_QUEUE_MAX_DEPTH: "16",
     MNDE_TESTER_ID: testerId,
     MNDE_INSTALLATION_ID: installationId,
-    // v1 makes policy-engine the sidecar default; the reviewer kit demonstrates the
-    // legacy GPU pipeline, so pin the legacy compatibility engine explicitly unless
-    // an ambient value selects a different engine.
-    MNDE_DECISION_ENGINE: process.env.MNDE_DECISION_ENGINE ?? "legacy"
+    // v1 default: the kit demonstrates the policy engine (the canonical decision
+    // path). MNDE_DECISION_ENGINE=legacy opts into the compatibility pipeline.
+    MNDE_DECISION_ENGINE: process.env.MNDE_DECISION_ENGINE ?? "policy-engine"
   };
+  // Under policy-engine with no policy selected, the built-in default-deny
+  // refuses everything (including the ALLOW demo). Decide against the repo demo
+  // policy; any ambient policy or bundle selection wins.
+  if (resolveDecisionEngine(env) === "policy-engine" && !env.MNDE_PE_POLICY && !env.MNDE_PE_POLICY_BUNDLE) {
+    env.MNDE_PE_POLICY = join(repoRoot, "examples", "policy-engine", "sample-policy.json");
+  }
   sidecarProcess = spawn(process.execPath, ["mnde-local-sidecar.mjs"], {
     cwd: repoRoot,
     env,
@@ -168,13 +176,22 @@ async function runDecision({ requestId, tool, parameters, expected, receiptName,
 }
 
 function verifyOffline(receiptPath, proofName) {
-  const report = verifyReceiptFile(receiptPath);
+  const report = verifyAnyReceiptFile(receiptPath);
   writeJson(join(proofsRoot, "replay", proofName), report);
-  assert(verificationPassed(report), `offline verification failed: ${receiptPath}`);
+  assert(report.verified, `offline verification failed: ${receiptPath}`);
   return report;
 }
 
-async function verifyReplay(receipt) {
+async function verifyReplay(receipt, receiptPath) {
+  if (receipt?.schema_version === PE_RECEIPT_SCHEMA) {
+    // Policy-engine receipts replay deterministically OFFLINE: the unified
+    // verifier re-evaluates the engine over the receipt's canonical request and
+    // policy and fails on any decision drift. Anyone can run it anywhere; the
+    // sidecar /replay endpoint (legacy pipeline receipts) is not involved.
+    const report = verifyAnyReceiptFile(receiptPath);
+    assert(report.verified, "offline deterministic replay failed");
+    return { schema_version: "mnde.receipt_replay.v1", replayed_offline: true, drift: false, verifier: "tools/verify.mjs" };
+  }
   const replay = await httpJson("/replay", { method: "POST", body: { receipt } });
   assert(replay.body?.drift === false, "replay verification failed");
   return replay.body;
@@ -198,7 +215,7 @@ async function runHostileInputs() {
     const receipt = result.body?.receipt ?? null;
     const receiptPath = join(receiptsRoot, `hostile-${testCase.name}-receipt.json`);
     if (receipt) writeJson(receiptPath, receipt);
-    const verified = receipt ? verificationPassed(verifyReceiptFile(receiptPath)) : false;
+    const verified = receipt ? verifyAnyReceiptFile(receiptPath).verified : false;
     results.push({
       case: testCase.name,
       http_status: result.status,
@@ -224,8 +241,8 @@ async function runExecutorBlocked() {
     receiptName: "executor-blocked-receipt.json",
     proofPath: join(proofsRoot, "security", "executor-blocked-response.json")
   });
-  const offline = verificationPassed(verifyReceiptFile(decision.receiptPath));
-  const replay = await verifyReplay(decision.response.receipt);
+  const offline = verifyAnyReceiptFile(decision.receiptPath).verified;
+  const replay = await verifyReplay(decision.response.receipt, decision.receiptPath);
   const proof = {
     checked_at: new Date().toISOString(),
     action: "recursive_delete backups/",
@@ -249,8 +266,8 @@ async function ensureMissingAuthorityFails() {
   try {
     rmSync(backupPath, { force: true });
     await import("node:fs").then(({ renameSync }) => renameSync(manifestPath, backupPath));
-    const report = verifyReceiptFile(sampleReceipt);
-    assert(!verificationPassed(report), "missing authority bundle unexpectedly verified");
+    const report = verifyAnyReceiptFile(sampleReceipt);
+    assert(!report.verified, "missing authority bundle unexpectedly verified");
     writeJson(join(proofsRoot, "security", "missing-authority-bundle.json"), report);
   } finally {
     const { existsSync, renameSync } = await import("node:fs");
@@ -293,8 +310,8 @@ async function main() {
 
     verifyOffline(allow.receiptPath, "allow-receipt-verification.json");
     verifyOffline(refuse.receiptPath, "refuse-receipt-verification.json");
-    await verifyReplay(allow.response.receipt);
-    await verifyReplay(refuse.response.receipt);
+    await verifyReplay(allow.response.receipt, allow.receiptPath);
+    await verifyReplay(refuse.response.receipt, refuse.receiptPath);
     console.log("[PASS] receipt verification");
     console.log("[PASS] replay verification");
 

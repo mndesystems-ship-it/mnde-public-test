@@ -4,7 +4,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { verificationPassed, verifyReceiptFile } from "../tools/verify-receipt.mjs";
+import { verifyAnyReceiptFile } from "../tools/verify.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const fixedReceipts = [
@@ -23,9 +23,13 @@ const receipts = [...fixedReceipts, ...artifactReceipts].filter((file) => exists
 assert.ok(receipts.length > 0, "no receipts available for replay verification");
 
 for (const receiptPath of receipts) {
-  const report = verifyReceiptFile(receiptPath);
-  assert.equal(verificationPassed(report), true, `${receiptPath} failed verification`);
-  assert.equal(report.checks["Replay Determinism"]?.ok, true, `${receiptPath} failed replay determinism`);
+  const result = verifyAnyReceiptFile(receiptPath);
+  assert.equal(result.verified, true, `${receiptPath} failed verification`);
+  if (result.kind === "pipeline") {
+    assert.equal(result.report.checks["Replay Determinism"]?.ok, true, `${receiptPath} failed replay determinism`);
+  }
+  // Policy-engine receipts: deterministic replay is part of verification itself —
+  // the verifier re-evaluates the engine and any decision drift fails `verified`.
 }
 
 console.log(`PASS replay verification (${receipts.length}/${receipts.length})`);

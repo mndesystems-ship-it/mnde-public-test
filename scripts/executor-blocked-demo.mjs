@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { verifyReceiptFile, verificationPassed } from "../tools/verify-receipt.mjs";
+import { verifyAnyReceiptFile } from "../tools/verify.mjs";
 import { reviewerRequest } from "./reviewer-request.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -46,9 +46,13 @@ if (receipt) {
   writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, "utf8");
 }
 
-const offlineVerified = receipt ? verificationPassed(verifyReceiptFile(receiptPath)) : false;
+const offlineVerified = receipt ? verifyAnyReceiptFile(receiptPath).verified : false;
 let replayPass = false;
-if (receipt) {
+if (receipt && receipt.schema_version === "mnde.pe.receipt.v1") {
+  // Policy-engine receipts replay deterministically OFFLINE: the unified
+  // verifier re-evaluates the engine and fails on any decision drift.
+  replayPass = offlineVerified;
+} else if (receipt) {
   const replay = await fetch(`${sidecarUrl}/replay`, {
     method: "POST",
     headers: { "content-type": "application/json" },

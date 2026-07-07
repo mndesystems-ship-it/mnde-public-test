@@ -1,10 +1,11 @@
-// Optional policy-engine-mode reviewer kit.
+// Minimal policy-engine ALLOW/REFUSE check.
 //
 //   npm run reviewer-kit:pe
 //
-// Runs the live sidecar with MNDE_DECISION_ENGINE=policy-engine and confirms an
-// ALLOW and a REFUSE produce policy-engine receipts that verify offline through
-// the unified verifier. The default `npm run reviewer-kit` is unchanged.
+// Runs the live sidecar with the policy engine and confirms an ALLOW and a
+// REFUSE produce policy-engine receipts that verify offline through the unified
+// verifier. The full proof path is `npm run reviewer-kit`, which runs the same
+// engine by default.
 
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
