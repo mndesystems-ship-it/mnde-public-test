@@ -718,6 +718,10 @@ async function respondPolicyEngine(res, request, timings, totalStarted, caller) 
     ...(SIGNING_MODE === "custody" ? { receipt_signing: "custody" } : {}),
     ...(caller ? { authenticated_caller: caller.id } : {}),
     receipt: signed.receipt,
+    // Same meaning as the legacy path: the receipt was accepted into the durable
+    // persistence queue (strict_audit additionally awaited durability above);
+    // enqueue failure refuses the request instead of reaching this response.
+    receipt_persisted: true,
     timings
   }, timings);
 }
