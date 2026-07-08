@@ -50,6 +50,7 @@ export async function initProductionAuthority(options = {}) {
     validDays = 365,
     bundleDays = 90,
     receiptKeyId = "receipt-1",
+    activationKeyId = "activation-1",
     rootKeyId = "root-1",
     repoRoot = REPO_ROOT
   } = options;
@@ -68,6 +69,7 @@ export async function initProductionAuthority(options = {}) {
     rootPrivate: resolve(out, "root.key.pem"),
     rootPublic: resolve(out, "root.pub.pem"),
     receiptPrivate: resolve(out, "receipt-signing.key.pem"),
+    activationPrivate: resolve(out, "activation-signing.key.pem"),
     bundle: resolve(out, "authority.bundle.json")
   };
   for (const p of Object.values(paths)) {
@@ -76,6 +78,7 @@ export async function initProductionAuthority(options = {}) {
 
   const root_ = { keyId: rootKeyId, ...generateAuthorityKeyPair() };
   const receipt = { keyId: receiptKeyId, ...generateAuthorityKeyPair() };
+  const activation = { keyId: activationKeyId, ...generateAuthorityKeyPair() };
 
   const bundle = await buildAuthorityBundle({
     authorityId,
@@ -83,6 +86,7 @@ export async function initProductionAuthority(options = {}) {
     notAfter: addDaysIso(now, bundleDays),
     root: root_,
     receiptKeys: [{ keyId: receipt.keyId, publicPem: receipt.publicPem, validFrom: now, validUntil: addDaysIso(now, validDays) }],
+    activationKeys: [{ keyId: activation.keyId, publicPem: activation.publicPem, validFrom: now, validUntil: addDaysIso(now, validDays) }],
     revocation: []
   });
 
@@ -92,11 +96,15 @@ export async function initProductionAuthority(options = {}) {
   const probe = await signCanonical(canonicalizeJson({ probe: true }), receipt.privatePem);
   const keyCheck = findBundleKey(bundle, "receipt", receipt.keyId, now);
   if (!keyCheck.ok || probe.length === 0) return { ok: false, reason: "receipt key did not validate against the bundle" };
+  const activationProbe = await signCanonical(canonicalizeJson({ probe: true }), activation.privatePem);
+  const activationKeyCheck = findBundleKey(bundle, "activation", activation.keyId, now);
+  if (!activationKeyCheck.ok || activationProbe.length === 0) return { ok: false, reason: "activation key did not validate against the bundle" };
 
   mkdirSync(out, { recursive: true });
   writeFileSync(paths.rootPrivate, root_.privatePem, { mode: 0o600 });
   writeFileSync(paths.rootPublic, root_.publicPem, { mode: 0o644 });
   writeFileSync(paths.receiptPrivate, receipt.privatePem, { mode: 0o600 });
+  writeFileSync(paths.activationPrivate, activation.privatePem, { mode: 0o600 });
   writeFileSync(paths.bundle, `${JSON.stringify(bundle, null, 2)}\n`, { mode: 0o644 });
 
   return {
@@ -104,6 +112,7 @@ export async function initProductionAuthority(options = {}) {
     authorityId,
     rootFingerprint: bundle.root_key.fingerprint,
     receiptKeyId: receipt.keyId,
+    activationKeyId: activation.keyId,
     bundleNotAfter: bundle.not_after,
     receiptKeyValidUntil: bundle.keys.receipt[0].valid_until,
     paths
@@ -142,6 +151,7 @@ async function main() {
   process.stdout.write("Files written:\n");
   process.stdout.write(`  ${result.paths.bundle}        (public — publish this)\n`);
   process.stdout.write(`  ${result.paths.receiptPrivate}  (sidecar secret — keep on the serving host)\n`);
+  process.stdout.write(`  ${result.paths.activationPrivate}  (activation secret — signs install/upgrade/rollback transitions; not needed by the serving sidecar)\n`);
   process.stdout.write(`  ${result.paths.rootPrivate}             (CROWN JEWEL — move OFFLINE / to HSM/escrow; not needed on the host)\n`);
   process.stdout.write(`  ${result.paths.rootPublic}\n\n`);
   process.stdout.write("Run the sidecar against this trust root:\n");

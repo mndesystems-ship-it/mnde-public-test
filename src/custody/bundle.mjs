@@ -15,7 +15,7 @@ import { generateKeyPair, sign as providerSign, spkiFingerprint, verify as provi
 import { canonicalizeJson } from "../../shared/json.ts";
 
 export const BUNDLE_SCHEMA = "mnde.authority.bundle.v1";
-export const AUTHORITY_KEY_ROLES = Object.freeze(["receipt", "policy", "approval", "result", "ledger"]);
+export const AUTHORITY_KEY_ROLES = Object.freeze(["receipt", "policy", "approval", "result", "ledger", "activation"]);
 
 function isObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -57,7 +57,8 @@ export async function buildAuthorityBundle(input) {
     policy: mapKeys(input.policyKeys),
     approval: mapKeys(input.approvalKeys),
     result: mapKeys(input.resultKeys),
-    ledger: mapKeys(input.ledgerKeys)
+    ledger: mapKeys(input.ledgerKeys),
+    activation: mapKeys(input.activationKeys)
   };
 
   // Reject duplicate key_id or fingerprint across all roles.
@@ -138,6 +139,47 @@ export async function verifyAuthorityBundle(bundle, options = {}) {
   return { ok: true };
 }
 
+// Evaluate a revocation list against a subject at two points in time.
+//
+// Revocation status changes over time; a single boolean conflates two distinct
+// questions. This returns both verdicts (spec: activation-authority-v1 §11):
+//   revoked_as_of_event — was the subject revoked at the evaluated event time
+//                         (a signature's signed_at, an activation's activated_at)?
+//                         The event itself is untrustworthy if true.
+//   revoked_now         — is the subject revoked at verification time? Advisory:
+//                         stop running / do not activate; historical evidence
+//                         produced before revocation remains truthful.
+//
+// Entry forms:
+//   "key-id"                                — legacy string: revoked for all time
+//                                             (both verdicts fire; conservative)
+//   { key_id | artifact_hash | release_version, revoked_at, reason_code }
+//                                           — revoked from `revoked_at` onward.
+//                                             Missing/invalid `revoked_at` is
+//                                             treated as revoked for all time.
+export function evaluateRevocation(revocationList, subject, eventAt, now) {
+  const list = Array.isArray(revocationList) ? revocationList : [];
+  const none = { revoked_as_of_event: false, revoked_now: false, entry: null };
+  if (!isObject(subject)) return none;
+  const matchField = (entry, field) => typeof subject[field] === "string" && subject[field].length > 0 && entry[field] === subject[field];
+  for (const entry of list) {
+    if (typeof entry === "string") {
+      if (subject.key_id === entry) return { revoked_as_of_event: true, revoked_now: true, entry };
+      continue;
+    }
+    if (!isObject(entry)) continue;
+    if (!(matchField(entry, "key_id") || matchField(entry, "artifact_hash") || matchField(entry, "release_version"))) continue;
+    if (!isValidTimestamp(entry.revoked_at)) return { revoked_as_of_event: true, revoked_now: true, entry };
+    const revokedAt = Date.parse(entry.revoked_at);
+    return {
+      revoked_as_of_event: isValidTimestamp(eventAt) ? Date.parse(eventAt) >= revokedAt : true,
+      revoked_now: isValidTimestamp(now) ? Date.parse(now) >= revokedAt : true,
+      entry
+    };
+  }
+  return none;
+}
+
 // Look up a signing key by role + key id, honoring revocation and validity.
 //
 // Revocation freshness: the revocation list is from the bundle in hand. If the
@@ -147,8 +189,14 @@ export async function verifyAuthorityBundle(bundle, options = {}) {
 //   "CURRENT_TO_BUNDLE"  — not revoked per this bundle; staleness unknown
 //   "KEY_REVOKED"        — positively revoked per this bundle (may be stale too,
 //                          but revocation is treated as permanent)
-export function findBundleKey(bundle, role, keyId, signedAt) {
-  if (Array.isArray(bundle?.revocation) && bundle.revocation.includes(keyId)) return { ok: false, reason: "KEY_REVOKED" };
+//
+// A key revoked as of `signedAt` fails closed (KEY_REVOKED). A key revoked
+// after `signedAt` (timestamped entry) still verifies the historical signature
+// but the result carries `revoked_now: true` so callers can refuse it for NEW
+// signing or surface the advisory verdict.
+export function findBundleKey(bundle, role, keyId, signedAt, now = new Date().toISOString()) {
+  const revocation = evaluateRevocation(bundle?.revocation, { key_id: keyId }, signedAt, now);
+  if (revocation.revoked_as_of_event) return { ok: false, reason: "KEY_REVOKED" };
   const list = bundle?.keys?.[role];
   const key = Array.isArray(list) ? list.find((k) => k.key_id === keyId) : undefined;
   if (!key) return { ok: false, reason: "UNKNOWN_KEY" };
@@ -159,16 +207,17 @@ export function findBundleKey(bundle, role, keyId, signedAt) {
   // Revocation status is current only as of the bundle's issued_at. A stale
   // bundle may miss later revocations. We report this honestly rather than
   // asserting that revocation is globally current.
-  return { ok: true, publicKey: key.public_key, revocation_freshness: "CURRENT_TO_BUNDLE" };
+  return { ok: true, publicKey: key.public_key, revocation_freshness: "CURRENT_TO_BUNDLE", revoked_now: revocation.revoked_now };
 }
 
 // Verify a signature over a canonical payload against a bundle key (offline).
 // On success, the result includes `revocation_freshness` from findBundleKey to
-// let callers know that revocation status is only current as of the bundle used.
+// let callers know that revocation status is only current as of the bundle used,
+// and `revoked_now` for the advisory revocation verdict (see evaluateRevocation).
 export async function verifyAgainstBundle(canonicalPayload, signatureHex, role, keyId, signedAt, bundle) {
   const key = findBundleKey(bundle, role, keyId, signedAt);
   if (!key.ok) return key;
   return (await verifyCanonical(canonicalPayload, signatureHex, key.publicKey))
-    ? { ok: true, revocation_freshness: key.revocation_freshness }
+    ? { ok: true, revocation_freshness: key.revocation_freshness, revoked_now: key.revoked_now }
     : { ok: false, reason: "SIGNATURE_INVALID" };
 }

@@ -16,7 +16,7 @@ import { reviewerRequest } from "./reviewer-request.mjs";
 import { verificationPassed, verifyReceiptFile } from "../tools/verify-receipt.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const policy = JSON.parse(readFileSync(join(repoRoot, "mnde-release-package", "sidecar-local", "policy.v1.signed.json"), "utf8"));
+const policy = JSON.parse(readFileSync(join(repoRoot, "sample-policies", "legacy-gpu-policy.signed.json"), "utf8"));
 const demoHmacSecret = "demo-legacy-signature-key";
 const demoHmacKeyId = "demo-legacy-signature-key";
 const signedAt = new Date().toISOString();

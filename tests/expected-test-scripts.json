@@ -1,4 +1,5 @@
 [
+  "test:activation",
   "test:approvals",
   "test:audit-remediation",
   "test:auth",
@@ -44,5 +45,6 @@
   "test:signed-result-codes",
   "test:startup-checks",
   "test:trust-anchor",
-  "test:trust-root"
+  "test:trust-root",
+  "test:verifier-policy"
 ]

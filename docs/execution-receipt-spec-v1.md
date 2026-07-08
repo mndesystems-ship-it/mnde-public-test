@@ -8,6 +8,12 @@ An execution receipt is a cryptographically verifiable record of a pre-execution
 
 An execution receipt MAY represent either an `ALLOW` decision or a `REFUSE` decision. A conforming verifier MUST be able to distinguish receipt integrity failures from authority trust failures.
 
+### 1.1 Core Invariant
+
+> **No execution may proceed until the active authority transition has been verified.**
+
+This invariant governs every authority transition in a conforming system: execution decisions (this specification), and software activation, upgrade, and rollback (the Activation Authority Specification, `mnde.activation.v1`). Receipts record execution transitions; activation records record software-lifecycle transitions. Both are verified against the same authority-bundle machinery.
+
 ## 2. Vendor Neutrality
 
 ERS v1 defines verification behavior and receipt semantics.

@@ -60,6 +60,7 @@ export async function createLocalDemoCustody(options = {}) {
   const approval = { keyId: "local-demo-approval", ...generateAuthorityKeyPair() };
   const result = { keyId: "local-demo-result", ...generateAuthorityKeyPair() };
   const ledger = { keyId: "local-demo-ledger", ...generateAuthorityKeyPair() };
+  const activation = { keyId: "local-demo-activation", ...generateAuthorityKeyPair() };
 
   const bundle = await buildAuthorityBundle({
     authorityId: "mnde-local-demo",
@@ -71,6 +72,7 @@ export async function createLocalDemoCustody(options = {}) {
     approvalKeys: [{ keyId: approval.keyId, publicPem: approval.publicPem, validFrom: EPOCH, validUntil: FAR_FUTURE }],
     resultKeys: [{ keyId: result.keyId, publicPem: result.publicPem, validFrom: EPOCH, validUntil: FAR_FUTURE }],
     ledgerKeys: [{ keyId: ledger.keyId, publicPem: ledger.publicPem, validFrom: EPOCH, validUntil: FAR_FUTURE }],
+    activationKeys: [{ keyId: activation.keyId, publicPem: activation.publicPem, validFrom: EPOCH, validUntil: FAR_FUTURE }],
     revocation: []
   });
 
@@ -89,6 +91,7 @@ export async function createLocalDemoCustody(options = {}) {
     signApproval: signWith("approval", approval),
     signResult: signWith("result", result),
     signLedger: signWith("ledger", ledger),
+    signActivation: signWith("activation", activation),
     getPublicBundle: () => structuredClone(bundle)
   };
 }
@@ -139,6 +142,7 @@ export function createFileBackedProductionCustody(env = process.env) {
   const approval = optionalRoleKey("approval", "MNDE_APPROVAL_SIGNING_KEY", "MNDE_APPROVAL_KEY_ID");
   const resultKey = optionalRoleKey("result", "MNDE_RESULT_SIGNING_KEY", "MNDE_RESULT_KEY_ID");
   const ledgerKey = optionalRoleKey("ledger", "MNDE_LEDGER_SIGNING_KEY", "MNDE_LEDGER_KEY_ID");
+  const activationKey = optionalRoleKey("activation", "MNDE_ACTIVATION_SIGNING_KEY", "MNDE_ACTIVATION_KEY_ID");
 
   const signer = (key, role) => {
     if (!key) return () => { throw new Error(`custody: no ${role} signing key configured`); };
@@ -154,6 +158,7 @@ export function createFileBackedProductionCustody(env = process.env) {
     signApproval: signer(approval, "approval"),
     signResult: signer(resultKey, "result"),
     signLedger: signer(ledgerKey, "ledger"),
+    signActivation: signer(activationKey, "activation"),
     getPublicBundle: () => structuredClone(bundle)
   };
 }

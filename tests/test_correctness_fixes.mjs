@@ -19,7 +19,7 @@ function assert(condition, message) {
 }
 
 function loadPolicy() {
-  return JSON.parse(readFileSync(join(repoRoot, "mnde-release-package", "sidecar-local", "policy.v1.signed.json"), "utf8"));
+  return JSON.parse(readFileSync(join(repoRoot, "sample-policies", "legacy-gpu-policy.signed.json"), "utf8"));
 }
 
 function runLikeWorker(input) {

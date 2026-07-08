@@ -10,6 +10,7 @@
     "test": "node ./scripts/run-all-tests.mjs",
     "ci": "node ./scripts/run-ci.mjs",
     "check:whitespace": "node ./scripts/check-whitespace.mjs",
+    "test:activation": "node ./tests/test_activation.mjs",
     "test:ci-contract": "node ./tests/test_ci_contract.mjs",
     "test:conformance": "node ./tests/test_conformance_vectors.mjs",
     "test:replay": "node ./scripts/test-replay-verification.mjs",

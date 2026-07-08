@@ -66,7 +66,7 @@ import { assertStartupDirectoryPermissions } from "./sidecar/startup_checks.mjs"
 const HOST = "127.0.0.1";
 const PORT = parseBindPort(process.env.MNDE_BIND_PORT, 8787);
 const REPO_ROOT = dirname(fileURLToPath(import.meta.url));
-let activePolicyPath = new URL("./mnde-release-package/sidecar-local/policy.v1.signed.json", import.meta.url);
+let activePolicyPath = new URL("./sample-policies/legacy-gpu-policy.signed.json", import.meta.url);
 const RECEIPT_LOG_PATH = process.env.MNDE_RECEIPT_LOG ?? join(process.cwd(), "hostile-verifier-proof-bundle", "receipts.jsonl");
 const AUTH_AUDIT_LOG_PATH = process.env.MNDE_AUTH_AUDIT_LOG ?? join(process.cwd(), "auth-audit", "auth-events.jsonl");
 const CLUSTER_MODE = process.env.MNDE_CLUSTER_MODE === "1";
@@ -256,6 +256,7 @@ function receiptPathForWorker(basePath) {
 // provider is configured and no demo/dev key material is in use. Runs in the
 // primary BEFORE forking so a misconfiguration fails fast (no worker crash-loop).
 // In MNDE_PROFILE=local (default) this is a no-op and custody is not loaded.
+let ACTIVATION_ID = null;
 {
   const { assertTrustRoot } = await import("./src/authority-signing/preflight.mjs");
   const trust = await assertTrustRoot(process.env, { repoRoot: REPO_ROOT });
@@ -263,8 +264,13 @@ function receiptPathForWorker(basePath) {
     process.stderr.write(`\nMNDe refused to start — trust-root pre-flight failed.\n  reason_code: ${trust.reason_code}\n  ${trust.detail}\n\n`);
     process.exit(1);
   }
+  // The preflight-verified id of the active authority transition
+  // (mnde.activation.v1). Receipts produced by this process are bound to it
+  // through the custody attestation. Null when no activation record is
+  // configured (local mode, or production before activation tooling).
+  ACTIVATION_ID = typeof trust.activation_id === "string" ? trust.activation_id : null;
   if (trust.profile === "production") {
-    process.stdout.write(`MNDe trust-root: production custody verified (authority '${trust.authority_id || "?"}')\n`);
+    process.stdout.write(`MNDe trust-root: production custody verified (authority '${trust.authority_id || "?"}')${ACTIVATION_ID ? `; activation ${ACTIVATION_ID.slice(0, 12)}…` : ""}\n`);
   }
 }
 
@@ -355,6 +361,8 @@ if (SIGNING_MODE === "custody") {
     signingConfig = await mod.loadSigningConfig(process.env);
     signReceiptAdapter = mod.signReceiptForDelivery;
     if (!signingConfig.ok) signingConfigError = signingConfig.reason_code;
+    // Bind receipts to the preflight-verified activation (mnde.activation.v1).
+    if (signingConfig.ok && ACTIVATION_ID) signingConfig.activation_id = ACTIVATION_ID;
     process.stdout.write(`MNDe receipt signing: custody${signingConfigError ? ` (CONFIG ERROR: ${signingConfigError})` : ""}\n`);
   } catch (error) {
     signingConfigError = "ERR_CUSTODY_UNAVAILABLE";

@@ -120,6 +120,13 @@ export async function signReceiptForDelivery(receipt, signingConfig, options = {
     decision: decisionOf(receipt),
     receipt_hash: sha256Hex(canonicalizeJson(receipt)),
     authority_bundle_fingerprint: provider.trustedRootFingerprint,
+    // Activation binding (mnde.activation.v1): the preflight-verified id of the
+    // active authority transition this decision was produced under. Part of the
+    // signed attestation payload — tampering breaks the attestation signature.
+    // The inner receipt stays byte-for-byte untouched.
+    ...(typeof signingConfig.activation_id === "string" && signingConfig.activation_id.length > 0
+      ? { activation_id: signingConfig.activation_id }
+      : {}),
     signed_at: at
   };
 
@@ -194,6 +201,9 @@ export async function verifyCustodyAttestation(envelope, options = {}) {
     authority_fingerprint: attestation.authority_bundle_fingerprint,
     trust_source: "ROOT_PINNED_AUTHORITY_BUNDLE",
     signed_at: attestation.signed_at,
-    receipt_hash: attestation.receipt_hash
+    receipt_hash: attestation.receipt_hash,
+    // Activation binding, when the producing runtime was activation-bound.
+    // Covered by the attestation signature verified above.
+    activation_id: typeof attestation.activation_id === "string" ? attestation.activation_id : null
   };
 }
