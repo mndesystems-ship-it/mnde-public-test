@@ -1,14 +1,25 @@
-<svg width="512" height="512" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MNDe">
-  <rect width="1024" height="1024" fill="#0E1318"/>
-  <g fill="none" stroke-width="30" stroke-linecap="butt">
-    <!-- execution flows in -->
-    <line x1="0" y1="512" x2="470" y2="512" stroke="#1D9BF0"/>
-    <!-- authority gate -->
-    <path d="M366 402 H404 V622 H366" stroke="#FFFFFF"/>
-    <path d="M538 402 H500 V622 H538" stroke="#FFFFFF"/>
-    <line x1="470" y1="512" x2="600" y2="512" stroke="#FFFFFF"/>
-    <rect x="600" y="402" width="100" height="220" stroke="#FFFFFF"/>
-    <!-- controlled output -->
-    <line x1="700" y1="512" x2="864" y2="512" stroke="#FFFFFF"/>
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MNDe">
+  <!-- Primary icon: mark on the dark plate. App icon / avatar / favicon source. -->
+  <rect width="128" height="128" rx="24" fill="#0E1318"/>
+  <g transform="translate(10,19) scale(0.9)">
+    <!-- inputs converge -->
+    <g fill="none" stroke="#FFFFFF" stroke-width="3.5">
+      <path d="M9 22 H26 L40 36 H46.5"/>
+      <path d="M9 42 H30 L34 46 H40.5"/>
+      <path d="M9 58 H30 L34 54 H40.5"/>
+      <path d="M9 78 H26 L40 64 H46.5"/>
+    </g>
+    <g fill="#FFFFFF">
+      <rect x="4" y="19.5" width="5" height="5"/>
+      <rect x="4" y="39.5" width="5" height="5"/>
+      <rect x="4" y="55.5" width="5" height="5"/>
+      <rect x="4" y="75.5" width="5" height="5"/>
+    </g>
+    <!-- authority node -->
+    <polygon points="82,50 71,69 49,69 38,50 49,31 71,31" fill="none" stroke="#FFFFFF" stroke-width="5"/>
+    <polygon points="70,50 65,58.7 55,58.7 50,50 55,41.3 65,41.3" fill="#1E3A8A"/>
+    <!-- allowed execution out -->
+    <line x1="84.5" y1="50" x2="105" y2="50" stroke="#2563EB" stroke-width="4.5"/>
+    <polygon points="105,43.5 117,50 105,56.5" fill="#2563EB"/>
   </g>
 </svg>

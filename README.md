@@ -1,4 +1,4 @@
-<p align="left"><img src="brand/mnde-wordmark.svg" alt="MNDe — Execution Firewall" height="80"></p>
+<p align="left"><img src="brand/mnde-wordmark.svg" alt="MNDe" height="80"></p>
 
 # MNDe Public Test
 

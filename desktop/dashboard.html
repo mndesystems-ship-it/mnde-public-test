@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>MNDe — Authority Console</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230E1318'/%3E%3Cg stroke-width='6'%3E%3Cline x1='6' y1='32' x2='30' y2='32' stroke='%231D9BF0'/%3E%3Cline x1='34' y1='22' x2='34' y2='42' stroke='%23fff'/%3E%3Cline x1='40' y1='32' x2='58' y2='32' stroke='%23fff'/%3E%3C/g%3E%3C/svg%3E" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230E1318'/%3E%3Cpolygon points='42.5,32 35.8,43.7 22.3,43.7 15.5,32 22.3,20.3 35.8,20.3' fill='none' stroke='%23fff' stroke-width='4'/%3E%3Cpolygon points='35,32 32,37.2 26,37.2 23,32 26,26.8 32,26.8' fill='%232563EB'/%3E%3Cline x1='44' y1='32' x2='52' y2='32' stroke='%232563EB' stroke-width='4'/%3E%3Cpolygon points='52,27.5 60,32 52,36.5' fill='%232563EB'/%3E%3C/svg%3E" />
 <style>
   :root {
     --bg: #0a0d10; --panel: #11161b; --panel-2: #0d1216; --line: #1d262e;
@@ -62,15 +62,23 @@
 <body>
   <div class="topbar">
     <div class="brand">
-      <svg class="logo" viewBox="0 0 900 260" fill="none" aria-label="MNDe">
-        <g stroke-width="26" stroke-linecap="butt">
-          <line x1="0" y1="130" x2="410" y2="130" stroke="#1D9BF0"/>
-          <path d="M318 30 H350 V230 H318" stroke="currentColor"/>
-          <path d="M472 30 H440 V230 H472" stroke="currentColor"/>
-          <line x1="410" y1="130" x2="530" y2="130" stroke="currentColor"/>
-          <rect x="530" y="30" width="100" height="200" stroke="currentColor"/>
-          <line x1="630" y1="130" x2="880" y2="130" stroke="currentColor"/>
+      <svg class="logo" viewBox="0 0 120 100" fill="none" aria-label="MNDe">
+        <g stroke="currentColor" stroke-width="3.5">
+          <path d="M9 22 H26 L40 36 H46.5"/>
+          <path d="M9 42 H30 L34 46 H40.5"/>
+          <path d="M9 58 H30 L34 54 H40.5"/>
+          <path d="M9 78 H26 L40 64 H46.5"/>
         </g>
+        <g fill="currentColor" stroke="none">
+          <rect x="4" y="19.5" width="5" height="5"/>
+          <rect x="4" y="39.5" width="5" height="5"/>
+          <rect x="4" y="55.5" width="5" height="5"/>
+          <rect x="4" y="75.5" width="5" height="5"/>
+        </g>
+        <polygon points="82,50 71,69 49,69 38,50 49,31 71,31" stroke="currentColor" stroke-width="5"/>
+        <polygon points="70,50 65,58.7 55,58.7 50,50 55,41.3 65,41.3" fill="#1E3A8A" stroke="none"/>
+        <line x1="84.5" y1="50" x2="105" y2="50" stroke="#2563EB" stroke-width="4.5"/>
+        <polygon points="105,43.5 117,50 105,56.5" fill="#2563EB" stroke="none"/>
       </svg>
       <span>MNDe</span> <small>AUTHORITY CONSOLE</small>
     </div>
