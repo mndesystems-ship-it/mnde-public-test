@@ -20,7 +20,6 @@ import { bootstrapReceiptKeys } from "./bootstrap_dev_receipt_keys.mjs";
 import { authorityPaths, loadAuthorityBundle } from "../shared/authority-manifest.mjs";
 // Cosmetic only — see comment at the stdin handler below. Not part of the
 // authority path; the sidecar runtime never imports this.
-import { createFelineWatcher } from "../cosmetic/feline-input.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HOST = "127.0.0.1";
@@ -150,9 +149,6 @@ process.on("SIGTERM", shutdown);
 // is never logged/stored/transmitted (no file, no receipt, no audit, no
 // telemetry), and only runs for a real interactive TTY (never under automation,
 // pipes, or tests). Disable with MNDE_FELINE=0.
-const felineWatcher = (process.stdin.isTTY === true && process.env.MNDE_FELINE !== "0")
-  ? createFelineWatcher()
-  : null;
 
 try {
   process.stdin.setEncoding("utf8");
@@ -161,10 +157,6 @@ try {
     if (/^\s*(stop|quit|exit)\s*$/im.test(text)) {
       shutdown();
       return;
-    }
-    if (felineWatcher) {
-      const message = felineWatcher.consider(text); // read transiently; never stored or sent
-      if (message) process.stdout.write(`\x1b[2m${message}\x1b[0m\n`);
     }
   });
   process.stdin.on("error", () => {});
