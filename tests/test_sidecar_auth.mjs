@@ -17,6 +17,7 @@ import { startMndeSidecar } from "../executor/sidecar-harness.mjs";
 import { createStdioClient } from "../mcp/stdio-client.mjs";
 import { reviewerRequest } from "../scripts/reviewer-request.mjs";
 import { buildAuthorityBundle, generateAuthorityKeyPair } from "../src/custody/index.mjs";
+import { signPolicyBundle } from "../src/policy-bundles/index.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const samplePolicy = join(repoRoot, "examples", "policy-engine", "sample-policy.json");
@@ -63,6 +64,34 @@ async function writeProductionCustody(dir) {
     MNDE_AUTHORITY_BUNDLE: bundlePath,
     MNDE_RECEIPT_SIGNING_KEY: keyPath,
     MNDE_RECEIPT_KEY_ID: receipt.keyId
+  };
+}
+
+// Production ALSO requires an enforced signed-bundle policy engine (production
+// posture pre-flight). These extras let production sidecars in this test boot
+// under the stricter posture; caller auth stays under each test's own control.
+async function policyEnforcementExtras(dir) {
+  const root = { keyId: "pe-root-1", ...generateAuthorityKeyPair() };
+  const policyKey = { keyId: "policy-1", ...generateAuthorityKeyPair() };
+  const authorityBundle = await buildAuthorityBundle({
+    authorityId: "mnde-auth-pe", issuedAt: "2026-01-01T00:00:00.000Z", notAfter: "2099-01-01T00:00:00.000Z", root,
+    policyKeys: [{ keyId: policyKey.keyId, publicPem: policyKey.publicPem, validFrom: "2026-01-01T00:00:00.000Z", validUntil: "2099-01-01T00:00:00.000Z" }]
+  });
+  const bundle = await signPolicyBundle({
+    bundle_id: "ops-policy-10-10.0.0", policy_id: "ops-policy", serial: 10, issued_at: "2026-06-23T12:00:00.000Z",
+    policy_document: { schema_version: "1.0", policy_id: "ops-policy", version: "10.0.0", state: "ACTIVE", rules: [{ rule_id: "allow-status", effect: "ALLOW", match: { field: "tool.tool_name", op: "eq", value: "read_status" } }] }
+  }, { keyId: policyKey.keyId, privateKeyPem: policyKey.privatePem });
+  const policyBundlePath = join(dir, "policy-bundle.json");
+  const authorityBundlePath = join(dir, "pe-authority-bundle.json");
+  writeFileSync(policyBundlePath, JSON.stringify(bundle), "utf8");
+  writeFileSync(authorityBundlePath, JSON.stringify(authorityBundle), "utf8");
+  return {
+    MNDE_DECISION_ENGINE: "policy-engine",
+    MNDE_PE_POLICY_BUNDLE: policyBundlePath,
+    MNDE_PE_AUTHORITY_BUNDLE: authorityBundlePath,
+    MNDE_PE_POLICY_BUNDLE_STATE: join(dir, "pe-bundle-state.json"),
+    MNDE_PE_TRUSTED_ROOT_FINGERPRINT: authorityBundle.root_key.fingerprint,
+    MNDE_PE_BUNDLE_NOW: "2026-06-23T12:00:00.000Z"
   };
 }
 
@@ -202,7 +231,7 @@ async function main() {
     await test("production with bearer auth and token config starts", async () => {
       prodBearer = await startMndeSidecar({
         url: "http://127.0.0.1:8802",
-        env: { ...(await writeProductionCustody(prodBearerDir)), MNDE_SIDECAR_AUTH: "bearer", MNDE_SIDECAR_AUTH_TOKENS: TOKENS_JSON, MNDE_BIND_PORT: "8802" }
+        env: { ...(await writeProductionCustody(prodBearerDir)), ...(await policyEnforcementExtras(prodBearerDir)), MNDE_SIDECAR_AUTH: "bearer", MNDE_SIDECAR_AUTH_TOKENS: TOKENS_JSON, MNDE_BIND_PORT: "8802" }
       });
       const res = await fetch(`${prodBearer.url}/readyz`);
       assert.equal(res.status, 200);

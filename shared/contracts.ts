@@ -177,6 +177,18 @@ export type DecisionOutput = {
   key_set_version: string;
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// LEGACY (v1 status: verify-only, feature-frozen).
+//
+// `ecs.receipt.v2` is the legacy GPU/compute-pipeline receipt. It is emitted ONLY
+// under the explicit `MNDE_DECISION_ENGINE=legacy` compatibility profile. It is
+// frozen: no new fields or features are added. It remains fully verifiable
+// (tools/verify.mjs → kind "pipeline") so historical receipts keep verifying.
+//
+// The CANONICAL v1 receipt is `mnde.pe.receipt.v1` (src/policy-engine/receipt.mjs),
+// optionally wrapped in the `mnde.signed-receipt.v1` custody envelope. New
+// development targets those. See docs/receipt-formats.md for the lifecycle table.
+// ─────────────────────────────────────────────────────────────────────────────
 export type SignedReceiptPayload = {
   schema_version: "ecs.receipt.v2";
   canonical_request: string;

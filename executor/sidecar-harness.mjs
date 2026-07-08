@@ -40,6 +40,10 @@ export async function startMndeSidecar({
     MNDE_WORKER_QUEUE_MAX_DEPTH: "16",
     MNDE_TESTER_ID: testerId,
     MNDE_INSTALLATION_ID: installationId,
+    // v1 makes policy-engine the sidecar default. These harness-based demos/tests
+    // exercise the legacy GPU pipeline, so pin the legacy compatibility engine
+    // explicitly unless an ambient or caller value selects a different engine.
+    MNDE_DECISION_ENGINE: process.env.MNDE_DECISION_ENGINE ?? "legacy",
     // Caller overrides last (e.g. MNDE_DECISION_ENGINE, MNDE_PE_POLICY, MNDE_BIND_PORT).
     ...extraEnv
   };

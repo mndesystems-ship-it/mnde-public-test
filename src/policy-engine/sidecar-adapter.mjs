@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs";
 import { buildPolicyReceipt } from "./receipt.mjs";
 import { loadSignedPolicyBundleConfig } from "../policy-bundles/index.mjs";
 import { parseRuntimeProfile } from "../../shared/runtime-profile.mjs";
+import { DEFAULT_DENY_POLICY, POLICY_CONFIGURATION_STATE_NO_POLICY, POLICY_SOURCE_BUILTIN } from "./default-deny.mjs";
 
 function loadJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
@@ -63,7 +64,24 @@ export async function loadPolicyEngineConfig(env) {
   }
   if (production) return { ok: false, reason: "ERR_PE_PRODUCTION_REQUIRES_SIGNED_POLICY_BUNDLE" };
   const policyPath = env.MNDE_PE_POLICY;
-  if (!policyPath) return { ok: false, reason: "MNDE_PE_POLICY is required when MNDE_DECISION_ENGINE=policy-engine" };
+  if (!policyPath) {
+    // Non-production with no configured policy: evaluate the built-in default-deny
+    // system policy (a real, evaluable policy → deterministic REFUSE) instead of
+    // failing closed unservably. The sidecar stays operational (boot/health/receipts)
+    // and refuses every action until a real policy is installed. NO_POLICY_CONFIGURED
+    // is surfaced operationally, never in the receipt.
+    const trustConfig = loadOptionalTrustConfig(env);
+    if (!trustConfig.ok) return trustConfig;
+    return {
+      ok: true,
+      production,
+      policy: DEFAULT_DENY_POLICY,
+      policy_source: POLICY_SOURCE_BUILTIN,
+      policy_configuration_state: POLICY_CONFIGURATION_STATE_NO_POLICY,
+      trustAnchors: trustConfig.trustAnchors,
+      approvalTrustAnchors: trustConfig.approvalTrustAnchors
+    };
+  }
   let policy;
   try {
     policy = loadJson(policyPath);

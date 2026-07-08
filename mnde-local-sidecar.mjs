@@ -15,6 +15,9 @@ import {
 } from "./audit/node_runtime.ts";
 import { boundaryReplayEndpointResponse } from "./shared/receipt-replay.mjs";
 import { parseRuntimeProfile } from "./shared/runtime-profile.mjs";
+import { resolveDecisionEngine } from "./shared/decision-engine.mjs";
+import { ledgerStartupGate, isLedgerDisabled } from "./src/execution-ledger/paths.mjs";
+import { resolveLedgerRuntime, recordReceiptInLedger, ledgerResponseMeta, ledgerHeadResponse, ledgerVerifyResponse, ledgerExportResponse } from "./src/execution-ledger/sidecar.mjs";
 import {
   DeterministicWorkerPool,
   WORKER_POOL_SATURATED,
@@ -286,6 +289,28 @@ assertStartupDirectoryPermissions([
   { name: "auth audit log", dir: dirname(AUTH_AUDIT_LOG_PATH) }
 ]);
 
+// ── Production posture pre-flight ─────────────────────────────────────────────
+// Complements the trust-root gate: in MNDE_PROFILE=production the decision
+// endpoint must ALSO require caller authentication and an enforced (signed-
+// bundle) policy engine. Runs in the primary before forking so a misconfiguration
+// fails fast rather than deferring to per-request denial. No-op outside production.
+{
+  const { assertProductionPosture } = await import("./src/production-posture-preflight.mjs");
+  const posture = await assertProductionPosture(process.env);
+  if (!posture.ok) {
+    process.stderr.write(`\nMNDe refused to start — production posture pre-flight failed.\n  reason_code: ${posture.reason_code}\n  ${posture.detail}\n\n`);
+    process.exit(1);
+  }
+}
+
+// ── Decision-engine selection guard ──────────────────────────────────────────
+// Fail closed on an unrecognized MNDE_DECISION_ENGINE before forking, rather than
+// silently choosing an engine. Unset resolves to the v1 default (policy-engine).
+if (resolveDecisionEngine(process.env) === null) {
+  process.stderr.write(`\nMNDe refused to start — unknown MNDE_DECISION_ENGINE '${process.env.MNDE_DECISION_ENGINE}'. Valid values: 'policy-engine' (default), 'legacy'.\n\n`);
+  process.exit(1);
+}
+
 // Optional, opt-in caller authentication. Default "off" (legacy-compatible).
 const {
   authSourceForRequest,
@@ -327,23 +352,47 @@ if (cluster.isPrimary && CLUSTER_MODE) {
   await new Promise(() => {});
 }
 
-// Optional, opt-in decision engine. Default is "legacy" (the existing pipeline).
-// The policy-engine adapter is dynamically imported ONLY in policy-engine mode,
-// so legacy mode never loads it and its behavior is byte-for-byte unchanged.
-const DECISION_ENGINE = process.env.MNDE_DECISION_ENGINE === "policy-engine" ? "policy-engine" : "legacy";
+// Decision engine. v1 default is "policy-engine" (the canonical authority path);
+// "legacy" is the explicit opt-in compatibility profile. The policy-engine adapter
+// is dynamically imported ONLY in policy-engine mode, so legacy mode never loads it
+// and its behavior is byte-for-byte unchanged.
+const DECISION_ENGINE = resolveDecisionEngine(process.env);
 let policyEngine = null;
 let policyEngineConfigError = null;
+let policyConfigurationState = null; // deployment state (e.g. NO_POLICY_CONFIGURED); never written into receipts
 if (DECISION_ENGINE === "policy-engine") {
   try {
     const adapter = await import("./src/policy-engine/sidecar-adapter.mjs");
     const peConfig = await adapter.loadPolicyEngineConfig(process.env);
     if (!peConfig.ok) policyEngineConfigError = peConfig.reason;
-    else policyEngine = { decide: (body, opts) => adapter.decidePolicyEngine(body, peConfig, opts) };
-    process.stdout.write(`MNDe decision engine: policy-engine${policyEngineConfigError ? ` (CONFIG ERROR: ${policyEngineConfigError})` : ""}\n`);
+    else {
+      policyEngine = { decide: (body, opts) => adapter.decidePolicyEngine(body, peConfig, opts) };
+      policyConfigurationState = peConfig.policy_configuration_state ?? null;
+    }
+    const stateNote = policyConfigurationState ? ` (${policyConfigurationState}: built-in default-deny policy active; every decision REFUSES until a policy is installed)` : "";
+    process.stdout.write(`MNDe decision engine: policy-engine${policyEngineConfigError ? ` (CONFIG ERROR: ${policyEngineConfigError})` : stateNote}\n`);
   } catch (error) {
     policyEngineConfigError = error instanceof Error ? error.message : String(error);
     process.stderr.write(`MNDe policy-engine adapter failed to load: ${policyEngineConfigError}\n`);
   }
+}
+
+// Execution ledger (V1 integrity layer). Default-on. Appends one tamper-evident,
+// hash-chained entry per finalized receipt — a SEPARATE layer that never touches
+// the receipt format, signing, or standalone verification. Disabling it is a
+// development-only convenience and fails closed at startup under MNDE_PROFILE=
+// production. Append failure fails the request closed in production.
+const ledgerGate = ledgerStartupGate(process.env);
+if (!ledgerGate.ok) {
+  process.stderr.write(`\nMNDe refused to start — ${ledgerGate.detail}\n  reason_code: ${ledgerGate.code}\n\n`);
+  process.exit(1);
+}
+const LEDGER_RUNTIME = resolveLedgerRuntime(process.env, receiptQueue.config.path);
+const LEDGER_ENGINE = { name: DECISION_ENGINE === "legacy" ? "mnde-legacy-pipeline" : "mnde-policy-engine", version: null };
+if (LEDGER_RUNTIME.enabled) {
+  process.stdout.write(`MNDe execution ledger: enabled (${LEDGER_RUNTIME.ledgerPath})\n`);
+} else {
+  process.stdout.write(`MNDe execution ledger: DISABLED (MNDE_EXECUTION_LEDGER=off; non-production only)\n`);
 }
 
 // Optional, opt-in live receipt signing. Default "legacy" keeps receipt bytes
@@ -474,7 +523,10 @@ async function persistRefusal(reason_code, extra = {}, timings = {}) {
     counters.receipt_refusals += 1;
     return { ok: false, reason_code: queued.reason_code, receipt };
   }
-  if (RECEIPT_QUEUE_CONFIG.durability_mode === "strict_audit") {
+  if (LEDGER_RUNTIME.enabled) {
+    const ledger = await recordReceiptInLedger({ runtime: LEDGER_RUNTIME, receipt, durable: queued.durable, profile: RUNTIME_PROFILE, engine: LEDGER_ENGINE, flush: () => receiptQueue.flush() });
+    if (ledger.failClosed) return { ok: false, reason_code: ledger.code, receipt };
+  } else if (RECEIPT_QUEUE_CONFIG.durability_mode === "strict_audit") {
     await queued.durable;
   }
   return { ok: true, receipt };
@@ -670,7 +722,18 @@ async function respondPolicyEngine(res, request, timings, totalStarted, caller) 
     await fail(res, queued.reason_code, 200, {}, timings);
     return;
   }
-  if (RECEIPT_QUEUE_CONFIG.durability_mode === "strict_audit") {
+  let ledgerMeta = null;
+  if (LEDGER_RUNTIME.enabled) {
+    const ledger = await recordReceiptInLedger({ runtime: LEDGER_RUNTIME, receipt: signed.receipt, durable: queued.durable, profile: RUNTIME_PROFILE, engine: LEDGER_ENGINE, flush: () => receiptQueue.flush() });
+    if (ledger.failClosed) {
+      counters.receipt_refusals += 1;
+      timings.total_server_ms = Math.max(0, Math.round(performance.now() - totalStarted));
+      recordTimings(timings);
+      await fail(res, ledger.code, 200, {}, timings);
+      return;
+    }
+    ledgerMeta = ledgerResponseMeta(ledger);
+  } else if (RECEIPT_QUEUE_CONFIG.durability_mode === "strict_audit") {
     await queued.durable;
   }
   timings.total_server_ms = Math.max(0, Math.round(performance.now() - totalStarted));
@@ -678,6 +741,10 @@ async function respondPolicyEngine(res, request, timings, totalStarted, caller) 
   response(res, 200, {
     schema_version: "mnde.api.response.v1",
     decision_engine: "policy-engine",
+    // Ledger status lives OUTSIDE the receipt (never mutates receipt bytes).
+    ...(ledgerMeta ? { ledger: ledgerMeta } : {}),
+    // Deployment state surfaced to operators only (API/logs); NOT in the signed receipt.
+    ...(policyConfigurationState ? { policy_configuration_state: policyConfigurationState } : {}),
     decision: outcome.decision,
     reason_code: outcome.reason_code,
     policy_id: outcome.receipt.decision_output.policy_id,
@@ -901,7 +968,18 @@ async function handleDecide(req, res) {
       }, timings);
       return;
     }
-    if (RECEIPT_QUEUE_CONFIG.durability_mode === "strict_audit") {
+    let ledgerMeta = null;
+    if (LEDGER_RUNTIME.enabled) {
+      const ledger = await recordReceiptInLedger({ runtime: LEDGER_RUNTIME, receipt: signed.receipt, durable: queued.durable, profile: RUNTIME_PROFILE, engine: LEDGER_ENGINE, flush: () => receiptQueue.flush() });
+      if (ledger.failClosed) {
+        counters.receipt_refusals += 1;
+        timings.total_server_ms = Math.max(0, Math.round(performance.now() - totalStarted));
+        recordTimings(timings);
+        await fail(res, ledger.code, 200, { request_hash: result.receipt.request_hash, decision_hash: result.receipt.decision_output.decision_hash, timings, raw_body: raw }, timings);
+        return;
+      }
+      ledgerMeta = ledgerResponseMeta(ledger);
+    } else if (RECEIPT_QUEUE_CONFIG.durability_mode === "strict_audit") {
       const durable = await queued.durable;
       timings.persistence_flush_ms = durable.persistence_flush_ms ?? 0;
     }
@@ -910,7 +988,8 @@ async function handleDecide(req, res) {
     const apiBody = apiResponseFromReceipt(result.receipt);
     // Deliver the custody-signed envelope in place of the inner receipt.
     if (apiBody.receipt && signed.receipt !== result.receipt) apiBody.receipt = signed.receipt;
-    response(res, 200, { ...apiBody, ...(SIGNING_MODE === "custody" ? { receipt_signing: "custody" } : {}), ...(req._mndeCaller ? { authenticated_caller: req._mndeCaller.id } : {}), timings }, timings);
+    // Ledger status lives OUTSIDE the receipt (never mutates receipt bytes).
+    response(res, 200, { ...apiBody, ...(ledgerMeta ? { ledger: ledgerMeta } : {}), ...(SIGNING_MODE === "custody" ? { receipt_signing: "custody" } : {}), ...(req._mndeCaller ? { authenticated_caller: req._mndeCaller.id } : {}), timings }, timings);
   } catch (error) {
     if (error?.message?.startsWith("ERR_RECEIPT_FLUSH_FAILED")) counters.flush_failures += 1;
     if (error?.message === WORKER_TIMEOUT) counters.request_timeout_refusals += 1;
@@ -1281,6 +1360,36 @@ const server = http.createServer(async (req, res) => {
       policy_activation: true,
       audit_bundle: true
     }));
+    return;
+  }
+  // Execution-ledger read endpoints. Gated the same way as the receipt
+  // endpoints: head ~ inspect_receipts (production-read), verify ~ verify_receipts,
+  // export ~ export_audit. Export is never exposed without authority gating.
+  if (req.method === "GET" && pathname === "/ledger/head") {
+    if (!authorizeProductionRead(req, res, pathname, "ledger.head")) return;
+    response(res, 200, ledgerHeadResponse(LEDGER_RUNTIME));
+    return;
+  }
+  if (req.method === "GET" && pathname === "/ledger/verify") {
+    const authz = authorizeRequest(req, pathname);
+    if (!authz.ok) {
+      response(res, 403, refusalBody(authz.reason, authz.actor, "ledger.verify"));
+      return;
+    }
+    const result = ledgerVerifyResponse(LEDGER_RUNTIME);
+    auditAuthority(pathname, authz, result.ok ? "ALLOW" : "REFUSE", `entries:${result.entries_checked}`, null, result.ok ? null : result.errors[0]?.code);
+    response(res, 200, result);
+    return;
+  }
+  if (req.method === "GET" && pathname === "/ledger/export") {
+    const authz = authorizeRequest(req, pathname);
+    if (!authz.ok) {
+      response(res, 403, refusalBody(authz.reason, authz.actor, "ledger.export"));
+      return;
+    }
+    const result = ledgerExportResponse(LEDGER_RUNTIME);
+    auditAuthority(pathname, authz, "ALLOW", `entries:${result.entry_count}`, null, null);
+    response(res, 200, result);
     return;
   }
   await fail(res, "ERR_NOT_FOUND", 404);

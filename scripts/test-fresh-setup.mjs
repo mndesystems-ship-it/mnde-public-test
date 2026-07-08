@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { existsSync, mkdirSync, readFileSync, rmSync, renameSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { bootstrapReceiptKeys } from "./bootstrap_dev_receipt_keys.mjs";
@@ -13,7 +12,10 @@ const keyDir = join(repoRoot, "shared", "receipt_keys");
 const localAuthorityDir = join(repoRoot, ".mnde-test", "authority");
 const demoAuthorityManifest = join(repoRoot, "authority", "authority-manifest.json");
 const validExampleReceipt = join(repoRoot, "examples", "receipts", "valid-receipt.json");
-const backupRoot = join(tmpdir(), `mnde-fresh-setup-backup-${Date.now()}-${process.pid}`);
+// Backup must be on the SAME device as the repo: the source dirs live under
+// repoRoot, and renameSync across devices fails with EXDEV (e.g. CI runners where
+// the checkout is on D: and os.tmpdir() is on C:). .mnde-test/ is gitignored.
+const backupRoot = join(repoRoot, ".mnde-test", `fresh-setup-backup-${Date.now()}-${process.pid}`);
 const keyBackup = join(backupRoot, "receipt_keys");
 const localAuthorityBackup = join(backupRoot, "local_authority");
 

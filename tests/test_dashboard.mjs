@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 
 import { startMndeSidecar } from "../executor/sidecar-harness.mjs";
 import { buildAuthorityBundle, generateAuthorityKeyPair } from "../src/custody/index.mjs";
+import { signPolicyBundle } from "../src/policy-bundles/index.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -53,6 +54,36 @@ async function writeProductionCustody(dir) {
     MNDE_AUTHORITY_BUNDLE: bundlePath,
     MNDE_RECEIPT_SIGNING_KEY: keyPath,
     MNDE_RECEIPT_KEY_ID: receipt.keyId
+  };
+}
+
+// Production now also requires caller auth + an enforced signed-bundle policy
+// engine (production posture pre-flight); these extras let the production sidecar
+// boot under the stricter posture so the read-authorization checks can run.
+async function productionEnforcementExtras(dir) {
+  const root = { keyId: "pe-root-1", ...generateAuthorityKeyPair() };
+  const policyKey = { keyId: "policy-1", ...generateAuthorityKeyPair() };
+  const authorityBundle = await buildAuthorityBundle({
+    authorityId: "mnde-dash-pe", issuedAt: "2026-01-01T00:00:00.000Z", notAfter: "2099-01-01T00:00:00.000Z", root,
+    policyKeys: [{ keyId: policyKey.keyId, publicPem: policyKey.publicPem, validFrom: "2026-01-01T00:00:00.000Z", validUntil: "2099-01-01T00:00:00.000Z" }]
+  });
+  const bundle = await signPolicyBundle({
+    bundle_id: "ops-policy-10-10.0.0", policy_id: "ops-policy", serial: 10, issued_at: "2026-06-23T12:00:00.000Z",
+    policy_document: { schema_version: "1.0", policy_id: "ops-policy", version: "10.0.0", state: "ACTIVE", rules: [{ rule_id: "allow-status", effect: "ALLOW", match: { field: "tool.tool_name", op: "eq", value: "read_status" } }] }
+  }, { keyId: policyKey.keyId, privateKeyPem: policyKey.privatePem });
+  const policyBundlePath = join(dir, "policy-bundle.json");
+  const authorityBundlePath = join(dir, "pe-authority-bundle.json");
+  writeFileSync(policyBundlePath, JSON.stringify(bundle), "utf8");
+  writeFileSync(authorityBundlePath, JSON.stringify(authorityBundle), "utf8");
+  return {
+    MNDE_SIDECAR_AUTH: "bearer",
+    MNDE_SIDECAR_AUTH_TOKENS: JSON.stringify({ "dash-caller-token": "dash-caller" }),
+    MNDE_DECISION_ENGINE: "policy-engine",
+    MNDE_PE_POLICY_BUNDLE: policyBundlePath,
+    MNDE_PE_AUTHORITY_BUNDLE: authorityBundlePath,
+    MNDE_PE_POLICY_BUNDLE_STATE: join(dir, "pe-bundle-state.json"),
+    MNDE_PE_TRUSTED_ROOT_FINGERPRINT: authorityBundle.root_key.fingerprint,
+    MNDE_PE_BUNDLE_NOW: "2026-06-23T12:00:00.000Z"
   };
 }
 
@@ -204,8 +235,7 @@ async function main() {
       url: "http://127.0.0.1:8796",
       env: {
         ...(await writeProductionCustody(prodDir)),
-        MNDE_SIDECAR_AUTH: "bearer",
-        MNDE_SIDECAR_AUTH_TOKENS: JSON.stringify({ "dashboard-prod-token": "dashboard-test-caller" }),
+        ...(await productionEnforcementExtras(prodDir)),
         MNDE_BIND_PORT: "8796",
         MNDE_AUTH_ASSERTION_PUBLIC_KEY_B64: Buffer.from(publicDer).subarray(-32).toString("base64url"),
         MNDE_AUTH_AUDIT_LOG: auditLog,

@@ -116,8 +116,6 @@ const asyncCustodyExports = new Set([
   "verifyExecutionResult",
   "buildSignedExecutionResult",
   "verifySignedExecutionResult",
-  "buildSignedLedgerEntry",
-  "verifyLedgerEntry",
   "loadSigningConfig",
   "signReceiptForDelivery",
   "verifyCustodyAttestation",
