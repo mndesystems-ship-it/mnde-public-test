@@ -24,6 +24,16 @@ export function clampReceiptLimit(value) {
   return Math.max(RECEIPT_LIMIT_MIN, Math.min(RECEIPT_LIMIT_MAX, parsed));
 }
 
+// Prefer the receipt's own timestamp, fall back to the signing time already
+// present on every signed receipt. Never fabricate a time: a missing or
+// unparseable value is reported as null, not epoch zero.
+function receiptTimestamp(raw) {
+  for (const candidate of [raw?.timestamp, raw?.verifiable_signature?.signed_at]) {
+    if (typeof candidate === "string" && Number.isFinite(Date.parse(candidate))) return candidate;
+  }
+  return null;
+}
+
 export function normalizeReceipt(raw) {
   const decision = raw?.decision_output && typeof raw.decision_output === "object" ? raw.decision_output : {};
   const trace = raw?.pipeline_trace && typeof raw.pipeline_trace === "object" ? raw.pipeline_trace : {};
@@ -33,7 +43,7 @@ export function normalizeReceipt(raw) {
 
   return {
     receipt_id: typeof receiptId === "string" ? receiptId : null,
-    timestamp: typeof raw?.timestamp === "string" ? raw.timestamp : new Date(0).toISOString(),
+    timestamp: receiptTimestamp(raw),
     verdict,
     action: typeof raw?.action === "string" ? raw.action : decision.execution_id ? `execution ${decision.execution_id}` : "not reported",
     reason_code: typeof decision.reason_code === "string" ? decision.reason_code : "NOT_REPORTED",

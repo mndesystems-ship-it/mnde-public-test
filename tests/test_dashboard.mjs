@@ -16,6 +16,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { startMndeSidecar } from "../executor/sidecar-harness.mjs";
+import { normalizeReceipt } from "../sidecar/production_api.mjs";
+import { buildSidecarRefusalReceipt } from "../sidecar/refusal_receipt.mjs";
 import { buildAuthorityBundle, generateAuthorityKeyPair } from "../src/custody/index.mjs";
 import { signPolicyBundle } from "../src/policy-bundles/index.mjs";
 
@@ -130,6 +132,25 @@ async function assertGenericAuthRefusal(url, path, headers = {}) {
 
 async function main() {
   console.log("MNDe operational dashboard (no login)\n");
+
+  await test("receipt timestamps are never fabricated (no epoch-zero fallback)", () => {
+    const iso = "2026-07-12T10:00:00.000Z";
+    assert.equal(normalizeReceipt({ timestamp: iso }).timestamp, iso);
+    assert.equal(normalizeReceipt({ verifiable_signature: { signed_at: iso } }).timestamp, iso);
+    assert.equal(normalizeReceipt({ timestamp: "not a date", verifiable_signature: { signed_at: iso } }).timestamp, iso);
+    assert.equal(normalizeReceipt({}).timestamp, null);
+    assert.equal(normalizeReceipt({ timestamp: 1783824326427 }).timestamp, null);
+    assert.equal(normalizeReceipt({ timestamp: "garbage", verifiable_signature: { signed_at: "also garbage" } }).timestamp, null);
+    assert.equal(normalizeReceipt({ verifiable_signature: { signed_at: { evil: true } } }).timestamp, null);
+    assert.equal(normalizeReceipt({ verifiable_signature: "not-an-object" }).timestamp, null);
+  });
+
+  await test("a real signed refusal receipt normalizes to its signing time", () => {
+    const receipt = buildSidecarRefusalReceipt({ reason_code: "ERR_NOT_FOUND", policy_hash: "h", policy_version: "v" });
+    const normalized = normalizeReceipt(receipt);
+    assert.equal(normalized.timestamp, receipt.verifiable_signature.signed_at);
+    assert.ok(Number.isFinite(Date.parse(normalized.timestamp)));
+  });
 
   const sc = await startMndeSidecar({ url: "http://127.0.0.1:8794", env: { MNDE_BIND_PORT: "8794" } });
   let html = "";
