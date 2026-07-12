@@ -13,7 +13,9 @@ import { startMndeSidecar } from "../executor/sidecar-harness.mjs";
 import { createStdioClient } from "../mcp/stdio-client.mjs";
 import { verificationPassed, verifyReceiptFile } from "../tools/verify-receipt.mjs";
 
-const SIDECAR_URL = "http://127.0.0.1:8787";
+// Dedicated port: 8787 is the sidecar's real default, so a developer's live
+// sidecar may legitimately own it while tests run.
+const SIDECAR_URL = "http://127.0.0.1:8806";
 const RECEIPTS_DIR = "./mnde-receipts/mcp-tests";
 const MARKER = join(process.cwd(), "mnde-receipts", "mcp-test-destruction-marker.txt");
 

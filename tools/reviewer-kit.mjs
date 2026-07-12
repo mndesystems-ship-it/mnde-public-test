@@ -79,7 +79,7 @@ async function waitReady() {
 async function assertPortFree() {
   try {
     await httpJson("/healthz");
-    throw new Error("sidecar port 8787 is already in use");
+    throw new Error(`sidecar port at ${sidecarUrl} is already in use (set MNDE_SIDECAR_URL to a free port)`);
   } catch (error) {
     if (String(error.message).includes("already in use")) throw error;
   }
@@ -105,7 +105,10 @@ function startSidecar() {
     // v1 makes policy-engine the sidecar default; the reviewer kit demonstrates the
     // legacy GPU pipeline, so pin the legacy compatibility engine explicitly unless
     // an ambient value selects a different engine.
-    MNDE_DECISION_ENGINE: process.env.MNDE_DECISION_ENGINE ?? "legacy"
+    MNDE_DECISION_ENGINE: process.env.MNDE_DECISION_ENGINE ?? "legacy",
+    // Bind where sidecarUrl says we will poll, so MNDE_SIDECAR_URL on a
+    // non-default port actually moves the sidecar (not just the health check).
+    MNDE_BIND_PORT: new URL(sidecarUrl).port || "8787"
   };
   sidecarProcess = spawn(process.execPath, ["mnde-local-sidecar.mjs"], {
     cwd: repoRoot,

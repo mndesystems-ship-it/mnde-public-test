@@ -35,6 +35,9 @@ if (JSON.stringify(packageTestScripts) !== JSON.stringify(expectedTestScripts)) 
   fail("package.json test:* scripts must match tests/expected-test-scripts.json.");
 }
 
+// Run every suite even after a failure: a single broken suite must not hide
+// the status of everything after it. Failures are collected and summarized.
+const failures = [];
 for (const scriptName of expectedTestScripts) {
   console.log(`\n=== npm run ${scriptName} ===`);
   const result = process.platform === "win32"
@@ -42,11 +45,15 @@ for (const scriptName of expectedTestScripts) {
     : spawnSync("npm", ["run", scriptName], { cwd: repoRoot, stdio: "inherit" });
   if (result.error) {
     console.error(result.error.message);
-    process.exit(1);
-  }
-  if (result.status !== 0) {
-    process.exit(result.status ?? 1);
+    failures.push(scriptName);
+  } else if (result.status !== 0) {
+    failures.push(scriptName);
   }
 }
 
+if (failures.length > 0) {
+  console.error(`\nFAIL test scripts (${expectedTestScripts.length - failures.length}/${expectedTestScripts.length} passed)`);
+  console.error(`Failing suites: ${failures.join(", ")}`);
+  process.exit(1);
+}
 console.log(`\nPASS all test scripts (${expectedTestScripts.length}/${expectedTestScripts.length})`);

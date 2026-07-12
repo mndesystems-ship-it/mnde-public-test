@@ -52,7 +52,9 @@ async function main() {
   console.log("MNDe sidecar — policy-engine mode\n");
 
   // ── Phase 1: PE mode, policy only (receipts non-enforced) ──────────────────
-  const a = await startMndeSidecar({ url: "http://127.0.0.1:8787", env: { MNDE_DECISION_ENGINE: "policy-engine", MNDE_PE_POLICY: samplePolicy, MNDE_BIND_PORT: "8787" } });
+  // Dedicated port: 8787 is the sidecar's real default, so a developer's live
+  // sidecar may legitimately own it while tests run.
+  const a = await startMndeSidecar({ url: "http://127.0.0.1:8809", env: { MNDE_DECISION_ENGINE: "policy-engine", MNDE_PE_POLICY: samplePolicy } });
   try {
     await test("PE mode ALLOW returns a policy-engine receipt that verifies offline", async () => {
       const res = await decide(a.url, peReq("read_status"));

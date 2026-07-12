@@ -13,10 +13,15 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+// Dedicated port: 8787 is the sidecar's real default, so a developer's live
+// sidecar may legitimately own it while tests run.
+const sidecarUrl = process.env.MNDE_SIDECAR_URL ?? "http://127.0.0.1:8814";
+
 function run(command, args) {
   return spawnSync(command, args, {
     cwd: repoRoot,
-    encoding: "utf8"
+    encoding: "utf8",
+    env: { ...process.env, MNDE_SIDECAR_URL: sidecarUrl }
   });
 }
 
@@ -39,7 +44,7 @@ assert(verificationPassed(verifyReceiptFile(refusePath)), "REFUSE receipt did no
 let sidecarClosed = false;
 for (let attempt = 0; attempt < 20; attempt += 1) {
   try {
-    await fetch("http://127.0.0.1:8787/healthz");
+    await fetch(`${sidecarUrl}/healthz`);
   } catch {
     sidecarClosed = true;
     break;

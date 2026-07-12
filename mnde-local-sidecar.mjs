@@ -85,6 +85,10 @@ const WORKER_QUEUE_MAX_DEPTH = Number.parseInt(process.env.MNDE_WORKER_QUEUE_MAX
 const WORKER_TASK_TIMEOUT_MS = Number.parseInt(process.env.MNDE_WORKER_TASK_TIMEOUT_MS ?? String(Math.max(100, HTTP_LIMITS.request_timeout_ms - 100)), 10);
 const INLINE_REFUSAL_RECEIPTS = process.env.MNDE_INLINE_REFUSAL_RECEIPTS === "1";
 const TEST_HARNESS_ENABLED = process.env.MNDE_TEST_HARNESS === "1";
+// Opaque nonce a spawning harness passes in so /readyz answers can be tied to
+// THIS process. Without it a readiness poll cannot distinguish this sidecar
+// from an unrelated process already bound to the same port.
+const HARNESS_INSTANCE_ID = process.env.MNDE_HARNESS_INSTANCE_ID || null;
 const RECEIPT_DURABILITY_MODE = process.env.MNDE_RECEIPT_DURABILITY_MODE ?? "throughput";
 const RECEIPT_QUEUE_CONFIG = validateReceiptPersistenceConfig({
   path: receiptPathForWorker(RECEIPT_LOG_PATH),
@@ -1119,6 +1123,7 @@ function readinessSnapshot() {
   const watchdogState = watchdog.snapshot();
   return {
     ok: !queueMetrics.fail_closed && !watchdogState.fatal,
+    ...(HARNESS_INSTANCE_ID ? { harness_instance_id: HARNESS_INSTANCE_ID } : {}),
     degraded: queueMetrics.fail_closed || watchdogState.degraded,
     degraded_reason: queueMetrics.fail_closed_reason ?? watchdogState.degraded_reason,
     active_policy_version: policy.policy_version,
@@ -1446,6 +1451,13 @@ server.keepAliveTimeout = L0_LIMITS.enable ? L0_LIMITS.keepalive_timeout_ms : HT
 server.headersTimeout = L0_LIMITS.enable ? L0_LIMITS.headers_timeout_ms : HTTP_LIMITS.headers_timeout_ms;
 server.requestTimeout = HTTP_LIMITS.request_timeout_ms;
 server.timeout = HTTP_LIMITS.request_timeout_ms;
+
+server.on("error", (error) => {
+  // Bind/listen failures (EADDRINUSE et al) must exit with a readable reason,
+  // not an uncaught stack trace: harnesses surface this stderr verbatim.
+  process.stderr.write(`ERR_BIND_FAILED: ${error?.code ?? "unknown"} on http://${HOST}:${PORT} — ${error?.message ?? error}\n`);
+  process.exit(1);
+});
 
 server.listen(PORT, HOST, L0_LIMITS.enable ? L0_LIMITS.backlog : Number.parseInt(process.env.MNDE_LISTEN_BACKLOG ?? "4096", 10), () => {
   socketRegistry.start();

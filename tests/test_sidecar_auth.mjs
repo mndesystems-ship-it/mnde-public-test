@@ -114,7 +114,9 @@ async function main() {
   console.log("MNDe sidecar — caller authentication\n");
 
   // ── auth off (default): existing behavior ──────────────────────────────────
-  const off = await startMndeSidecar({ url: "http://127.0.0.1:8787", env: {} });
+  // Dedicated port: 8787 is the sidecar's real default, so a developer's live
+  // sidecar may legitimately own it. Auth semantics under test are unchanged.
+  const off = await startMndeSidecar({ url: "http://127.0.0.1:8803", env: {} });
   try {
     await test("default auth off: request without Authorization works", async () => {
       const { body } = await post(off.url, reviewerRequest({ requestId: "r1", tool: "read_status" }));

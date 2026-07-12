@@ -28,6 +28,12 @@ export async function startMndeSidecar({
   const logsRoot = join(repoRoot, "mnde-receipts", "_sidecar-logs");
   mkdirSync(logsRoot, { recursive: true });
 
+  // Per-start nonce echoed back by /readyz. Readiness only counts when the
+  // responder proves it is the child we just spawned — otherwise an unrelated
+  // process already bound to the port (e.g. a dev sidecar on the default 8787)
+  // would silently become the system under test.
+  const instanceId = globalThis.crypto.randomUUID();
+
   const env = {
     ...process.env,
     MNDE_RECEIPT_LOG: join(logsRoot, "sidecar-receipts.jsonl"),
@@ -44,6 +50,10 @@ export async function startMndeSidecar({
     // exercise the legacy GPU pipeline, so pin the legacy compatibility engine
     // explicitly unless an ambient or caller value selects a different engine.
     MNDE_DECISION_ENGINE: process.env.MNDE_DECISION_ENGINE ?? "legacy",
+    MNDE_HARNESS_INSTANCE_ID: instanceId,
+    // Bind where the caller said it would poll. Without this, a url on a
+    // non-default port silently spawns a sidecar on 8787 and polls the wrong one.
+    MNDE_BIND_PORT: new URL(url).port || "8787",
     // Caller overrides last (e.g. MNDE_DECISION_ENGINE, MNDE_PE_POLICY, MNDE_BIND_PORT).
     ...extraEnv
   };
@@ -60,7 +70,7 @@ export async function startMndeSidecar({
     stderr += chunk.toString();
   });
 
-  await waitReady(url, child, () => stderr);
+  await waitReady(url, child, () => stderr, instanceId);
 
   return {
     url,
@@ -88,7 +98,7 @@ export async function startMndeSidecar({
   };
 }
 
-async function waitReady(url, child, getStderr) {
+async function waitReady(url, child, getStderr, instanceId) {
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) {
@@ -97,8 +107,24 @@ async function waitReady(url, child, getStderr) {
     try {
       const response = await fetch(`${url}/readyz`);
       const body = await response.json();
-      if (body?.ok === true) return;
-    } catch {
+      if (body?.ok === true) {
+        if (body.harness_instance_id !== instanceId) {
+          // A responder that does not echo our nonce is NOT the child we
+          // spawned. Fail closed instead of running the tests against it.
+          try {
+            child.kill();
+          } catch {
+            /* already gone */
+          }
+          throw new Error(
+            `Another process is already serving ${url} (readyz answered without this harness's instance id). ` +
+              `Stop the process bound to that port, or point the harness at a free port via MNDE_BIND_PORT + url.`
+          );
+        }
+        return;
+      }
+    } catch (error) {
+      if (error instanceof Error && /already serving/.test(error.message)) throw error;
       /* not up yet */
     }
     await new Promise((done) => setTimeout(done, 200));

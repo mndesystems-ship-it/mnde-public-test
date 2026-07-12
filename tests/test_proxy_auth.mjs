@@ -57,7 +57,9 @@ async function main() {
   console.log("MNDe authenticated proxy/executor\n");
 
   // ── default: no auth anywhere (unchanged) ──────────────────────────────────
-  const open = await startMndeSidecar({ url: "http://127.0.0.1:8787", env: { MNDE_DECISION_ENGINE: "policy-engine", MNDE_PE_POLICY: samplePolicy } });
+  // Dedicated port: 8787 is the sidecar's real default, so a developer's live
+  // sidecar may legitimately own it while tests run.
+  const open = await startMndeSidecar({ url: "http://127.0.0.1:8808", env: { MNDE_DECISION_ENGINE: "policy-engine", MNDE_PE_POLICY: samplePolicy } });
   try {
     await test("default proxy path unchanged (no auth, no token)", async () => {
       await withProxy(open.url, {}, async (client) => {
