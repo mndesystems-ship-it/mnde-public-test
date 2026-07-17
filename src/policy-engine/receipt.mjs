@@ -207,7 +207,12 @@ export async function verifyPolicyReceipt(receipt, options = {}) {
   }
   const bundle = loadAuthorityBundleForReceipt(repoRoot, signature.authority_id);
   if (!bundle.ok) return { verified: false, reason: bundle.reason };
-  const keyResult = findAuthorityReceiptKey(bundle.manifest, { authorityId: signature.authority_id, keyId: signature.key_id, signedAt: signature.signed_at });
+  // validAt MUST be a value covered by the receipt's own signature — never the
+  // unsigned verifiable_signature.signed_at (see shared/authority-manifest.mjs).
+  // decision_output.evaluated_at is signed (it's part of decision_output, which
+  // is inside canonicalPayloadWithoutSignature) and is already produced by
+  // evaluatePolicyRequest for every mnde.pe.receipt.v1 receipt.
+  const keyResult = findAuthorityReceiptKey(bundle.manifest, { authorityId: signature.authority_id, keyId: signature.key_id, validAt: receipt.decision_output?.evaluated_at });
   if (!keyResult.ok) return { verified: false, reason: keyResult.reason };
   if (signature.public_key_fingerprint !== keyResult.key.public_key_fingerprint) return { verified: false, reason: "fingerprint mismatch" };
 

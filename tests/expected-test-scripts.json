@@ -5,6 +5,7 @@
   "test:auth",
   "test:authority-grants",
   "test:authority-init",
+  "test:authority-key-validation-migration",
   "test:ci-contract",
   "test:conformance",
   "test:correctness",
