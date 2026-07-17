@@ -228,22 +228,30 @@ export function verifyAndConsumeAuthorityGrant(grant, request, options = {}) {
   }
   if (!signatureOk) return { ok: false, reason: "AUTHORITY_GRANT_SIGNATURE_INVALID" };
 
-  // 8. Validate the key at authenticated issued_at (live: a retired or revoked
-  //    key must never authorize a grant consumed now, regardless of when the
-  //    grant claims to have been issued) — reusing the fix from f3b4b4a.
-  const keyValidity = findAuthorityReceiptKey(bundle.manifest, {
+  // 8. Validate the key twice: first at the grant's signed issued_at, then at
+  //    the authenticated evaluation time. The first check proves the key could
+  //    issue the grant then. The second prevents a leaked expired key from
+  //    minting a long-lived grant backdated into its former validity window.
+  //    In live evaluation `now` is verifier-local server time; during offline
+  //    receipt replay it is the receipt's signed decision_output.evaluated_at.
+  const now = options.now;
+  if (!isValidTimestamp(now)) return malformed();
+  const issuedKeyValidity = findAuthorityReceiptKey(bundle.manifest, {
     authorityId: grant.issuer,
     keyId: grant.authority_key_id,
-    validAt: grant.issued_at,
-    activeOnly: true
+    validAt: grant.issued_at
   });
-  if (!keyValidity.ok) {
-    return { ok: false, reason: /revoked/i.test(keyValidity.reason) ? "AUTHORITY_GRANT_KEY_REVOKED" : "AUTHORITY_GRANT_KEY_INVALID" };
+  const liveKeyValidity = issuedKeyValidity.ok ? findAuthorityReceiptKey(bundle.manifest, {
+    authorityId: grant.issuer,
+    keyId: grant.authority_key_id,
+    validAt: now,
+    activeOnly: true
+  }) : issuedKeyValidity;
+  if (!liveKeyValidity.ok) {
+    return { ok: false, reason: /revoked/i.test(liveKeyValidity.reason) ? "AUTHORITY_GRANT_KEY_REVOKED" : "AUTHORITY_GRANT_KEY_INVALID" };
   }
 
   // 9. Validate issued_at and expires_at.
-  const now = options.now;
-  if (!isValidTimestamp(now)) return malformed();
   const nowMs = Date.parse(now);
   const issuedAtMs = Date.parse(grant.issued_at);
   const expiresAtMs = Date.parse(grant.expires_at);

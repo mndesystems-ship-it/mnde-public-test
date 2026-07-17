@@ -444,6 +444,43 @@ test("authority key expired (window ended) at issued_at -> AUTHORITY_GRANT_KEY_I
   assert.equal(r.reason, "AUTHORITY_GRANT_KEY_INVALID");
 });
 
+test("backdated signed issued_at cannot bypass a key that is expired at verifier time", () => {
+  const key = testKeyPair();
+  const issuedAt = "2025-12-01T00:00:00.000Z";
+  writeCustomManifest({
+    activeKeys: [{
+      key_id: "stale-active-key", public_key: key.publicPem, public_key_fingerprint: key.fingerprint,
+      valid_from: "2025-01-01T00:00:00.000Z", valid_to: "2026-01-01T00:00:00.000Z"
+    }]
+  });
+  const g = issueAuthorityGrant({
+    authorityId: "grant-deploy", principal: "alice", tool: "deploy", tenant: "tenant-a", scope: { resource: "cluster-1" },
+    issuer: customAuthorityId, authorityKeyId: "stale-active-key", privateKeyPem: key.privatePem,
+    now: issuedAt, lifetimeMs: Date.parse("2027-01-01T00:00:00.000Z") - Date.parse(issuedAt)
+  });
+  const r = verifyAndConsumeAuthorityGrant(g, baseRequest(), { repoRoot: customRoot, now: NOW, caller: { id: "alice" } });
+  assert.equal(r.reason, "AUTHORITY_GRANT_KEY_INVALID");
+});
+
+test("revocation after signed issued_at still blocks live grant consumption", () => {
+  const key = testKeyPair();
+  const issuedAt = "2026-05-01T00:00:00.000Z";
+  writeCustomManifest({
+    activeKeys: [{
+      key_id: "later-revoked-key", public_key: key.publicPem, public_key_fingerprint: key.fingerprint,
+      valid_from: "2025-01-01T00:00:00.000Z", valid_to: "2027-01-01T00:00:00.000Z",
+      revoked_at: "2026-06-01T00:00:00.000Z"
+    }]
+  });
+  const g = issueAuthorityGrant({
+    authorityId: "grant-deploy", principal: "alice", tool: "deploy", tenant: "tenant-a", scope: { resource: "cluster-1" },
+    issuer: customAuthorityId, authorityKeyId: "later-revoked-key", privateKeyPem: key.privatePem,
+    now: issuedAt, lifetimeMs: Date.parse("2026-08-01T00:00:00.000Z") - Date.parse(issuedAt)
+  });
+  const r = verifyAndConsumeAuthorityGrant(g, baseRequest(), { repoRoot: customRoot, now: NOW, caller: { id: "alice" } });
+  assert.equal(r.reason, "AUTHORITY_GRANT_KEY_REVOKED");
+});
+
 test("authority key revoked before issued_at -> AUTHORITY_GRANT_KEY_REVOKED", () => {
   const key = testKeyPair();
   writeCustomManifest({

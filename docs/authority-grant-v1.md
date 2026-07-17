@@ -141,11 +141,13 @@ manifest used for receipt-signing keys, **not** the separate `trustAnchors.autho
 `trust.mjs` uses for legacy grants. Key material is obtained via the new `findAnyAuthorityKey`
 (existence only, used to get a public key for signature verification), and validity/revocation
 is checked via the **unmodified** `findAuthorityReceiptKey` from
-[f3b4b4a](../shared/authority-manifest.mjs), called with `activeOnly: true` and
-`validAt: grant.issued_at` — live semantics: a retired or revoked key can never authorize a
-grant consumed now, regardless of when the grant claims to have been issued. Revocation
-boundary is inherited unchanged from f3b4b4a: **inclusive** (`revoked_at` itself is already
-revoked).
+[f3b4b4a](../shared/authority-manifest.mjs), first at signed `grant.issued_at` and then at the
+authenticated evaluation time with `activeOnly: true`. In live evaluation that second time is
+verifier-local server time; in offline receipt replay it is the receipt's signed
+`decision_output.evaluated_at`. This prevents an expired-but-leaked key from minting a
+long-lived grant backdated into its former validity window. A retired or revoked key can never
+authorize a grant consumed now. The revocation boundary is inherited unchanged from f3b4b4a:
+**inclusive** (`revoked_at` itself is already revoked).
 
 **Known limitation**: `shared/authority-manifest.mjs` has no writer for `revoked_at` on this
 simple manifest shape (unlike the richer, already-wired `evaluateRevocation()` in
@@ -201,7 +203,7 @@ grant was "used."
 5. Canonicalize the signed payload.
 6. Resolve the issuer and authority key (existence only).
 7. Verify the signature.
-8. Validate the key at authenticated `issued_at` (live, §6).
+8. Validate the key at signed `issued_at` and authenticated evaluation time (§6).
 9. Validate `issued_at`/`expires_at` and clock skew (§5).
 10. Match tenant.
 11. Match principal.
