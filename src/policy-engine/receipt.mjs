@@ -74,7 +74,17 @@ export function buildPolicyReceipt(request, policy, options = {}) {
   const approvalTrustAnchors = options.approvalTrustAnchors;
   const approvalEnforced = Boolean(approvalTrustAnchors);
   const approvals = Array.isArray(options.approvals) ? options.approvals : [];
-  const decision = evaluatePolicyRequest(request, policy, { authorities, now: options.now, trustAnchors, rejectLegacyAuthorities: options.rejectLegacyAuthorities, approvals, approvalTrustAnchors });
+  const decision = evaluatePolicyRequest(request, policy, {
+    authorities,
+    now: options.now,
+    trustAnchors,
+    rejectLegacyAuthorities: options.rejectLegacyAuthorities,
+    approvals,
+    approvalTrustAnchors,
+    caller: options.caller,
+    repoRoot: options.repoRoot,
+    consumeAuthorityGrants: options.consumeAuthorityGrants
+  });
   const policyBundleProvenance = options.policyBundleProvenance;
   if (policyBundleProvenance !== undefined && !isBundleProvenance(policyBundleProvenance, decision.policy_hash)) {
     throw new Error("ERR_POLICY_BUNDLE_PROVENANCE_INVALID");
@@ -132,16 +142,35 @@ export async function verifyPolicyReceipt(receipt, options = {}) {
   }
 
   const original = receipt.decision_output ?? {};
+  // Replay re-verifies every scope-bound grant's signature/trust/time/binding
+  // exactly as at decision time, but must NEVER touch the durable nonce store —
+  // an offline audit run must be idempotent and must not itself decide whether
+  // a grant was "used." consumeAuthorityGrants: false skips step 15 only; every
+  // other check (steps 1-14) still runs and must still agree with the original
+  // decision, or replay fails closed on drift exactly like any other field.
+  // The authenticated caller for replay is derived from the embedded request's
+  // principal.id, which sidecar-adapter.mjs already sets to the authenticated
+  // caller.id before the request is ever signed — see decidePolicyEngine.
+  const replayCaller = typeof parsedRequest.value?.principal?.id === "string" ? { id: parsedRequest.value.principal.id } : undefined;
   const replay = evaluatePolicyRequest(parsedRequest.value, parsedPolicy.value, {
     authorities: Array.isArray(receipt.authorities) ? receipt.authorities : [],
     now: original.evaluated_at,
     trustAnchors: receipt.trust_enforced ? options.trustAnchors : undefined,
     approvals: receipt.approval_enforced ? (Array.isArray(receipt.approvals) ? receipt.approvals : []) : undefined,
-    approvalTrustAnchors: receipt.approval_enforced ? options.approvalTrustAnchors : undefined
+    approvalTrustAnchors: receipt.approval_enforced ? options.approvalTrustAnchors : undefined,
+    caller: replayCaller,
+    repoRoot: options.repoRoot,
+    consumeAuthorityGrants: false
   });
 
   for (const field of ["decision", "reason_code", "request_hash", "policy_hash", "authority_chain_hash", "decision_hash"]) {
     if (replay[field] !== original[field]) return { verified: false, reason: `decision drift: ${field}` };
+  }
+  // authority_grants is audit metadata, not part of decision_hash (like
+  // approval), so it needs its own explicit tamper check: a canonical-JSON
+  // deep-equality comparison, not `!==` (they're objects, not primitives).
+  if (canonicalizeJson(replay.authority_grants ?? null) !== canonicalizeJson(original.authority_grants ?? null)) {
+    return { verified: false, reason: "decision drift: authority_grants" };
   }
   if (receipt.request_hash !== original.request_hash || receipt.policy_hash !== original.policy_hash || receipt.authority_chain_hash !== original.authority_chain_hash) {
     return { verified: false, reason: "receipt header hashes do not match decision" };

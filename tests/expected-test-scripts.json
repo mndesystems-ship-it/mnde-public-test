@@ -3,6 +3,7 @@
   "test:approvals",
   "test:audit-remediation",
   "test:auth",
+  "test:authority-grants",
   "test:authority-init",
   "test:ci-contract",
   "test:conformance",

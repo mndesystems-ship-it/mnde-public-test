@@ -49,6 +49,7 @@
     "authority": "node ./bin/mnde-authority.mjs",
     "authority:init": "node ./scripts/init-production-authority.mjs",
     "test:authority-init": "node ./tests/test_authority_init.mjs",
+    "test:authority-grants": "node ./tests/test_authority_grants.mjs",
     "test:external-signer": "node ./tests/test_external_signer.mjs",
     "dashboard": "node ./scripts/start-sidecar.mjs",
     "authority-bundle:export": "node ./scripts/export-authority-bundle.mjs",
