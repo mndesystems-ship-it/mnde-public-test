@@ -296,7 +296,12 @@ These exist as architecture or concepts in the repository but are not claimed as
 - A published authority bundle with documented key rotation.
 - Centralized policy and audit management.
 - Identity-aware authorization for multi-user deployments.
-- **P0**: Scope-bind authority grants to principal, tool, tenant, authority scope, and expiration, with nonce replay protection — today a validly-signed authority grant satisfies `authority_required` for any principal, tool, or tenant and can be reused indefinitely (no request-scope binding, no replay defense).
+- **P0 (done)**: Scope-bound, single-use authority grants (`mnde.authority_grant.v1`) —
+  principal, tool, tenant, scope, and nonce-bound, replay-protected via a durable atomic
+  reservation store. See [docs/authority-grant-v1.md](docs/authority-grant-v1.md). Production
+  no longer accepts the legacy unscoped bearer-style grant. Known limitations (weaker principal
+  source, no tenant-authentication system, exact-only scope matching, no grant-revocation list)
+  are documented in that spec's "Known limitations" section.
 - **P1**: A safe key-revocation lifecycle command for `shared/authority-manifest.mjs` authorities — `findAuthorityReceiptKey` now checks `revoked_at`, but nothing writes it; revoking a key today means hand-editing and re-signing the manifest. Needs chronology validation, a re-signed manifest, an audit record, and refusal of unsafe edits (e.g. revoking a key with no successor).
 
 ## More Docs
