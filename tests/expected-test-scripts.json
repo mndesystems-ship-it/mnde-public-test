@@ -23,6 +23,7 @@
   "test:fresh-setup",
   "test:historical-policy-bundle",
   "test:identity-assertion",
+  "test:live-verification",
   "test:mcp",
   "test:mcp-proxy",
   "test:nonce-replay",

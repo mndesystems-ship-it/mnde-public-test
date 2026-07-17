@@ -143,7 +143,14 @@ export function loadAuthorityBundleForReceipt(repoRoot, authorityId) {
   return { ok: false, reason: `unknown authority_id ${authorityId ?? "missing"}; available authority bundles: ${available}` };
 }
 
-export function findAuthorityReceiptKey(manifest, { authorityId, keyId, signedAt = new Date(), activeOnly = false }) {
+// Look up a receipt key and check its validity window at `validAt`.
+//
+// SECURITY: `validAt` must be a value covered by the receipt's Ed25519
+// signature (the receipt's `decision_output.evaluated_at`), NEVER the
+// unsigned `verifiable_signature.signed_at` — an unsigned time lets an
+// expired-but-leaked key mint receipts backdated into its window. The
+// parameter is required; a missing or unparseable time fails closed.
+export function findAuthorityReceiptKey(manifest, { authorityId, keyId, validAt, activeOnly = false }) {
   if (manifest.authority_id !== authorityId) {
     return { ok: false, reason: "unknown authority_id" };
   }
@@ -154,10 +161,27 @@ export function findAuthorityReceiptKey(manifest, { authorityId, keyId, signedAt
   const key = allKeys.find((candidate) => candidate.key_id === keyId);
   if (!key) return { ok: false, reason: "unknown key_id" };
   if (activeOnly && key.status !== "active") return { ok: false, reason: "receipt key is retired" };
-  const timestamp = signedAt instanceof Date ? signedAt : new Date(signedAt);
-  if (Number.isNaN(timestamp.getTime())) return { ok: false, reason: "invalid receipt signing time" };
+  if (validAt === undefined || validAt === null) {
+    return { ok: false, reason: "ERR_KEY_VALIDITY_TIME_REQUIRED: no authenticated decision time supplied for key-window check" };
+  }
+  const timestamp = validAt instanceof Date ? validAt : new Date(validAt);
+  if (Number.isNaN(timestamp.getTime())) return { ok: false, reason: "invalid key validity time" };
   if (new Date(key.valid_from) > timestamp || new Date(key.valid_to) < timestamp) {
-    return { ok: false, reason: "receipt key was not valid at signing time" };
+    return { ok: false, reason: "receipt key was not valid at the receipt's decision time" };
+  }
+  // Revocation (distinct from retirement/rotation). A revoked_at cutoff invalidates
+  // any receipt whose decision time is at/after it, in BOTH live and archival
+  // verification — a key's former validity window cannot be reused to launder a
+  // signature past its revocation. Under live (activeOnly) verification a revoked
+  // key is refused outright: a revoked key can never authorize execution now,
+  // regardless of when the receipt's decision time claims to be.
+  if (key.revoked_at !== undefined && key.revoked_at !== null) {
+    const revokedAt = new Date(key.revoked_at);
+    if (Number.isNaN(revokedAt.getTime())) return { ok: false, reason: "invalid receipt key revoked_at" };
+    if (timestamp.getTime() >= revokedAt.getTime()) {
+      return { ok: false, reason: "receipt key was revoked before the receipt's decision time" };
+    }
+    if (activeOnly) return { ok: false, reason: "receipt key revoked" };
   }
   return { ok: true, key };
 }

@@ -73,6 +73,7 @@
     "test:nonce-replay": "node ./tests/test_nonce_replay.mjs",
     "test:execution-id-dedup": "node ./tests/test_execution_id_dedup.mjs",
     "test:startup-checks": "node ./tests/test_startup_checks.mjs",
+    "test:live-verification": "node ./tests/test_live_verification.mjs",
     "test:number-model": "node ./tests/test_number_model.mjs",
     "ledger:verify": "node ./scripts/verify-ledger.mjs verify",
     "ledger:head": "node ./scripts/verify-ledger.mjs head",
