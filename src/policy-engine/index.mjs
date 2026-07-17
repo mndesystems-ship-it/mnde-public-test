@@ -5,6 +5,7 @@ import { sha256 as hashHex } from "../crypto/provider.mjs";
 import { canonicalizeJson } from "../../shared/json.ts";
 import { verifyPolicyTrust, verifyAuthorityGrant } from "./trust.mjs";
 import { evaluateApprovals } from "./authenticated-approvals.mjs";
+import { GRANT_SCHEMA, verifyAndConsumeAuthorityGrant } from "./authority-grants.mjs";
 
 const REQUIRED_REQUEST_FIELDS = [
   "schema_version",
@@ -84,7 +85,12 @@ function buildDecision(decision, reasonCode, context = {}) {
     evaluated_at: evaluatedAt,
     // Approval summary is metadata only; not part of decisionMaterial, so it does
     // not affect decision_hash. Present only when approval enforcement is active.
-    ...(context.approval ? { approval: context.approval } : {})
+    ...(context.approval ? { approval: context.approval } : {}),
+    // Grant verification summary is metadata only; not part of decisionMaterial
+    // (authority_chain_hash already covers the raw authorities array, tamper-
+    // evidently). Present only when at least one mnde.authority_grant.v1 grant
+    // was supplied, so decisions with no scope-bound grants are unchanged.
+    ...(context.authority_grants ? { authority_grants: context.authority_grants } : {})
   };
 }
 
@@ -251,6 +257,12 @@ function authorityStatus(requiredIds, authorities, now, rejectedById = {}) {
   for (const id of requiredIds) {
     const authority = authorities.find((candidate) => candidate?.authority_id === id);
     if (!authority) return { ok: false, reason: rejectedById[id] ?? "AUTHORITY_REQUIRED" };
+    // Scope-bound (mnde.authority_grant.v1) grants only ever reach `authorities`
+    // after passing verifyAndConsumeAuthorityGrant in full — including issued_at/
+    // expires_at validation with proper clock-skew tolerance, and single-use
+    // reservation. Re-checking time here would use a stricter (skew-free)
+    // boundary and could reject an already-authorized, already-consumed grant.
+    if (authority.schema_version === GRANT_SCHEMA) continue;
     if (!isValidTimestamp(authority.valid_from) || !isValidTimestamp(authority.valid_until) || !isValidTimestamp(now)) {
       return { ok: false, reason: "AUTHORITY_EXPIRED" };
     }
@@ -262,6 +274,33 @@ function authorityStatus(requiredIds, authorities, now, rejectedById = {}) {
     }
   }
   return { ok: true };
+}
+
+// Build the auditable (non-sensitive) record of one grant's verification
+// outcome for receipt embedding. Never includes raw scope content, principal,
+// tool, or tenant values — those live in the receipt's own canonical_request
+// and would be redundant/unnecessarily exposed here; this record answers
+// "which grant, issued by whom, with what result," which is what's needed to
+// prove which grant authorized (or failed to authorize) the execution.
+function buildGrantAuditRecord(grant, result) {
+  const rawGrantId = typeof grant?.grant_id === "string" ? grant.grant_id : null;
+  const rawAuthorityId = typeof grant?.authority_id === "string" ? grant.authority_id : null;
+  const rawIssuer = typeof grant?.issuer === "string" ? grant.issuer : null;
+  const rawKeyId = typeof grant?.authority_key_id === "string" ? grant.authority_key_id : null;
+  const rawIssuedAt = typeof grant?.issued_at === "string" ? grant.issued_at : null;
+  const rawExpiresAt = typeof grant?.expires_at === "string" ? grant.expires_at : null;
+  return {
+    grant_id: result.ok ? result.grant_id : rawGrantId,
+    authority_id: result.ok ? result.authority_id : rawAuthorityId,
+    grant_version: typeof grant?.schema_version === "string" ? grant.schema_version : null,
+    issuer: result.ok ? result.issuer : rawIssuer,
+    authority_key_id: result.ok ? result.authority_key_id : rawKeyId,
+    scope_digest: result.ok ? result.scope_digest : null,
+    nonce_digest: result.ok ? result.nonce_digest : null,
+    issued_at: result.ok ? result.issued_at : rawIssuedAt,
+    expires_at: result.ok ? result.expires_at : rawExpiresAt,
+    result: result.ok ? "OK" : result.reason
+  };
 }
 
 export function evaluatePolicyRequest(request, policy, options = {}) {
@@ -289,26 +328,64 @@ export function evaluatePolicyRequest(request, policy, options = {}) {
     const decisionContext = { ...context, requestHash, policyHash, authorityChainHash };
     const maxDepth = Number.isSafeInteger(policy?.limits?.max_depth) ? policy.limits.max_depth : 8;
 
-    // Optional cryptographic authority chain. When trust anchors are supplied,
-    // the policy must be signed by a trusted policy key, and only grants with a
-    // valid signature from a trusted authority key count toward authority_required.
-    // Trust anchors are provided by the verifier out of band, never read from the
-    // policy or request. With no trust anchors this block is inert.
+    // Authority chain. Two independent grant kinds may appear in `authorities`:
+    //
+    //  - mnde.authority_grant.v1 (scope-bound): ALWAYS independently verified,
+    //    regardless of whether trustAnchors is supplied — its trust comes from
+    //    the authority manifest (shared/authority-manifest.mjs), not from
+    //    trustAnchors.authority_keys. Every field (principal, tool, tenant,
+    //    scope, nonce, issued_at/expires_at, issuer, authority_key_id) is
+    //    checked, and on success the grant is atomically reserved+consumed —
+    //    it can never satisfy authority_required a second time.
+    //  - legacy bearer grants (no schema_version, or an unrecognized one):
+    //    unchanged behavior — verified against trustAnchors.authority_keys
+    //    when trustAnchors is supplied, otherwise passed through inert, exactly
+    //    as before this feature existed. In production (rejectLegacyAuthorities),
+    //    legacy grants are refused outright; no new grants are ever issued in
+    //    this format, and production never falls back to bearer-style trust.
+    //
+    // Trust anchors are provided by the verifier out of band, never read from
+    // the policy or request.
     const trustAnchors = options.trustAnchors;
-    let effectiveAuthorities = authorities;
     const rejectedById = {};
-    if (options.rejectLegacyAuthorities && authorities.length > 0 && !trustAnchors) {
+    const grantVerifications = [];
+    const hasLegacyAuthorities = authorities.some((grant) => grant?.schema_version !== GRANT_SCHEMA);
+    if (options.rejectLegacyAuthorities && hasLegacyAuthorities && !trustAnchors) {
       return buildDecision("REFUSE", "ERR_PE_LEGACY_AUTHORITY_REFUSED", decisionContext);
     }
     if (trustAnchors) {
       const policyTrust = verifyPolicyTrust(policy, trustAnchors);
       if (!policyTrust.ok) return buildDecision("REFUSE", policyTrust.reason, decisionContext);
-      effectiveAuthorities = [];
-      for (const grant of authorities) {
-        const grantTrust = verifyAuthorityGrant(grant, trustAnchors, now);
-        if (grantTrust.ok) effectiveAuthorities.push(grant);
-        else if (typeof grant?.authority_id === "string") rejectedById[grant.authority_id] = grantTrust.reason;
+    }
+    const effectiveAuthorities = [];
+    for (const grant of authorities) {
+      if (grant?.schema_version === GRANT_SCHEMA) {
+        const result = verifyAndConsumeAuthorityGrant(grant, request, {
+          repoRoot: options.repoRoot,
+          now,
+          caller: options.caller,
+          clockSkewMs: options.grantClockSkewMs,
+          consume: options.consumeAuthorityGrants !== false
+        });
+        grantVerifications.push(buildGrantAuditRecord(grant, result));
+        if (result.ok) effectiveAuthorities.push(grant);
+        else if (typeof grant?.authority_id === "string") rejectedById[grant.authority_id] = result.reason;
+        continue;
       }
+      if (options.rejectLegacyAuthorities) {
+        if (typeof grant?.authority_id === "string") rejectedById[grant.authority_id] = "ERR_PE_LEGACY_AUTHORITY_REFUSED";
+        continue;
+      }
+      if (!trustAnchors) {
+        effectiveAuthorities.push(grant); // inert — unchanged legacy behavior
+        continue;
+      }
+      const grantTrust = verifyAuthorityGrant(grant, trustAnchors, now);
+      if (grantTrust.ok) effectiveAuthorities.push(grant);
+      else if (typeof grant?.authority_id === "string") rejectedById[grant.authority_id] = grantTrust.reason;
+    }
+    if (grantVerifications.length > 0) {
+      decisionContext.authority_grants = { verifications: grantVerifications };
     }
 
     // Optional authenticated approvals. When approval trust anchors are supplied,

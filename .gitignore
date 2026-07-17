@@ -12,6 +12,7 @@ mnde-auth-session*.json
 mnde-auth-session*.key
 jwks-cache/
 auth-audit/
+grant-nonce-store.d/
 receipt-exports/
 mnde-receipts/
 node_modules/

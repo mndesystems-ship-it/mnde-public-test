@@ -131,6 +131,10 @@ export function decidePolicyEngine(body, config, options = {}) {
     approvals,
     approvalTrustAnchors: config.approvalTrustAnchors,
     policyBundleProvenance: config.policyBundleProvenance,
+    // The same authenticated caller used to set request.principal.id above is
+    // forwarded so scope-bound (mnde.authority_grant.v1) grants can bind their
+    // `principal` field against it — never against the request body directly.
+    caller: options.caller,
     now
   });
   return {

@@ -22,12 +22,16 @@ import {
 import { loadPolicyEngineConfig } from "../src/policy-engine/sidecar-adapter.mjs";
 import { decidePolicyEngine } from "../src/policy-engine/sidecar-adapter.mjs";
 import { signAuthorityGrant, signPolicy } from "../src/policy-engine/trust.mjs";
+import { issueAuthorityGrant } from "../src/policy-engine/authority-grants.mjs";
+import { LOCAL_AUTHORITY_ID, RECEIPT_KEY_ID } from "../shared/authority-manifest.mjs";
 import { bootstrapReceiptKeys } from "../scripts/bootstrap_dev_receipt_keys.mjs";
 
 const NOW = "2026-06-23T12:00:00.000Z";
 const LATER = "2026-06-24T12:00:00.000Z";
 const results = [];
-bootstrapReceiptKeys({ repoRoot: resolve(dirname(fileURLToPath(import.meta.url)), "..") });
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+bootstrapReceiptKeys({ repoRoot });
+const localAuthorityPrivateKeyPem = readFileSync(join(repoRoot, "shared", "receipt_keys", "receipt_signing_private.pem"), "utf8");
 
 let testChain = Promise.resolve();
 function test(name, fn) {
@@ -264,7 +268,14 @@ test("production refuses request-body legacy authority without trusted anchors",
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 
-test("production accepts signed policy bundle plus signed trusted authority grant", async () => {
+// Prior to the P0 scope-bound grant work, production would ALLOW here on the
+// strength of a legacy bearer-style grant (trustAnchors.authority_keys) alone.
+// That is now a deliberate REFUSE: production never falls back to bearer-style
+// trust for authority grants, regardless of trustAnchors — see
+// docs/authority-grant-v1.md "Compatibility". The companion test right below
+// proves the real migration path: the identical scenario ALLOWs when the
+// grant is a scope-bound mnde.authority_grant.v1 instead.
+test("production REFUSES a legacy bearer-style authority grant even with trust anchors configured", async () => {
   const f = await fixture();
   try {
     const anchorsPath = join(f.dir, "trust-anchors.json");
@@ -278,9 +289,49 @@ test("production accepts signed policy bundle plus signed trusted authority gran
     });
     assert.equal(config.ok, true, config.reason);
     const decision = decidePolicyEngine({ ...deleteRequest({ request_id: "delete-prod-signed" }), mnde_authorities: [authorityGrant(f)] }, config, { now: NOW });
-    assert.equal(decision.decision, "ALLOW");
+    assert.equal(decision.decision, "REFUSE");
+    assert.equal(decision.reason_code, "ERR_PE_LEGACY_AUTHORITY_REFUSED");
+  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test("production ALLOWs the same scenario with a scope-bound mnde.authority_grant.v1 grant instead of a legacy bearer grant", async () => {
+  const f = await fixture();
+  try {
+    const anchorsPath = join(f.dir, "trust-anchors.json");
+    writeFileSync(anchorsPath, JSON.stringify({
+      policy_keys: [{ key_id: f.policyKey.keyId, public_key: f.policyKey.publicPem }],
+      authority_keys: []
+    }), "utf8");
+    const config = await loadPolicyEngineConfig({
+      MNDE_PROFILE: "production",
+      ...(await writeSignedConfig(f, await signedBundle(12, "12.0.0", f, authorityPolicy("12.0.0", true, f)), { MNDE_PE_TRUST_ANCHORS: anchorsPath }))
+    });
+    assert.equal(config.ok, true, config.reason);
+    // No scope.resource restriction here: this fixture's request shape uses
+    // parameters.path (matched by the rule's own path_prefix expression), not
+    // parameters.resource — resource-level scope matching is covered
+    // exhaustively in tests/test_authority_grants.mjs. This test's job is
+    // just to prove the production migration path (v1 grant instead of a
+    // legacy bearer grant) reaches ALLOW.
+    const grant = issueAuthorityGrant({
+      authorityId: "tmp_file_delete_authority",
+      principal: "operator",
+      tool: "delete_file",
+      tenant: "tenant-prod",
+      scope: {},
+      issuer: LOCAL_AUTHORITY_ID,
+      authorityKeyId: RECEIPT_KEY_ID,
+      privateKeyPem: localAuthorityPrivateKeyPem,
+      now: NOW
+    });
+    const decision = decidePolicyEngine({
+      ...deleteRequest({ request_id: "delete-prod-v1-grant", principal: { id: "operator", tenant_id: "tenant-prod" } }),
+      mnde_authorities: [grant]
+    }, config, { now: NOW, caller: { id: "operator" } });
+    assert.equal(decision.decision, "ALLOW", decision.reason_code);
     assert.equal(decision.reason_code, "OK_ALLOW");
     assert.equal(decision.receipt.trust_enforced, true);
+    assert.equal(decision.receipt.decision_output.authority_grants?.verifications?.[0]?.result, "OK");
   } finally { rmSync(f.dir, { recursive: true, force: true }); }
 });
 

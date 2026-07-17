@@ -157,10 +157,20 @@ function verifySignature(receipt) {
   try {
     const bundle = loadAuthorityBundleForReceipt(REPO_ROOT, receipt.verifiable_signature?.authority_id);
     if (!bundle.ok) return fail(`authority manifest invalid: ${bundle.reason}`);
+    // ecs.receipt.v2 is frozen (shared/contracts.ts: "no new fields or features
+    // are added") and carries no authenticated decision-time field — the only
+    // timestamp is verifiable_signature.signed_at, which is unsigned metadata
+    // and must never drive a trust decision (shared/authority-manifest.mjs).
+    // With no authenticated per-receipt time available, validAt uses the
+    // verifier's OWN current time instead — computed here, never read from the
+    // receipt, so it cannot be backdated by anything the receipt contains.
+    // This checks "is the key valid right now," not "was it valid at signing
+    // time," which is a strictly safer question for a format that cannot prove
+    // the latter.
     const keyResult = findAuthorityReceiptKey(bundle.manifest, {
       authorityId: receipt.verifiable_signature?.authority_id,
       keyId: receipt.verifiable_signature?.key_id,
-      signedAt: receipt.verifiable_signature?.signed_at
+      validAt: new Date().toISOString()
     });
     if (!keyResult.ok) return fail(keyResult.reason);
     if (receipt.verifiable_signature.public_key_fingerprint !== keyResult.key.public_key_fingerprint) {

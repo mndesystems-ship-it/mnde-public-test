@@ -143,6 +143,28 @@ export function loadAuthorityBundleForReceipt(repoRoot, authorityId) {
   return { ok: false, reason: `unknown authority_id ${authorityId ?? "missing"}; available authority bundles: ${available}` };
 }
 
+function allManifestKeys(manifest) {
+  return [
+    ...(Array.isArray(manifest.active_keys) ? manifest.active_keys.map((key) => ({ ...key, status: "active" })) : []),
+    ...(Array.isArray(manifest.retired_keys) ? manifest.retired_keys.map((key) => ({ ...key, status: "retired" })) : [])
+  ];
+}
+
+// Raw key lookup with NO validity-window or revocation check — existence only.
+// Lets a caller obtain key material (e.g. to attempt signature verification)
+// before separately deciding, via findAuthorityReceiptKey, whether that key was
+// actually valid/non-revoked at the relevant authenticated time. Never use this
+// function's success to authorize anything; it proves only that a key_id is
+// present in the manifest under the given authority_id.
+export function findAnyAuthorityKey(manifest, { authorityId, keyId }) {
+  if (manifest.authority_id !== authorityId) {
+    return { ok: false, reason: "unknown authority_id" };
+  }
+  const key = allManifestKeys(manifest).find((candidate) => candidate.key_id === keyId);
+  if (!key) return { ok: false, reason: "unknown key_id" };
+  return { ok: true, key };
+}
+
 // Look up a receipt key and check its validity window at `validAt`.
 //
 // SECURITY: `validAt` must be a value covered by the receipt's Ed25519
@@ -154,11 +176,7 @@ export function findAuthorityReceiptKey(manifest, { authorityId, keyId, validAt,
   if (manifest.authority_id !== authorityId) {
     return { ok: false, reason: "unknown authority_id" };
   }
-  const allKeys = [
-    ...(Array.isArray(manifest.active_keys) ? manifest.active_keys.map((key) => ({ ...key, status: "active" })) : []),
-    ...(Array.isArray(manifest.retired_keys) ? manifest.retired_keys.map((key) => ({ ...key, status: "retired" })) : [])
-  ];
-  const key = allKeys.find((candidate) => candidate.key_id === keyId);
+  const key = allManifestKeys(manifest).find((candidate) => candidate.key_id === keyId);
   if (!key) return { ok: false, reason: "unknown key_id" };
   if (activeOnly && key.status !== "active") return { ok: false, reason: "receipt key is retired" };
   if (validAt === undefined || validAt === null) {

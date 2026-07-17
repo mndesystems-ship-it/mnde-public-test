@@ -78,6 +78,7 @@ const allowedCryptoImports = new Map([
   ["src/custody/lifecycle.mjs", "Node-only lifecycle root-key validation"],
   ["src/identity/adapters/github-actions.mjs", "deferred RS256 OIDC adapter support"],
   ["src/policy-engine/authenticated-approvals.mjs", "deferred raw Ed25519 approval helper"],
+  ["src/policy-engine/authority-grants.mjs", "deferred raw Ed25519 grant helper"],
   ["src/policy-engine/trust.mjs", "deferred raw Ed25519 policy helper"]
 ]);
 

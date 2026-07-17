@@ -204,10 +204,15 @@ export function verifyReceiptPublicSignature(receipt: SignedReceipt): boolean {
   if (!bundle.ok) {
     return false;
   }
+  // ecs.receipt.v2 is frozen (shared/contracts.ts) and has no authenticated
+  // decision-time field; verifiable_signature.signed_at is unsigned metadata
+  // and must never drive a trust decision. validAt uses the verifier's own
+  // current time (computed here, never read from the receipt) instead — see
+  // tools/verify-receipt.mjs for the identical, matching rationale.
   const keyResult = findAuthorityReceiptKey(bundle.manifest, {
     authorityId: verifiable_signature.authority_id,
     keyId: verifiable_signature.key_id,
-    signedAt: verifiable_signature.signed_at
+    validAt: new Date().toISOString()
   });
   if (!keyResult.ok) return false;
   if (

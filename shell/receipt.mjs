@@ -93,7 +93,12 @@ export function verifyShellReceipt(receipt) {
   if (!signature) return { verified: false, reason: "missing signature" };
   const bundle = loadAuthorityBundleForReceipt(repoRoot, signature.authority_id);
   if (!bundle.ok) return { verified: false, reason: bundle.reason };
-  const keyResult = findAuthorityReceiptKey(bundle.manifest, { authorityId: signature.authority_id, keyId: signature.key_id, signedAt: signature.signed_at });
+  // mnde.shell.receipt.v1 has no authenticated decision-time field yet;
+  // signature.signed_at is unsigned metadata and must never drive a trust
+  // decision. validAt uses the verifier's own current time (computed here,
+  // never read from the receipt) — see tools/verify-receipt.mjs for the
+  // identical rationale applied to the other format lacking this field.
+  const keyResult = findAuthorityReceiptKey(bundle.manifest, { authorityId: signature.authority_id, keyId: signature.key_id, validAt: new Date().toISOString() });
   if (!keyResult.ok) return { verified: false, reason: keyResult.reason };
   if (signature.public_key_fingerprint !== keyResult.key.public_key_fingerprint) return { verified: false, reason: "fingerprint mismatch" };
 
