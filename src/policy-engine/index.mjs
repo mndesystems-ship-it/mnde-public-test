@@ -62,19 +62,35 @@ function buildDecision(decision, reasonCode, context = {}) {
   const requestHash = context.requestHash ?? safeHash(request);
   const policyHash = context.policyHash ?? safeHash(policy);
   const authorityChainHash = context.authorityChainHash ?? safeHash({ authorities });
+  // Decision-output format version. v1 ("1.0") is frozen: it never carries a
+  // rule_id, and its decisionMaterial (and therefore decision_hash) must stay
+  // byte-identical to the 2026-06-25 conformance vector. v2 ("2.0") binds the
+  // matched rule_id into BOTH decisionMaterial (so it is cryptographically
+  // covered by decision_hash) and the decision output. Routing is explicit via
+  // context.decisionSchemaVersion — never inferred from field presence.
+  const decisionSchemaVersion = context.decisionSchemaVersion === "2.0" ? "2.0" : "1.0";
+  const includeRuleId = decisionSchemaVersion === "2.0";
+  const ruleId = context.ruleId ?? null;
   const decisionMaterial = {
     request_hash: requestHash,
     policy_hash: policyHash,
     authority_chain_hash: authorityChainHash,
     decision,
     reason_code: reasonCode,
+    // v2 only: bound into decision_hash. Omitted entirely for v1 so the frozen
+    // v1 hash material is unchanged (canonical JSON sorts keys, so adding this
+    // key is the ONLY difference between v1 and v2 material for equal inputs).
+    ...(includeRuleId ? { rule_id: ruleId } : {}),
     evaluated_at: evaluatedAt
   };
 
   return {
-    schema_version: "1.0",
+    schema_version: decisionSchemaVersion,
     decision,
     reason_code: reasonCode,
+    // v2 only: the matched rule_id (null when no single rule decided). Absent
+    // from v1 output, which never fabricates a rule id.
+    ...(includeRuleId ? { rule_id: ruleId } : {}),
     request_id: typeof request.request_id === "string" ? request.request_id : "unknown",
     policy_id: typeof policy.policy_id === "string" ? policy.policy_id : "unknown",
     policy_version: typeof policy.version === "string" ? policy.version : "unknown",
@@ -306,7 +322,11 @@ function buildGrantAuditRecord(grant, result) {
 export function evaluatePolicyRequest(request, policy, options = {}) {
   const now = options.now ?? evaluationTime(request);
   const authorities = Array.isArray(options.authorities) ? options.authorities : [];
-  const context = { request, policy, authorities, now };
+  // Decision-output format version flows through every buildDecision call so
+  // both allow/refuse decisions and early validation refusals emit a consistent
+  // shape. Defaults to frozen v1; v2 is opt-in via options.decisionSchemaVersion.
+  const decisionSchemaVersion = options.decisionSchemaVersion === "2.0" ? "2.0" : "1.0";
+  const context = { request, policy, authorities, now, decisionSchemaVersion };
 
   try {
     const requestError = validateRequest(request);
@@ -414,8 +434,9 @@ export function evaluatePolicyRequest(request, policy, options = {}) {
       if (evaluateExpression(rule.match, request, 0, maxDepth)) matchingRules.push(rule);
     }
 
-    if (matchingRules.some((rule) => rule.effect === "REFUSE")) {
-      return buildDecision("REFUSE", "RULE_REFUSE", decisionContext);
+    const refusingRule = matchingRules.find((rule) => rule.effect === "REFUSE");
+    if (refusingRule) {
+      return buildDecision("REFUSE", "RULE_REFUSE", { ...decisionContext, ruleId: refusingRule.rule_id });
     }
 
     const allowRules = matchingRules.filter((rule) => rule.effect === "ALLOW");
@@ -429,7 +450,7 @@ export function evaluatePolicyRequest(request, policy, options = {}) {
       if (!authority.ok) { lastFailure = authority.reason; continue; }
       const approval = approvalStatusForRule(rule);
       if (!approval.ok) { lastFailure = approval.reason; continue; }
-      return buildDecision("ALLOW", "OK_ALLOW", decisionContext);
+      return buildDecision("ALLOW", "OK_ALLOW", { ...decisionContext, ruleId: rule.rule_id });
     }
 
     return buildDecision("REFUSE", lastFailure ?? "AUTHORITY_REQUIRED", decisionContext);

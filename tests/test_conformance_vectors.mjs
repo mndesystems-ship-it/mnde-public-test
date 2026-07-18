@@ -18,6 +18,7 @@ const attributesPath = join(repoRoot, ".gitattributes");
 const requiredSchemas = new Set([
   "ecs.receipt.v2",
   "mnde.pe.receipt.v1",
+  "mnde.pe.receipt.v2",
   "mnde.signed-receipt.v1",
   "mnde.authority.bundle.v1",
   "mnde.policy.bundle.v1"
@@ -38,6 +39,8 @@ assert.equal(manifest.schema_version, "mnde.conformance.manifest.v1");
 assert.ok(Array.isArray(manifest.vectors), "manifest.vectors must be an array");
 assert.equal(typeof manifest.trust_roots?.conformance_authority, "string");
 assert.match(manifest.trust_roots.conformance_authority, /^[a-f0-9]{64}$/);
+assert.equal(typeof manifest.trust_roots?.conformance_authority_v2, "string");
+assert.match(manifest.trust_roots.conformance_authority_v2, /^[a-f0-9]{64}$/);
 
 assert.equal(existsSync(manifestLockPath), true, "conformance/manifest.lock.json is missing");
 const manifestLock = JSON.parse(readFileSync(manifestLockPath, "utf8"));
@@ -45,6 +48,7 @@ assert.equal(manifestLock.schema_version, "mnde.conformance.lock.v1");
 assert.deepEqual(
   {
     conformance_authority: manifest.trust_roots.conformance_authority,
+    conformance_authority_v2: manifest.trust_roots.conformance_authority_v2,
     vectors: manifest.vectors.map((vector) => ({
       id: vector.id,
       schema_version: vector.schema_version,
@@ -58,6 +62,7 @@ assert.deepEqual(
 );
 
 const bySchema = new Map();
+const byId = new Map();
 for (const vector of manifest.vectors) {
   assert.equal(typeof vector.path, "string", "vector.path is required");
   assert.equal(typeof vector.sha256, "string", `${vector.path} sha256 is required`);
@@ -75,7 +80,13 @@ for (const vector of manifest.vectors) {
   const parsed = JSON.parse(raw);
   assert.equal(parsed.schema_version, vector.schema_version, `${vector.path} schema mismatch`);
   assert.equal(raw, `${JSON.stringify(parsed, null, 2)}\n`, `${vector.path} must remain pretty-printed with a final newline`);
-  bySchema.set(vector.schema_version, { ...vector, filePath, parsed });
+  const entry = { ...vector, filePath, parsed };
+  assert.equal(byId.has(vector.id), false, `duplicate conformance vector id ${vector.id}`);
+  byId.set(vector.id, entry);
+  // First vector for a schema wins so the canonical v1 authority bundle is not
+  // shadowed by the v2 authority bundle (both use schema mnde.authority.bundle.v1).
+  // Version-specific lookups below go through byId, not bySchema.
+  if (!bySchema.has(vector.schema_version)) bySchema.set(vector.schema_version, entry);
 }
 
 for (const schema of requiredSchemas) {
@@ -117,5 +128,26 @@ for (const schema of ["ecs.receipt.v2", "mnde.pe.receipt.v1", "mnde.signed-recei
   assert.equal(result.verified, true, `${schema} failed conformance verification: ${result.reason ?? "unknown"}`);
   assert.equal(result.kind, vector.expected_kind, `${schema} verifier kind drifted`);
 }
+
+// mnde.pe.receipt.v2 is a NEW frozen format that binds rule_id into decision_hash.
+// It is signed by its own dedicated conformance authority (mnde-conformance-authority-v2)
+// and verified against that authority's independently-pinned root — the same
+// root-pinned offline path as v1, under a distinct trust anchor. The frozen v1
+// vectors above are verified with the original conformance authority, untouched.
+const v2Root = manifest.trust_roots.conformance_authority_v2;
+const v2Bundle = byId.get("mnde-authority-bundle-v2").parsed;
+assert.equal(
+  (await verifyAuthorityBundle(v2Bundle, { trustedRootFingerprint: v2Root, now: "2026-06-25T00:00:00.000Z" })).ok,
+  true,
+  "v2 authority bundle must verify against its pinned root"
+);
+const v2ReceiptVector = byId.get("mnde-pe-receipt-v2-allow");
+const v2Result = await verifyAnyReceiptFile(v2ReceiptVector.filePath, {
+  authorityBundle: v2Bundle,
+  trustedRootFingerprint: v2Root,
+  now: "2026-06-25T00:00:00.000Z"
+});
+assert.equal(v2Result.verified, true, `mnde.pe.receipt.v2 failed conformance verification: ${v2Result.reason ?? "unknown"}`);
+assert.equal(v2Result.kind, v2ReceiptVector.expected_kind, "mnde.pe.receipt.v2 verifier kind drifted");
 
 console.log(`PASS conformance vectors (${manifest.vectors.length}/${manifest.vectors.length})`);
