@@ -9,7 +9,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-export const INDEX_SCHEMA_VERSION = "mnde.receipt-index.v1";
+export const INDEX_SCHEMA_VERSION = "mnde.receipt-index.v2";
 
 const CREATE_SQL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS receipts (
   region TEXT,
   policy_hash TEXT,
   policy_version TEXT,
+  rule_id TEXT,
   key_id TEXT,
   timestamp TEXT,
   cost_micro_usd INTEGER,
@@ -47,12 +48,14 @@ CREATE INDEX IF NOT EXISTS idx_receipts_actor ON receipts (actor);
 CREATE INDEX IF NOT EXISTS idx_receipts_reason ON receipts (reason_code);
 `;
 
+const RULE_ID_INDEX_SQL = "CREATE INDEX IF NOT EXISTS idx_receipts_rule_id ON receipts (rule_id)";
+
 const UPSERT_SQL = `
 INSERT INTO receipts (
   path, line, schema_version, request_hash, request_id, decision, reason_code,
-  tenant_id, actor, tools, region, policy_hash, policy_version, key_id,
+  tenant_id, actor, tools, region, policy_hash, policy_version, rule_id, key_id,
   timestamp, cost_micro_usd, surface, file_size, file_mtime_ms, parse_error
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (path, line) DO UPDATE SET
   schema_version = excluded.schema_version,
   request_hash = excluded.request_hash,
@@ -65,6 +68,7 @@ ON CONFLICT (path, line) DO UPDATE SET
   region = excluded.region,
   policy_hash = excluded.policy_hash,
   policy_version = excluded.policy_version,
+  rule_id = excluded.rule_id,
   key_id = excluded.key_id,
   timestamp = excluded.timestamp,
   cost_micro_usd = excluded.cost_micro_usd,
@@ -87,6 +91,7 @@ const FILTER_COLUMNS = {
   request_hash: "request_hash",
   policy_hash: "policy_hash",
   policy_version: "policy_version",
+  rule_id: "rule_id",
   key_id: "key_id",
   region: "region",
   surface: "surface",
@@ -188,6 +193,14 @@ export function openIndex(dbPath) {
   const db = new DatabaseSync(dbPath);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(CREATE_SQL);
+  // v1 databases predate rule_id. Add the nullable column in place before
+  // preparing statements or indexes; existing rows remain NULL and retain
+  // their original meaning. Reopening is idempotent.
+  const columns = db.prepare("PRAGMA table_info(receipts)").all();
+  if (!columns.some((column) => column.name === "rule_id")) {
+    db.exec("ALTER TABLE receipts ADD COLUMN rule_id TEXT");
+  }
+  db.exec(RULE_ID_INDEX_SQL);
   const setMeta = db.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value");
   setMeta.run("index_schema", INDEX_SCHEMA_VERSION);
   const upsert = db.prepare(UPSERT_SQL);
@@ -209,6 +222,7 @@ export function openIndex(dbPath) {
         envelope.region,
         envelope.policy_hash,
         envelope.policy_version,
+        envelope.rule_id ?? null,
         envelope.key_id,
         envelope.timestamp,
         envelope.cost_micro_usd,

@@ -41,6 +41,7 @@
   "test:production-posture",
   "test:production-signing",
   "test:proxy-auth",
+  "test:receipt-index",
   "test:receipt-verifier",
   "test:replay",
   "test:reviewer-kit",

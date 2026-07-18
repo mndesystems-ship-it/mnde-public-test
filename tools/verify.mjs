@@ -9,7 +9,7 @@
 // or whether it carries a production custody attestation:
 //   - mnde.signed-receipt.v1 -> custody attestation (offline, against a published
 //                               authority bundle) AND the inner receipt
-//   - mnde.pe.receipt.v1      -> policy-engine replay + signature (verifyPolicyReceipt)
+//   - mnde.pe.receipt.v1/v2   -> policy-engine replay + signature (verifyPolicyReceipt)
 //   - everything else         -> the existing pipeline verifier (verifyReceiptFile)
 //
 // Receipt type is auto-detected. The legacy and policy-engine paths are imported
@@ -65,7 +65,7 @@ export async function verifyAnyReceiptObject(receipt, options = {}) {
 }
 
 function innerEnvelopeOptions(envelope, options = {}) {
-  if (envelope?.receipt?.schema_version !== POLICY_RECEIPT_SCHEMA) return options;
+  if (envelope?.receipt?.schema_version !== POLICY_RECEIPT_SCHEMA && envelope?.receipt?.schema_version !== POLICY_RECEIPT_SCHEMA_V2) return options;
   if (!Object.hasOwn(options, "authorityBundle") || options.authorityBundle === undefined) return options;
   const innerAuthority = envelope.receipt?.verifiable_signature?.authority_id;
   if (options.authorityBundle?.authority_id === innerAuthority) return options;

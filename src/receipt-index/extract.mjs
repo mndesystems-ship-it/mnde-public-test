@@ -3,10 +3,11 @@
 // cannot be read is null. Extraction feeds the UNTRUSTED index only; nothing
 // here participates in verification.
 
-const HEX64 = /^[0-9a-f]{64}$/;
+const SHA256 = /^(?:sha256:)?[0-9a-f]{64}$/;
 
 export const KNOWN_SCHEMAS = [
   "mnde.pe.receipt.v1",
+  "mnde.pe.receipt.v2",
   "ecs.receipt.v2",
   "mnde.execution_gate.receipt.v1",
   "mnde.receipt.v2_5",
@@ -17,8 +18,8 @@ function str(value) {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-function hex64(value) {
-  return typeof value === "string" && HEX64.test(value) ? value : null;
+function sha256(value) {
+  return typeof value === "string" && SHA256.test(value) ? value : null;
 }
 
 function int(value) {
@@ -52,17 +53,22 @@ function emptyEnvelope() {
     region: null,
     policy_hash: null,
     policy_version: null,
+    rule_id: null,
     key_id: null,
     timestamp: null,
     cost_micro_usd: null
   };
 }
 
-function extractPolicyEngineV1(receipt, envelope) {
+function extractPolicyEngine(receipt, envelope, { supportsRuleId }) {
   const decisionOutput = receipt.decision_output ?? {};
   envelope.decision = str(decisionOutput.decision);
   envelope.reason_code = str(decisionOutput.reason_code) ?? str(decisionOutput.reason);
-  envelope.timestamp = str(decisionOutput.timestamp) ?? str(decisionOutput.decided_at);
+  envelope.timestamp = str(decisionOutput.evaluated_at) ?? str(decisionOutput.timestamp) ?? str(decisionOutput.decided_at);
+  envelope.policy_hash = sha256(decisionOutput.policy_hash) ?? envelope.policy_hash;
+  envelope.policy_version = str(decisionOutput.policy_version);
+  // v1 is frozen: never infer or copy rule_id from a v1-shaped receipt.
+  if (supportsRuleId) envelope.rule_id = str(decisionOutput.rule_id);
   const request = parseCanonicalRequest(receipt);
   if (request) {
     envelope.request_id = str(request.request_id);
@@ -117,12 +123,15 @@ export function extractEnvelope(receipt) {
   if (receipt === null || typeof receipt !== "object" || Array.isArray(receipt)) return envelope;
 
   envelope.schema_version = str(receipt.schema_version);
-  envelope.request_hash = hex64(receipt.request_hash);
-  envelope.policy_hash = hex64(receipt.policy_hash);
+  envelope.request_hash = sha256(receipt.request_hash);
+  envelope.policy_hash = sha256(receipt.policy_hash);
 
   switch (envelope.schema_version) {
     case "mnde.pe.receipt.v1":
-      extractPolicyEngineV1(receipt, envelope);
+      extractPolicyEngine(receipt, envelope, { supportsRuleId: false });
+      break;
+    case "mnde.pe.receipt.v2":
+      extractPolicyEngine(receipt, envelope, { supportsRuleId: true });
       break;
     case "ecs.receipt.v2":
       extractEcsV2(receipt, envelope);

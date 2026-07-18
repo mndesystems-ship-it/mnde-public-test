@@ -64,6 +64,7 @@ function envelopeMatchesRow(envelope, row) {
     (envelope.reason_code ?? null) === (row.reason_code ?? null) &&
     (envelope.request_hash ?? null) === (row.request_hash ?? null) &&
     (envelope.schema_version ?? null) === (row.schema_version ?? null) &&
+    (envelope.rule_id ?? null) === (row.rule_id ?? null) &&
     (envelope.timestamp ?? null) === (row.timestamp ?? null)
   );
 }
@@ -78,6 +79,7 @@ function envelopeMatchesFilters(envelope, filters) {
   if (!anyOf(filters.request_hash, envelope.request_hash)) return false;
   if (!anyOf(filters.policy_hash, envelope.policy_hash)) return false;
   if (!anyOf(filters.policy_version, envelope.policy_version)) return false;
+  if (!anyOf(filters.rule_id, envelope.rule_id)) return false;
   if (!anyOf(filters.key_id, envelope.key_id)) return false;
   if (!anyOf(filters.region, envelope.region)) return false;
   if (!anyOf(filters.schema_version, envelope.schema_version)) return false;
@@ -174,6 +176,7 @@ export async function findReceipts(options) {
     hits.push({
       verification: verification.status,
       verification_reason: verification.reason,
+      ...(envelope.rule_id !== null ? { rule_id: envelope.rule_id } : {}),
       ...(repaired ? { index_repaired: true } : {}),
       receipt,
       provenance: {

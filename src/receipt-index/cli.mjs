@@ -22,7 +22,7 @@ import { findReceipts, ingestRoots } from "./find.mjs";
 
 const FILTER_FLAGS = [
   "decision", "reason-code", "tenant", "actor", "tool", "request-id",
-  "request-hash", "policy-hash", "policy-version", "key-id", "region",
+  "request-hash", "policy-hash", "policy-version", "rule-id", "key-id", "region",
   "surface", "schema-version", "since", "until", "min-cost", "max-cost"
 ];
 
@@ -48,11 +48,11 @@ function parse(argv) {
   return parseArgs({ args: argv, options, allowPositionals: true });
 }
 
-function filtersFrom(values) {
+export function filtersFrom(values) {
   const map = {
     decision: "decision", "reason-code": "reason_code", tenant: "tenant", actor: "actor",
     tool: "tool", "request-id": "request_id", "request-hash": "request_hash",
-    "policy-hash": "policy_hash", "policy-version": "policy_version", "key-id": "key_id",
+    "policy-hash": "policy_hash", "policy-version": "policy_version", "rule-id": "rule_id", "key-id": "key_id",
     region: "region", surface: "surface", "schema-version": "schema_version"
   };
   const filters = {};
@@ -70,10 +70,10 @@ async function loadVerifier(values) {
   const { verifyAnyReceiptObject } = await import("../../tools/verify.mjs");
   const verifyOptions = {};
   if (values["authority-bundle"]) {
-    verifyOptions.authorityBundle = JSON.parse(readFileSync(values["authority-bundle"][0], "utf8"));
+    verifyOptions.authorityBundle = JSON.parse(readFileSync(values["authority-bundle"], "utf8"));
   }
   if (values["trusted-root-fingerprint"]) {
-    verifyOptions.trustedRootFingerprint = values["trusted-root-fingerprint"][0];
+    verifyOptions.trustedRootFingerprint = values["trusted-root-fingerprint"];
   }
   return { verify: verifyAnyReceiptObject, verifyOptions };
 }

@@ -95,7 +95,8 @@ receipt files (canonical)          .jsonl receipt logs (canonical)
 
 ## 6. Indexed fields
 
-From the receipt envelope (`mnde.receipt.v2_5`):
+From supported receipt envelopes, including `mnde.receipt.v2_5` and PE
+receipt versions v1/v2:
 
 | Field | Type | Notes |
 |---|---|---|
@@ -105,6 +106,7 @@ From the receipt envelope (`mnde.receipt.v2_5`):
 | `decision` | ALLOW / REFUSE | |
 | `reason_code` | text | |
 | `policy_hash`, `policy_version` | text | |
+| `rule_id` | nullable text | PE v2 only; PE v1 rows remain NULL |
 | `key_set_version`, `key_id` | text | |
 | `timestamp` | ISO 8601 | indexed for range queries |
 | `projected_cost_micro_usd` | integer | range queries |
@@ -145,7 +147,8 @@ Filters (all AND-combined; array values are any-of):
 --tenant <id>                  --actor <user_id>
 --tool <name>[,<name>...]      --request-id <id>
 --request-hash <hex64>         --policy-version <v>
---policy-hash <hex64>          --key-id <id>
+--policy-hash <hex64>          --rule-id <id>
+--key-id <id>
 --signer <signer_id>           --region <region>
 --since <ISO8601>              --until <ISO8601>
 --min-cost <micro_usd>         --max-cost <micro_usd>
