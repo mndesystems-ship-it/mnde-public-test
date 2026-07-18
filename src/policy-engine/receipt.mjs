@@ -22,6 +22,18 @@ import { verifyHistoricalPolicyBundleProvenance } from "../policy-bundles/index.
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SCHEMA = "mnde.pe.receipt.v1";
+const SCHEMA_V2 = "mnde.pe.receipt.v2";
+
+// Explicit receipt-schema -> decision-output-schema routing. Verification and
+// minting both consult this map by exact schema string; nothing is ever inferred
+// from field presence. A receipt schema with no entry here has no decision-shape
+// contract and fails closed (unknown/future versions are rejected, never guessed).
+//   mnde.pe.receipt.v1 -> decision "1.0" (frozen; no rule_id)
+//   mnde.pe.receipt.v2 -> decision "2.0" (rule_id bound into decision_hash)
+const RECEIPT_TO_DECISION_SCHEMA = new Map([
+  [SCHEMA, "1.0"],
+  [SCHEMA_V2, "2.0"]
+]);
 
 function canonicalPayloadWithoutSignature(receiptLike) {
   const { verifiable_signature: _omit, ...payload } = receiptLike;
@@ -69,6 +81,10 @@ async function verifyReceiptSignatureWithAuthorityBundle(receipt, signature, opt
 
 // Build a signed receipt for a policy-engine decision.
 export function buildPolicyReceipt(request, policy, options = {}) {
+  // Default to the frozen v1 receipt format; v2 is opt-in via options.receiptSchema.
+  const receiptSchema = options.receiptSchema ?? SCHEMA;
+  const decisionSchemaVersion = RECEIPT_TO_DECISION_SCHEMA.get(receiptSchema);
+  if (decisionSchemaVersion === undefined) throw new Error(`ERR_UNSUPPORTED_RECEIPT_SCHEMA: ${receiptSchema}`);
   const authorities = Array.isArray(options.authorities) ? options.authorities : [];
   const trustAnchors = options.trustAnchors;
   const approvalTrustAnchors = options.approvalTrustAnchors;
@@ -83,7 +99,8 @@ export function buildPolicyReceipt(request, policy, options = {}) {
     approvalTrustAnchors,
     caller: options.caller,
     repoRoot: options.repoRoot,
-    consumeAuthorityGrants: options.consumeAuthorityGrants
+    consumeAuthorityGrants: options.consumeAuthorityGrants,
+    decisionSchemaVersion
   });
   const policyBundleProvenance = options.policyBundleProvenance;
   if (policyBundleProvenance !== undefined && !isBundleProvenance(policyBundleProvenance, decision.policy_hash)) {
@@ -91,7 +108,7 @@ export function buildPolicyReceipt(request, policy, options = {}) {
   }
 
   const payload = {
-    schema_version: SCHEMA,
+    schema_version: receiptSchema,
     canonical_request: canonicalizeJson(request),
     canonical_policy: canonicalizeJson(policy),
     authorities,
@@ -126,7 +143,12 @@ export function buildPolicyReceipt(request, policy, options = {}) {
 
 // Verify a policy-engine receipt: replay the decision and check the signature.
 export async function verifyPolicyReceipt(receipt, options = {}) {
-  if (!receipt || receipt.schema_version !== SCHEMA) return { verified: false, reason: "unsupported schema" };
+  // Explicit version routing. Only receipt schemas with a decision-shape contract
+  // in RECEIPT_TO_DECISION_SCHEMA are accepted; any unknown or future version has
+  // no mapping and fails closed here (never guessed from field presence).
+  const decisionSchemaVersion = receipt ? RECEIPT_TO_DECISION_SCHEMA.get(receipt.schema_version) : undefined;
+  if (!receipt || decisionSchemaVersion === undefined) return { verified: false, reason: "unsupported schema" };
+  const isV2 = decisionSchemaVersion === "2.0";
 
   const parsedRequest = parseStrictJson(receipt.canonical_request);
   const parsedPolicy = parseStrictJson(receipt.canonical_policy);
@@ -160,10 +182,25 @@ export async function verifyPolicyReceipt(receipt, options = {}) {
     approvalTrustAnchors: receipt.approval_enforced ? options.approvalTrustAnchors : undefined,
     caller: replayCaller,
     repoRoot: options.repoRoot,
-    consumeAuthorityGrants: false
+    consumeAuthorityGrants: false,
+    decisionSchemaVersion
   });
 
-  for (const field of ["decision", "reason_code", "request_hash", "policy_hash", "authority_chain_hash", "decision_hash"]) {
+  // Cross-version integrity: the embedded decision's own schema_version must
+  // match the version the receipt header declares. This prevents a v1 decision
+  // body from being accepted under a v2 receipt header (or vice versa) and
+  // rejects any malformed cross-version shape before the drift checks run.
+  if (original.schema_version !== decisionSchemaVersion) {
+    return { verified: false, reason: "decision schema mismatch" };
+  }
+
+  // v1 drift fields are frozen and unchanged. v2 additionally verifies rule_id;
+  // because rule_id is bound into decision_hash, a v2 receipt whose rule_id was
+  // altered fails BOTH the rule_id check and the decision_hash check.
+  const driftFields = isV2
+    ? ["decision", "reason_code", "rule_id", "request_hash", "policy_hash", "authority_chain_hash", "decision_hash"]
+    : ["decision", "reason_code", "request_hash", "policy_hash", "authority_chain_hash", "decision_hash"];
+  for (const field of driftFields) {
     if (replay[field] !== original[field]) return { verified: false, reason: `decision drift: ${field}` };
   }
   // authority_grants is audit metadata, not part of decision_hash (like
@@ -230,3 +267,4 @@ export async function verifyPolicyReceipt(receipt, options = {}) {
 }
 
 export const POLICY_RECEIPT_SCHEMA = SCHEMA;
+export const POLICY_RECEIPT_SCHEMA_V2 = SCHEMA_V2;

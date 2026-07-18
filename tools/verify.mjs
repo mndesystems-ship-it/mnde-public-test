@@ -9,7 +9,7 @@
 // or whether it carries a production custody attestation:
 //   - mnde.signed-receipt.v1 -> custody attestation (offline, against a published
 //                               authority bundle) AND the inner receipt
-//   - mnde.pe.receipt.v1      -> policy-engine replay + signature (verifyPolicyReceipt)
+//   - mnde.pe.receipt.v1/v2   -> policy-engine replay + signature (verifyPolicyReceipt)
 //   - everything else         -> the existing pipeline verifier (verifyReceiptFile)
 //
 // Receipt type is auto-detected. The legacy and policy-engine paths are imported
@@ -22,7 +22,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { verifyReceiptFile, verificationPassed } from "./verify-receipt.mjs";
-import { verifyPolicyReceipt, POLICY_RECEIPT_SCHEMA } from "../src/policy-engine/receipt.mjs";
+import { verifyPolicyReceipt, POLICY_RECEIPT_SCHEMA, POLICY_RECEIPT_SCHEMA_V2 } from "../src/policy-engine/receipt.mjs";
 import { verifyCustodyAttestation, SIGNED_RECEIPT_SCHEMA } from "../src/authority-signing/index.mjs";
 
 // Verify a receipt object (legacy / policy-engine / custody-signed envelope).
@@ -31,7 +31,7 @@ export async function verifyAnyReceiptObject(receipt, options = {}) {
     if (receipt?.schema_version === SIGNED_RECEIPT_SCHEMA) {
       return verifySignedEnvelope(receipt, options);
     }
-    if (receipt?.schema_version === POLICY_RECEIPT_SCHEMA) {
+    if (receipt?.schema_version === POLICY_RECEIPT_SCHEMA || receipt?.schema_version === POLICY_RECEIPT_SCHEMA_V2) {
       const result = await verifyPolicyReceipt(receipt, {
         trustAnchors: options.trustAnchors,
         approvalTrustAnchors: options.approvalTrustAnchors,
@@ -57,7 +57,7 @@ export async function verifyAnyReceiptObject(receipt, options = {}) {
   } catch {
     const kind = receipt?.schema_version === SIGNED_RECEIPT_SCHEMA
       ? "custody-signed"
-      : receipt?.schema_version === POLICY_RECEIPT_SCHEMA
+      : (receipt?.schema_version === POLICY_RECEIPT_SCHEMA || receipt?.schema_version === POLICY_RECEIPT_SCHEMA_V2)
         ? "policy-engine"
         : "pipeline";
     return { kind, verified: false, reason: "verification error" };
@@ -65,7 +65,7 @@ export async function verifyAnyReceiptObject(receipt, options = {}) {
 }
 
 function innerEnvelopeOptions(envelope, options = {}) {
-  if (envelope?.receipt?.schema_version !== POLICY_RECEIPT_SCHEMA) return options;
+  if (envelope?.receipt?.schema_version !== POLICY_RECEIPT_SCHEMA && envelope?.receipt?.schema_version !== POLICY_RECEIPT_SCHEMA_V2) return options;
   if (!Object.hasOwn(options, "authorityBundle") || options.authorityBundle === undefined) return options;
   const innerAuthority = envelope.receipt?.verifiable_signature?.authority_id;
   if (options.authorityBundle?.authority_id === innerAuthority) return options;
