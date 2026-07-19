@@ -48,6 +48,7 @@
   "test:shell",
   "test:sidecar",
   "test:sidecar-pe",
+  "test:sidecar-startup-race",
   "test:signed-execution-result",
   "test:signed-policy-bundle",
   "test:signed-result-codes",

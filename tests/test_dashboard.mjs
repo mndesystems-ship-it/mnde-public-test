@@ -113,8 +113,16 @@ function authorityAssertion(privateKey, overrides = {}) {
 
 function tamperAssertion(assertion) {
   const parts = assertion.split(".");
-  const sig = parts[1];
-  parts[1] = sig.slice(0, -1) + (sig.endsWith("A") ? "B" : "A");
+  // Flip a bit in the DECODED signature bytes so the tamper is ALWAYS effective.
+  // Editing the last base64url character is unreliable: an Ed25519 signature is
+  // 64 bytes, and base64url's final character encodes only 2 significant bits
+  // (the last char is always one of {A,Q,g,w}). Flipping it to "A"/"B" changes
+  // only don't-care bits ~25% of the time, so the "tampered" assertion decodes
+  // byte-for-byte to the original signature, verifies legitimately, and is
+  // authorized (HTTP 200) — a false failure of the 403 expectation.
+  const sig = Buffer.from(parts[1], "base64url");
+  sig[0] ^= 0x01;
+  parts[1] = sig.toString("base64url");
   return parts.join(".");
 }
 
