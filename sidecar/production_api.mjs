@@ -35,25 +35,53 @@ function receiptTimestamp(raw) {
 }
 
 export function normalizeReceipt(raw) {
-  const decision = raw?.decision_output && typeof raw.decision_output === "object" ? raw.decision_output : {};
-  const trace = raw?.pipeline_trace && typeof raw.pipeline_trace === "object" ? raw.pipeline_trace : {};
-  const receiptId = raw?.receipt_id ?? raw?.id ?? decision.decision_hash ?? raw?.request_hash ?? null;
+  // Custody-backed receipts are persisted as a signed outer envelope whose
+  // inner receipt is the signed payload: the custody attestation binds it by
+  // receipt_hash. The envelope's own surface (schema_version, and any field an
+  // author chose to add alongside `receipt`) is NOT covered by that signature,
+  // so it must never override the inner receipt. Resolve the inner receipt
+  // first and read every display field from it.
+  //
+  // This is deliberately the same precedence verifyReceiptContract() uses, so
+  // display and verification always resolve the same object. An outer field
+  // can never make the operator see a decision the verifier did not check.
+  const receipt = raw?.receipt && typeof raw.receipt === "object" && !Array.isArray(raw.receipt)
+    ? raw.receipt
+    : raw;
+  const decision = receipt?.decision_output && typeof receipt.decision_output === "object" ? receipt.decision_output : {};
+  const trace = receipt?.pipeline_trace && typeof receipt.pipeline_trace === "object" ? receipt.pipeline_trace : {};
+  const receiptId = receipt?.receipt_id ?? receipt?.id ?? decision.decision_hash ?? receipt?.request_hash ?? null;
   const verdict = decision.decision === "ALLOW" ? "ALLOW" : "REFUSE";
   const prevented = Number.parseFloat(String(decision.prevented_cost_usd ?? ""));
+  // Trust status is read from the resolved (signed) receipt only. The unsigned
+  // envelope surface never contributes it: allowing an outer signature_status
+  // to win would let an unsigned field assert the trust of a signed one.
+  //
+  // NOTE: no verifier writes these fields today, so in practice they resolve to
+  // UNKNOWN / NOT_REPORTED. That is correct-by-absence, not proof — presentation
+  // must treat anything other than VALID as unproven.
+  const signatureStatus = RECEIPT_SIGNATURE_STATES.has(receipt?.signature_status)
+    ? receipt.signature_status
+    : receipt?.signature || receipt?.verifiable_signature
+      ? "UNKNOWN"
+      : "NOT_REPORTED";
+  const replayStatus = REPLAY_STATES.has(receipt?.replay_status)
+    ? receipt.replay_status
+    : "UNKNOWN";
 
   return {
     receipt_id: typeof receiptId === "string" ? receiptId : null,
-    timestamp: receiptTimestamp(raw),
+    timestamp: receiptTimestamp(receipt),
     verdict,
-    action: typeof raw?.action === "string" ? raw.action : decision.execution_id ? `execution ${decision.execution_id}` : "not reported",
+    action: typeof receipt?.action === "string" ? receipt.action : decision.execution_id ? `execution ${decision.execution_id}` : "not reported",
     reason_code: typeof decision.reason_code === "string" ? decision.reason_code : "NOT_REPORTED",
     policy: typeof decision.policy_version === "string" ? decision.policy_version : "NOT_REPORTED",
     policy_hash: typeof decision.policy_hash === "string" ? decision.policy_hash : "NOT_REPORTED",
-    request_hash: typeof raw?.request_hash === "string" ? raw.request_hash : typeof decision.request_hash === "string" ? decision.request_hash : "NOT_REPORTED",
+    request_hash: typeof receipt?.request_hash === "string" ? receipt.request_hash : typeof decision.request_hash === "string" ? decision.request_hash : "NOT_REPORTED",
     decision_hash: typeof decision.decision_hash === "string" ? decision.decision_hash : "NOT_REPORTED",
-    canonical_payload_hash: typeof raw?.canonical_payload_hash === "string" ? raw.canonical_payload_hash : null,
-    signature_status: RECEIPT_SIGNATURE_STATES.has(raw?.signature_status) ? raw.signature_status : raw?.signature || raw?.verifiable_signature ? "UNKNOWN" : "NOT_REPORTED",
-    replay_status: REPLAY_STATES.has(raw?.replay_status) ? raw.replay_status : "UNKNOWN",
+    canonical_payload_hash: typeof receipt?.canonical_payload_hash === "string" ? receipt.canonical_payload_hash : null,
+    signature_status: signatureStatus,
+    replay_status: replayStatus,
     prevented_cost_usd: Number.isFinite(prevented) ? prevented : null,
     raw
   };

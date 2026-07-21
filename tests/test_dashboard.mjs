@@ -153,11 +153,183 @@ async function main() {
     assert.equal(normalizeReceipt({ verifiable_signature: "not-an-object" }).timestamp, null);
   });
 
+  await test("custody envelopes normalize from their signed inner receipt", () => {
+    const inner = {
+      receipt_id: "receipt-wrapped-1",
+      request_hash: "sha256:request",
+      canonical_payload_hash: "sha256:payload",
+      action: "read_status",
+      decision_output: {
+        decision: "ALLOW",
+        decision_hash: "sha256:decision",
+        reason_code: "OK_ALLOW",
+        policy_version: "10.0.0",
+        policy_hash: "sha256:policy",
+        prevented_cost_usd: "12.50"
+      },
+      verifiable_signature: { signed_at: "2026-07-18T12:34:56.000Z" },
+      replay_status: "VALID"
+    };
+    const envelope = {
+      schema_version: "mnde.signed-receipt.v1",
+      custody_attestation: { key_id: "custody-key-1" },
+      receipt: inner
+    };
+    const normalized = normalizeReceipt(envelope);
+
+    assert.equal(normalized.receipt_id, inner.receipt_id);
+    assert.equal(normalized.timestamp, inner.verifiable_signature.signed_at);
+    assert.equal(normalized.verdict, "ALLOW");
+    assert.equal(normalized.action, inner.action);
+    assert.equal(normalized.reason_code, "OK_ALLOW");
+    assert.equal(normalized.policy, "10.0.0");
+    assert.equal(normalized.policy_hash, "sha256:policy");
+    assert.equal(normalized.request_hash, "sha256:request");
+    assert.equal(normalized.decision_hash, "sha256:decision");
+    assert.equal(normalized.canonical_payload_hash, "sha256:payload");
+    assert.equal(normalized.signature_status, "UNKNOWN");
+    assert.equal(normalized.replay_status, "VALID");
+    assert.equal(normalized.prevented_cost_usd, 12.5);
+    assert.equal(normalized.raw, envelope, "audit output must retain the custody envelope");
+
+    // An unsigned outer decision_output alongside a signed inner receipt must
+    // NOT win. The envelope surface is not covered by the custody attestation;
+    // letting it override would show the operator a decision the verifier
+    // never checked. The signed inner receipt controls the display.
+    const outerShadowed = normalizeReceipt({
+      decision_output: { decision: "REFUSE", decision_hash: "sha256:top", reason_code: "TOP_LEVEL" },
+      receipt: inner
+    });
+    assert.equal(outerShadowed.verdict, "ALLOW", "signed inner decision must control the verdict");
+    assert.equal(outerShadowed.decision_hash, "sha256:decision", "decision_hash must come from the signed inner receipt");
+    assert.equal(outerShadowed.reason_code, "OK_ALLOW", "reason_code must come from the signed inner receipt");
+  });
+
+  await test("outer envelope fields never override the signed inner decision", () => {
+    const signedInner = (decision, extra = {}) => ({
+      receipt_id: `receipt-${decision}`,
+      request_hash: "sha256:request",
+      action: "read_status",
+      decision_output: { decision, decision_hash: `sha256:${decision}`, reason_code: `INNER_${decision}` },
+      verifiable_signature: { signed_at: "2026-07-18T12:34:56.000Z" },
+      ...extra
+    });
+
+    // Hostile: outer claims ALLOW, signed inner is REFUSE. Display must refuse.
+    const outerAllow = normalizeReceipt({
+      decision_output: { decision: "ALLOW", decision_hash: "sha256:forged", reason_code: "OUTER_ALLOW" },
+      receipt: signedInner("REFUSE")
+    });
+    assert.equal(outerAllow.verdict, "REFUSE", "outer ALLOW must not override signed inner REFUSE");
+    assert.equal(outerAllow.reason_code, "INNER_REFUSE");
+    assert.equal(outerAllow.decision_hash, "sha256:REFUSE");
+
+    // Hostile inverse: outer claims REFUSE, signed inner is ALLOW.
+    const outerRefuse = normalizeReceipt({
+      decision_output: { decision: "REFUSE", decision_hash: "sha256:forged", reason_code: "OUTER_REFUSE" },
+      receipt: signedInner("ALLOW")
+    });
+    assert.equal(outerRefuse.verdict, "ALLOW", "outer REFUSE must not override signed inner ALLOW");
+    assert.equal(outerRefuse.reason_code, "INNER_ALLOW");
+    assert.equal(outerRefuse.decision_hash, "sha256:ALLOW");
+
+    // An unsigned outer signature_status must never assert trust for the inner.
+    const forgedStatus = normalizeReceipt({
+      signature_status: "VALID",
+      replay_status: "VALID",
+      receipt: signedInner("REFUSE")
+    });
+    assert.notEqual(forgedStatus.signature_status, "VALID", "unsigned outer signature_status must not be trusted");
+    assert.notEqual(forgedStatus.replay_status, "VALID", "unsigned outer replay_status must not be trusted");
+
+    // A valid-looking outer attestation over a tampered inner receipt must not
+    // launder trust: normalizeReceipt does not verify, so it may never claim VALID.
+    const tampered = normalizeReceipt({
+      schema_version: "mnde.signed-receipt.v1",
+      custody_attestation: {
+        schema_version: "mnde.custody.attestation.v1",
+        decision: "REFUSE",
+        receipt_hash: "sha256:hash-of-the-ORIGINAL-receipt",
+        signing_key_id: "custody-key-1",
+        signature: { algorithm: "ED25519", value: "not-checked-here" }
+      },
+      receipt: signedInner("ALLOW")
+    });
+    assert.notEqual(tampered.signature_status, "VALID", "an unverified attestation must never yield VALID");
+    assert.equal(tampered.verdict, "ALLOW", "display still reflects the inner receipt actually present");
+    assert.equal(tampered.raw.custody_attestation.decision, "REFUSE", "raw envelope retained for the verifier to catch the mismatch");
+  });
+
+  await test("trust status is never positive without proof", () => {
+    const base = { decision_output: { decision: "ALLOW" }, request_hash: "sha256:r" };
+
+    // Missing verification result entirely (no signature material at all).
+    const missing = normalizeReceipt({ ...base });
+    assert.equal(missing.signature_status, "NOT_REPORTED");
+    assert.equal(missing.replay_status, "UNKNOWN");
+
+    // Signature material present but unverified.
+    const unverified = normalizeReceipt({ ...base, verifiable_signature: { signed_at: "2026-07-18T12:34:56.000Z" } });
+    assert.equal(unverified.signature_status, "UNKNOWN", "present-but-unchecked is UNKNOWN, never VALID");
+
+    // Explicit UNKNOWN and INVALID must survive verbatim and stay non-positive.
+    assert.equal(normalizeReceipt({ ...base, signature_status: "UNKNOWN" }).signature_status, "UNKNOWN");
+    assert.equal(normalizeReceipt({ ...base, signature_status: "INVALID" }).signature_status, "INVALID");
+
+    // Garbage never coerces into the enum.
+    assert.equal(normalizeReceipt({ ...base, signature_status: "TOTALLY_FINE" }).signature_status, "NOT_REPORTED");
+    assert.equal(normalizeReceipt({ ...base, replay_status: { evil: true } }).replay_status, "UNKNOWN");
+
+    // The dashboard counts only VALID. Anything else is absence of proof.
+    const counted = (status) => [{ signature_status: status }].filter((r) => r.signature_status === "VALID").length;
+    assert.equal(counted("VALID"), 1);
+    for (const status of ["UNKNOWN", "INVALID", "NOT_REPORTED", undefined, null, "", "valid"]) {
+      assert.equal(counted(status), 0, `status ${JSON.stringify(status)} must not count as verified`);
+    }
+  });
+
+  await test("a valid custody envelope with a valid inner receipt displays the inner receipt", () => {
+    const inner = buildSidecarRefusalReceipt({ reason_code: "ERR_NOT_FOUND", policy_hash: "h", policy_version: "v" });
+    const envelope = {
+      schema_version: "mnde.signed-receipt.v1",
+      receipt: inner,
+      custody_attestation: {
+        schema_version: "mnde.custody.attestation.v1",
+        receipt_type: inner.schema_version,
+        decision: inner.decision_output?.decision,
+        receipt_hash: "sha256:whatever",
+        authority_bundle_fingerprint: "fp",
+        signing_key_id: "custody-key-1",
+        signed_at: "2026-07-18T12:34:56.000Z",
+        signature: { algorithm: "ED25519", value: "sig" }
+      }
+    };
+    const normalized = normalizeReceipt(envelope);
+    assert.equal(normalized.verdict, "REFUSE");
+    assert.equal(normalized.reason_code, "ERR_NOT_FOUND");
+    assert.equal(normalized.timestamp, inner.verifiable_signature.signed_at);
+    assert.equal(normalized.raw, envelope, "audit output must retain the custody envelope");
+    // Still not proof: nothing verified the attestation in this path.
+    assert.notEqual(normalized.signature_status, "VALID");
+  });
+
   await test("a real signed refusal receipt normalizes to its signing time", () => {
     const receipt = buildSidecarRefusalReceipt({ reason_code: "ERR_NOT_FOUND", policy_hash: "h", policy_version: "v" });
     const normalized = normalizeReceipt(receipt);
     assert.equal(normalized.timestamp, receipt.verifiable_signature.signed_at);
     assert.ok(Number.isFinite(Date.parse(normalized.timestamp)));
+  });
+
+  await test("dashboard counts only cryptographically verified receipts", () => {
+    const markup = readFileSync(join(repoRoot, "desktop", "dashboard.html"), "utf8");
+    assert.ok(
+      markup.includes('r.signature_status === "VALID"'),
+      "the signed tally must test for VALID exactly"
+    );
+    assert.ok(
+      !markup.includes('signature_status !== "NOT_REPORTED"'),
+      "the permissive not-NOT_REPORTED predicate must not return: it counts UNKNOWN and INVALID as signed"
+    );
   });
 
   const sc = await startMndeSidecar({ url: "http://127.0.0.1:8794", env: { MNDE_BIND_PORT: "8794" } });
