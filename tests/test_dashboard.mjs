@@ -153,6 +153,54 @@ async function main() {
     assert.equal(normalizeReceipt({ verifiable_signature: "not-an-object" }).timestamp, null);
   });
 
+  await test("custody envelopes normalize from their signed inner receipt", () => {
+    const inner = {
+      receipt_id: "receipt-wrapped-1",
+      request_hash: "sha256:request",
+      canonical_payload_hash: "sha256:payload",
+      action: "read_status",
+      decision_output: {
+        decision: "ALLOW",
+        decision_hash: "sha256:decision",
+        reason_code: "OK_ALLOW",
+        policy_version: "10.0.0",
+        policy_hash: "sha256:policy",
+        prevented_cost_usd: "12.50"
+      },
+      verifiable_signature: { signed_at: "2026-07-18T12:34:56.000Z" },
+      replay_status: "VALID"
+    };
+    const envelope = {
+      schema_version: "mnde.signed-receipt.v1",
+      custody_attestation: { key_id: "custody-key-1" },
+      receipt: inner
+    };
+    const normalized = normalizeReceipt(envelope);
+
+    assert.equal(normalized.receipt_id, inner.receipt_id);
+    assert.equal(normalized.timestamp, inner.verifiable_signature.signed_at);
+    assert.equal(normalized.verdict, "ALLOW");
+    assert.equal(normalized.action, inner.action);
+    assert.equal(normalized.reason_code, "OK_ALLOW");
+    assert.equal(normalized.policy, "10.0.0");
+    assert.equal(normalized.policy_hash, "sha256:policy");
+    assert.equal(normalized.request_hash, "sha256:request");
+    assert.equal(normalized.decision_hash, "sha256:decision");
+    assert.equal(normalized.canonical_payload_hash, "sha256:payload");
+    assert.equal(normalized.signature_status, "UNKNOWN");
+    assert.equal(normalized.replay_status, "VALID");
+    assert.equal(normalized.prevented_cost_usd, 12.5);
+    assert.equal(normalized.raw, envelope, "audit output must retain the custody envelope");
+
+    const alreadyUnwrapped = normalizeReceipt({
+      decision_output: { decision: "REFUSE", decision_hash: "sha256:top", reason_code: "TOP_LEVEL" },
+      receipt: inner
+    });
+    assert.equal(alreadyUnwrapped.verdict, "REFUSE");
+    assert.equal(alreadyUnwrapped.decision_hash, "sha256:top");
+    assert.equal(alreadyUnwrapped.reason_code, "TOP_LEVEL");
+  });
+
   await test("a real signed refusal receipt normalizes to its signing time", () => {
     const receipt = buildSidecarRefusalReceipt({ reason_code: "ERR_NOT_FOUND", policy_hash: "h", policy_version: "v" });
     const normalized = normalizeReceipt(receipt);

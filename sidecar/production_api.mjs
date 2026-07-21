@@ -35,25 +35,45 @@ function receiptTimestamp(raw) {
 }
 
 export function normalizeReceipt(raw) {
-  const decision = raw?.decision_output && typeof raw.decision_output === "object" ? raw.decision_output : {};
-  const trace = raw?.pipeline_trace && typeof raw.pipeline_trace === "object" ? raw.pipeline_trace : {};
-  const receiptId = raw?.receipt_id ?? raw?.id ?? decision.decision_hash ?? raw?.request_hash ?? null;
+  // Custody-backed receipts are persisted as a signed outer envelope. Prefer a
+  // top-level receipt when one is present (and therefore already unwrapped),
+  // otherwise read display fields from the envelope's inner receipt.
+  const receipt = raw?.decision_output && typeof raw.decision_output === "object"
+    ? raw
+    : raw?.receipt && typeof raw.receipt === "object" && !Array.isArray(raw.receipt)
+      ? raw.receipt
+      : raw;
+  const decision = receipt?.decision_output && typeof receipt.decision_output === "object" ? receipt.decision_output : {};
+  const trace = receipt?.pipeline_trace && typeof receipt.pipeline_trace === "object" ? receipt.pipeline_trace : {};
+  const receiptId = receipt?.receipt_id ?? receipt?.id ?? decision.decision_hash ?? receipt?.request_hash ?? null;
   const verdict = decision.decision === "ALLOW" ? "ALLOW" : "REFUSE";
   const prevented = Number.parseFloat(String(decision.prevented_cost_usd ?? ""));
+  const signatureStatus = RECEIPT_SIGNATURE_STATES.has(raw?.signature_status)
+    ? raw.signature_status
+    : RECEIPT_SIGNATURE_STATES.has(receipt?.signature_status)
+      ? receipt.signature_status
+      : raw?.signature || raw?.verifiable_signature || receipt?.signature || receipt?.verifiable_signature
+        ? "UNKNOWN"
+        : "NOT_REPORTED";
+  const replayStatus = REPLAY_STATES.has(raw?.replay_status)
+    ? raw.replay_status
+    : REPLAY_STATES.has(receipt?.replay_status)
+      ? receipt.replay_status
+      : "UNKNOWN";
 
   return {
     receipt_id: typeof receiptId === "string" ? receiptId : null,
-    timestamp: receiptTimestamp(raw),
+    timestamp: receiptTimestamp(receipt),
     verdict,
-    action: typeof raw?.action === "string" ? raw.action : decision.execution_id ? `execution ${decision.execution_id}` : "not reported",
+    action: typeof receipt?.action === "string" ? receipt.action : decision.execution_id ? `execution ${decision.execution_id}` : "not reported",
     reason_code: typeof decision.reason_code === "string" ? decision.reason_code : "NOT_REPORTED",
     policy: typeof decision.policy_version === "string" ? decision.policy_version : "NOT_REPORTED",
     policy_hash: typeof decision.policy_hash === "string" ? decision.policy_hash : "NOT_REPORTED",
-    request_hash: typeof raw?.request_hash === "string" ? raw.request_hash : typeof decision.request_hash === "string" ? decision.request_hash : "NOT_REPORTED",
+    request_hash: typeof receipt?.request_hash === "string" ? receipt.request_hash : typeof decision.request_hash === "string" ? decision.request_hash : "NOT_REPORTED",
     decision_hash: typeof decision.decision_hash === "string" ? decision.decision_hash : "NOT_REPORTED",
-    canonical_payload_hash: typeof raw?.canonical_payload_hash === "string" ? raw.canonical_payload_hash : null,
-    signature_status: RECEIPT_SIGNATURE_STATES.has(raw?.signature_status) ? raw.signature_status : raw?.signature || raw?.verifiable_signature ? "UNKNOWN" : "NOT_REPORTED",
-    replay_status: REPLAY_STATES.has(raw?.replay_status) ? raw.replay_status : "UNKNOWN",
+    canonical_payload_hash: typeof receipt?.canonical_payload_hash === "string" ? receipt.canonical_payload_hash : null,
+    signature_status: signatureStatus,
+    replay_status: replayStatus,
     prevented_cost_usd: Number.isFinite(prevented) ? prevented : null,
     raw
   };
