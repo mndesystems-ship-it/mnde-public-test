@@ -35,31 +35,39 @@ function receiptTimestamp(raw) {
 }
 
 export function normalizeReceipt(raw) {
-  // Custody-backed receipts are persisted as a signed outer envelope. Prefer a
-  // top-level receipt when one is present (and therefore already unwrapped),
-  // otherwise read display fields from the envelope's inner receipt.
-  const receipt = raw?.decision_output && typeof raw.decision_output === "object"
-    ? raw
-    : raw?.receipt && typeof raw.receipt === "object" && !Array.isArray(raw.receipt)
-      ? raw.receipt
-      : raw;
+  // Custody-backed receipts are persisted as a signed outer envelope whose
+  // inner receipt is the signed payload: the custody attestation binds it by
+  // receipt_hash. The envelope's own surface (schema_version, and any field an
+  // author chose to add alongside `receipt`) is NOT covered by that signature,
+  // so it must never override the inner receipt. Resolve the inner receipt
+  // first and read every display field from it.
+  //
+  // This is deliberately the same precedence verifyReceiptContract() uses, so
+  // display and verification always resolve the same object. An outer field
+  // can never make the operator see a decision the verifier did not check.
+  const receipt = raw?.receipt && typeof raw.receipt === "object" && !Array.isArray(raw.receipt)
+    ? raw.receipt
+    : raw;
   const decision = receipt?.decision_output && typeof receipt.decision_output === "object" ? receipt.decision_output : {};
   const trace = receipt?.pipeline_trace && typeof receipt.pipeline_trace === "object" ? receipt.pipeline_trace : {};
   const receiptId = receipt?.receipt_id ?? receipt?.id ?? decision.decision_hash ?? receipt?.request_hash ?? null;
   const verdict = decision.decision === "ALLOW" ? "ALLOW" : "REFUSE";
   const prevented = Number.parseFloat(String(decision.prevented_cost_usd ?? ""));
-  const signatureStatus = RECEIPT_SIGNATURE_STATES.has(raw?.signature_status)
-    ? raw.signature_status
-    : RECEIPT_SIGNATURE_STATES.has(receipt?.signature_status)
-      ? receipt.signature_status
-      : raw?.signature || raw?.verifiable_signature || receipt?.signature || receipt?.verifiable_signature
-        ? "UNKNOWN"
-        : "NOT_REPORTED";
-  const replayStatus = REPLAY_STATES.has(raw?.replay_status)
-    ? raw.replay_status
-    : REPLAY_STATES.has(receipt?.replay_status)
-      ? receipt.replay_status
-      : "UNKNOWN";
+  // Trust status is read from the resolved (signed) receipt only. The unsigned
+  // envelope surface never contributes it: allowing an outer signature_status
+  // to win would let an unsigned field assert the trust of a signed one.
+  //
+  // NOTE: no verifier writes these fields today, so in practice they resolve to
+  // UNKNOWN / NOT_REPORTED. That is correct-by-absence, not proof — presentation
+  // must treat anything other than VALID as unproven.
+  const signatureStatus = RECEIPT_SIGNATURE_STATES.has(receipt?.signature_status)
+    ? receipt.signature_status
+    : receipt?.signature || receipt?.verifiable_signature
+      ? "UNKNOWN"
+      : "NOT_REPORTED";
+  const replayStatus = REPLAY_STATES.has(receipt?.replay_status)
+    ? receipt.replay_status
+    : "UNKNOWN";
 
   return {
     receipt_id: typeof receiptId === "string" ? receiptId : null,

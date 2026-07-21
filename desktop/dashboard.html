@@ -124,7 +124,7 @@
           <div class="kv"><span class="k">reason</span><span class="v" id="p-last-reason">—</span></div>
           <div class="kv"><span class="k">when</span><span class="v" id="p-last-when">—</span></div>
         </div>
-        <div class="card"><h3>Receipt Count</h3><div class="big" id="p-receipts">—</div><div class="kv"><span class="k">signed &amp; verifiable</span><span class="v" id="p-receipts-note">—</span></div></div>
+        <div class="card"><h3>Receipt Count</h3><div class="big" id="p-receipts">—</div><div class="kv"><span class="k">cryptographically verified</span><span class="v" id="p-receipts-note">—</span></div></div>
         <div class="card"><h3>Protected Sources</h3><div class="big" id="p-sources-n">—</div><div class="list" id="p-sources" style="margin-top:10px"></div></div>
       </div>
       <div class="note">Auto-refreshing every 2s. MNDe is local execution infrastructure — it protects execution before any identity exists.</div>
@@ -266,7 +266,10 @@
       $("p-last-verdict").textContent = last.verdict; $("p-last-verdict").className = "big " + (last.verdict === "ALLOW" ? "ok-t" : "bad-t");
       $("p-last-tool").textContent = last.action || "—"; $("p-last-reason").textContent = last.reason_code || "—"; $("p-last-when").textContent = ago(last.timestamp);
     } else { $("p-last-verdict").textContent = "—"; $("p-last-tool").textContent = "no decisions yet"; }
-    const signed = list.filter((r) => r.signature_status && r.signature_status !== "NOT_REPORTED").length;
+    // Only a verifier-proved VALID counts. UNKNOWN (nobody checked), INVALID
+    // (checked and failed), NOT_REPORTED, missing and malformed values are all
+    // absence of proof and must never increment this tally.
+    const signed = list.filter((r) => r.signature_status === "VALID").length;
     $("p-receipts").textContent = String(list.length) + (list.length >= 500 ? "+" : "");
     $("p-receipts-note").textContent = signed + " / " + list.length;
 
