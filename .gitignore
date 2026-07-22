@@ -22,3 +22,4 @@ installer/*.dmg
 installer/*.pkg
 installer/*.AppImage
 .data/
+hostile-verifier-proof-bundle/
