@@ -29,7 +29,13 @@ export const DEFAULT_CLOCK_SKEW_MS = 60 * 1000; // 60 seconds
 
 const KEY_ID_PATTERN = /^[A-Za-z0-9._-]{1,256}$/;
 
-const repoRootDefault = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+// Default: relative to this module's own install location (unchanged behavior
+// for every source-checkout test/flow). MNDE_HOME overrides it so the packaged
+// CLI reads the authority manifest under the caller's own directory, never
+// inside node_modules — same override convention as shared/receipt-signing.ts.
+const repoRootDefault = process.env.MNDE_HOME
+  ? resolve(process.env.MNDE_HOME)
+  : resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);

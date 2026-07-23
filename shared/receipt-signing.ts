@@ -1,9 +1,21 @@
 import { createHash, createPrivateKey, createPublicKey, sign, verify } from "crypto";
 import { existsSync, readFileSync } from "fs";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { AUTHORITY_ID, RECEIPT_KEY_ID } from "./authority-manifest.mjs";
 
-const PRIVATE_KEY_URL = new URL("./receipt_keys/receipt_signing_private.pem", import.meta.url);
-const PUBLIC_KEY_URL = new URL("./receipt_keys/receipt_signing_public.pem", import.meta.url);
+// Default: relative to this file's own install location (unchanged behavior —
+// every existing test/clone-based flow relies on this). MNDE_HOME overrides it
+// for the packaged CLI, which must read/write signing keys under the caller's
+// own directory, never inside node_modules. Read once at module load, which is
+// safe here: MNDE_HOME is set (or not) by the parent process's env before this
+// module is ever imported by a child process.
+const PRIVATE_KEY_URL = process.env.MNDE_HOME
+  ? pathToFileURL(join(resolve(process.env.MNDE_HOME), "shared", "receipt_keys", "receipt_signing_private.pem"))
+  : new URL("./receipt_keys/receipt_signing_private.pem", import.meta.url);
+const PUBLIC_KEY_URL = process.env.MNDE_HOME
+  ? pathToFileURL(join(resolve(process.env.MNDE_HOME), "shared", "receipt_keys", "receipt_signing_public.pem"))
+  : new URL("./receipt_keys/receipt_signing_public.pem", import.meta.url);
 const PUBLIC_KEY_PEM = existsSync(PUBLIC_KEY_URL) ? readFileSync(PUBLIC_KEY_URL, "utf8") : "";
 const PUBLIC_KEY_OBJECT = PUBLIC_KEY_PEM ? createPublicKey(PUBLIC_KEY_PEM) : null;
 const PUBLIC_KEY_DER = PUBLIC_KEY_OBJECT?.export({ format: "der", type: "spki" }) ?? Buffer.alloc(0);

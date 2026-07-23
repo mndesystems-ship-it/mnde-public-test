@@ -1,0 +1,189 @@
+#!/usr/bin/env node
+// Prepack build step: makes the package runnable once installed via `npm install`.
+//
+// This repo runs .ts files directly via Node's native TypeScript type-stripping,
+// which works from a source checkout but is UNSUPPORTED for any file located
+// under node_modules (Node throws ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING).
+// That made every previous packaging attempt fail the moment a real `npm install`
+// placed this package inside a consumer's node_modules/ — confirmed independently
+// twice by packing and installing prior branches into a fresh directory.
+//
+// Fix: compile every .ts file to plain .js (type-stripped, not type-checked —
+// this project has no build step today, so we do not turn on a check that could
+// newly fail a slice of the tree; erasing type annotations is exactly what Node's
+// own runtime stripping already assumes is safe), and rewrite every relative
+// import specifier that names a sibling by its .ts extension to .js instead —
+// both in the compiled .ts output and in the many plain .mjs files that import
+// .ts siblings with an explicit extension (Node's own convention throughout this
+// codebase). Output mirrors the source tree 1:1 under dist/, so relative import
+// depth never changes — only the file extension does.
+//
+// This does not introduce a new trust path: it recompiles the exact same source
+// the repo already runs from a checkout, unmodified in logic, into a form Node
+// will load from node_modules. No signing, verification, or policy logic changes.
+
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, rmSync, existsSync, copyFileSync } from "node:fs";
+import { join, dirname, relative, extname } from "node:path";
+import { fileURLToPath } from "node:url";
+import ts from "typescript";
+
+const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+const OUT_DIR = join(repoRoot, "dist");
+
+// Directories mirrored into dist/ (everything the packaged runtime needs).
+// Deliberately excludes: tests/, docs/, examples/, reviewer-kit/, desktop/
+// (except dashboard.html, copied explicitly), mcp/, and dev-only tooling not
+// reachable from the packaged CLI's runtime paths.
+const INCLUDE_DIRS = [
+  "shared", "preflight", "orbit", "arm", "ram0na", "audit",
+  "src", "sidecar", "shell", "tools", "scripts", "bin", "policy", "authority",
+  "templates", "sample-policies"
+];
+const INCLUDE_FILES = ["mnde-local-sidecar.mjs"];
+const EXTRA_COPY_FILES = [["desktop/dashboard.html", "desktop/dashboard.html"]];
+
+const TS_COMPILER_OPTIONS = {
+  module: ts.ModuleKind.NodeNext,
+  target: ts.ScriptTarget.ES2022,
+  moduleResolution: ts.ModuleResolutionKind.NodeNext,
+  esModuleInterop: true,
+  isolatedModules: true,
+  verbatimModuleSyntax: false,
+  sourceMap: false
+};
+
+// Rewrite relative import/export specifiers ending in .ts (and .mts) to .js
+// (and .mjs) respectively. Only touches specifiers that start with "." (relative
+// imports) — package/bare specifiers are never touched, so node: and third-party
+// imports are untouched. This is a narrow, predictable text transform, applied
+// identically whether the source was .ts (after type-stripping) or already .mjs.
+function rewriteRelativeTsExtensions(code) {
+  return code.replace(
+    /((?:from\s+|import\s*\(\s*)["'])(\.[^"']*?)(\.m?ts)(["'])/g,
+    (_m, pre, spec, ext, post) => `${pre}${spec}${ext === ".mts" ? ".mjs" : ".js"}${post}`
+  );
+}
+
+function isTsFile(p) { return extname(p) === ".ts"; }
+function isJsLikeFile(p) { return [".mjs", ".js"].includes(extname(p)); }
+
+// Absolute paths that must NEVER be copied into the package, regardless of
+// whether they happen to exist in this working tree at build time (e.g. a
+// prior local test run generated real key material here). Checked by exact
+// path match, not by name alone, so a differently-located file named
+// "receipt_keys" elsewhere is not accidentally excluded.
+const NEVER_COPY = new Set([
+  join(repoRoot, "shared", "receipt_keys"),
+  join(repoRoot, "authority", "root_authority_private.pem"),
+  join(repoRoot, ".mnde-test")
+].map((p) => p.toLowerCase()));
+
+function isExcluded(absPath) {
+  const lower = absPath.toLowerCase();
+  for (const blocked of NEVER_COPY) {
+    if (lower === blocked || lower.startsWith(blocked + "\\") || lower.startsWith(blocked + "/")) return true;
+  }
+  return false;
+}
+
+function walk(dir, onFile) {
+  if (isExcluded(dir)) return;
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry);
+    if (isExcluded(full)) continue;
+    const st = statSync(full);
+    if (st.isDirectory()) {
+      if (entry === "node_modules" || entry === "__pycache__") continue;
+      walk(full, onFile);
+    } else {
+      onFile(full);
+    }
+  }
+}
+
+function outPathFor(srcAbs) {
+  const rel = relative(repoRoot, srcAbs);
+  const relJs = isTsFile(srcAbs) ? rel.replace(/\.ts$/, ".js") : rel;
+  return join(OUT_DIR, relJs);
+}
+
+function ensureDirFor(fileAbs) {
+  mkdirSync(dirname(fileAbs), { recursive: true });
+}
+
+function build() {
+  rmSync(OUT_DIR, { recursive: true, force: true });
+  mkdirSync(OUT_DIR, { recursive: true });
+
+  let tsCount = 0, jsCount = 0, otherCount = 0;
+
+  for (const dir of INCLUDE_DIRS) {
+    const abs = join(repoRoot, dir);
+    if (!existsSync(abs)) continue;
+    walk(abs, (fileAbs) => {
+      const out = outPathFor(fileAbs);
+      ensureDirFor(out);
+      if (isTsFile(fileAbs)) {
+        const source = readFileSync(fileAbs, "utf8");
+        // transpileModule has no real filesystem context to look up a package.json
+        // "type" field, so a plain .ts fileName hint leaves module format
+        // ambiguous and it silently emits CommonJS. Force ESM emission
+        // unambiguously by hinting a .mts filename (Node's own extension-based
+        // disambiguation: .mts is always ESM), independent of the .js output path.
+        const transpiled = ts.transpileModule(source, {
+          compilerOptions: TS_COMPILER_OPTIONS,
+          fileName: fileAbs.replace(/\.ts$/, ".mts")
+        }).outputText;
+        writeFileSync(out, rewriteRelativeTsExtensions(transpiled), "utf8");
+        tsCount++;
+      } else if (isJsLikeFile(fileAbs)) {
+        const source = readFileSync(fileAbs, "utf8");
+        writeFileSync(out, rewriteRelativeTsExtensions(source), "utf8");
+        jsCount++;
+      } else {
+        copyFileSync(fileAbs, out);
+        otherCount++;
+      }
+    });
+  }
+
+  for (const file of INCLUDE_FILES) {
+    const fileAbs = join(repoRoot, file);
+    if (!existsSync(fileAbs)) continue;
+    const out = outPathFor(fileAbs);
+    ensureDirFor(out);
+    const source = readFileSync(fileAbs, "utf8");
+    writeFileSync(out, rewriteRelativeTsExtensions(source), "utf8");
+    jsCount++;
+  }
+
+  for (const [src, dest] of EXTRA_COPY_FILES) {
+    const srcAbs = join(repoRoot, src);
+    if (!existsSync(srcAbs)) continue;
+    const out = join(OUT_DIR, dest);
+    ensureDirFor(out);
+    copyFileSync(srcAbs, out);
+    otherCount++;
+  }
+
+  process.stdout.write(`build-package: ${tsCount} .ts compiled, ${jsCount} .mjs/.js rewritten+copied, ${otherCount} other files copied -> ${relative(repoRoot, OUT_DIR)}/\n`);
+
+  assertNoPrivateKeyMaterial();
+}
+
+// Defense in depth beyond the exclusion list above: fail the build outright if
+// any private-key-shaped content made it into dist/, regardless of how.
+function assertNoPrivateKeyMaterial() {
+  const offenders = [];
+  walk(OUT_DIR, (fileAbs) => {
+    if (!fileAbs.endsWith(".pem")) return;
+    const content = readFileSync(fileAbs, "utf8");
+    if (/PRIVATE KEY/.test(content)) offenders.push(fileAbs);
+  });
+  if (offenders.length > 0) {
+    for (const f of offenders) process.stderr.write(`FATAL: private key material in build output: ${f}\n`);
+    process.exit(1);
+  }
+}
+
+build();

@@ -2,7 +2,7 @@ import http from "node:http";
 import cluster from "node:cluster";
 import { existsSync, readFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
-import { dirname, join, parse as parsePath } from "node:path";
+import { dirname, join, parse as parsePath, resolve } from "node:path";
 import { PerformanceObserver, monitorEventLoopDelay, performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { assertReceiptSigningKeysAvailable } from "./shared/receipt-signing.ts";
@@ -69,6 +69,12 @@ import { assertStartupDirectoryPermissions } from "./sidecar/startup_checks.mjs"
 const HOST = "127.0.0.1";
 const PORT = parseBindPort(process.env.MNDE_BIND_PORT, 8787);
 const REPO_ROOT = dirname(fileURLToPath(import.meta.url));
+// REPO_ROOT locates runtime code and static assets (dashboard.html) — always
+// wherever this file is installed. DATA_ROOT locates the writable authority
+// state (manifest, keys, trust root) and defaults to REPO_ROOT unchanged for
+// the existing clone-and-run flow; MNDE_HOME overrides it for the packaged
+// CLI, which must never read/write authority state inside node_modules.
+const DATA_ROOT = process.env.MNDE_HOME ? resolve(process.env.MNDE_HOME) : REPO_ROOT;
 let activePolicyPath = new URL("./sample-policies/legacy-gpu-policy.signed.json", import.meta.url);
 const RECEIPT_LOG_PATH = process.env.MNDE_RECEIPT_LOG ?? join(process.cwd(), "hostile-verifier-proof-bundle", "receipts.jsonl");
 const AUTH_AUDIT_LOG_PATH = process.env.MNDE_AUTH_AUDIT_LOG ?? join(process.cwd(), "auth-audit", "auth-events.jsonl");
@@ -103,7 +109,7 @@ let policy = JSON.parse(readFileSync(activePolicyPath, "utf8"));
 let policy_hash = policyHash(policy);
 try {
   assertReceiptSigningKeysAvailable();
-  const authority = loadAuthorityBundle(REPO_ROOT, { kind: "local" });
+  const authority = loadAuthorityBundle(DATA_ROOT, { kind: "local" });
   if (!authority.ok) throw new Error(`ERR_AUTHORITY_MANIFEST_INVALID: ${authority.reason}`);
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
@@ -266,7 +272,7 @@ function receiptPathForWorker(basePath) {
 let ACTIVATION_ID = null;
 {
   const { assertTrustRoot } = await import("./src/authority-signing/preflight.mjs");
-  const trust = await assertTrustRoot(process.env, { repoRoot: REPO_ROOT });
+  const trust = await assertTrustRoot(process.env, { repoRoot: DATA_ROOT });
   if (!trust.ok) {
     process.stderr.write(`\nMNDe refused to start — trust-root pre-flight failed.\n  reason_code: ${trust.reason_code}\n  ${trust.detail}\n\n`);
     process.exit(1);

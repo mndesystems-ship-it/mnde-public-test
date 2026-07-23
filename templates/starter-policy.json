@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0",
+  "policy_id": "mnde-sidecar-starter",
+  "version": "1",
+  "state": "ACTIVE",
+  "rules": [
+    {
+      "rule_id": "allow-read-status",
+      "effect": "ALLOW",
+      "match": { "field": "tool.tool_name", "op": "eq", "value": "read_status" }
+    },
+    {
+      "rule_id": "allow-deploy",
+      "effect": "ALLOW",
+      "match": { "field": "tool.tool_name", "op": "eq", "value": "deploy" }
+    }
+  ]
+}

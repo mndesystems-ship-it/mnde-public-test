@@ -20,7 +20,13 @@ import { findBundleKey, fingerprintOf, verifyAuthorityBundle } from "../custody/
 import { evaluatePolicyRequest } from "./index.mjs";
 import { verifyHistoricalPolicyBundleProvenance } from "../policy-bundles/index.mjs";
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+// Default: relative to this module's own install location (unchanged behavior
+// for every source-checkout test/flow). MNDE_HOME overrides it so the packaged
+// CLI reads/writes the authority manifest under the caller's own directory,
+// never inside node_modules — same override convention as shared/receipt-signing.ts.
+const repoRoot = process.env.MNDE_HOME
+  ? resolve(process.env.MNDE_HOME)
+  : resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SCHEMA = "mnde.pe.receipt.v1";
 const SCHEMA_V2 = "mnde.pe.receipt.v2";
 

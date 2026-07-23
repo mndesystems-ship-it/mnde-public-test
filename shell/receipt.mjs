@@ -16,7 +16,13 @@ import { RECEIPT_SIGNATURE_ALGORITHM, signReceiptPayload, verifyReceiptPayloadSi
 import { findAuthorityReceiptKey, loadAuthorityBundle, loadAuthorityBundleForReceipt } from "../shared/authority-manifest.mjs";
 import { SHELL_POLICY_ID, decideCommand, shellPolicyHash } from "./policy.mjs";
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+// Default: relative to this module's own install location (unchanged behavior
+// for every source-checkout test/flow). MNDE_HOME overrides it so the packaged
+// CLI reads the authority manifest under the caller's own directory, never
+// inside node_modules — same override convention as shared/receipt-signing.ts.
+const repoRoot = process.env.MNDE_HOME
+  ? resolve(process.env.MNDE_HOME)
+  : resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCHEMA = "mnde.shell.receipt.v1";
 
 function sha256(value) {

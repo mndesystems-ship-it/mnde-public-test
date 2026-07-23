@@ -4,15 +4,24 @@
   "private": true,
   "type": "module",
   "bin": {
-    "mnde": "./bin/mnde.mjs"
+    "mnde": "./dist/bin/mnde.mjs",
+    "mnde-sidecar": "./dist/bin/mnde-sidecar.mjs",
+    "sidecar": "./dist/bin/mnde-sidecar.mjs"
   },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
+    "prepack": "node ./scripts/build-package.mjs",
     "test": "node ./scripts/run-all-tests.mjs",
     "ci": "node ./scripts/run-ci.mjs",
     "check:whitespace": "node ./scripts/check-whitespace.mjs",
     "test:activation": "node ./tests/test_activation.mjs",
     "test:ci-contract": "node ./tests/test_ci_contract.mjs",
     "test:conformance": "node ./tests/test_conformance_vectors.mjs",
+    "test:conformance-installed-artifact": "node ./tests/test_conformance_installed_artifact.mjs",
+    "test:sidecar-cli-hostile": "node ./tests/test_sidecar_cli_hostile.mjs",
     "test:replay": "node ./scripts/test-replay-verification.mjs",
     "mnde": "node ./bin/mnde.mjs",
     "test:onboarding": "node ./tests/test_onboarding.mjs",
@@ -96,5 +105,8 @@
     "test:audit-remediation": "node ./tests/test_audit_remediation.mjs",
     "test:passport-subject": "node ./tests/test_passport_subject.mjs",
     "test:executor-lifecycle": "node ./tests/test_executor_lifecycle.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
   }
 }

@@ -22,11 +22,20 @@ import { authorityPaths, loadAuthorityBundle } from "../shared/authority-manifes
 // authority path; the sidecar runtime never imports this.
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+// repoRoot locates the runtime CODE (this file, mnde-local-sidecar.mjs) — always
+// wherever the package is installed, unchanged. dataRoot locates the WRITABLE
+// authority state (signing keys, authority manifest, receipts): for the
+// existing clone-and-run flow (`npm run sidecar`) these are the same directory,
+// preserved exactly as before. When invoked from an installed package (the
+// bin/mnde-sidecar.mjs CLI), MNDE_HOME points dataRoot at the user's own
+// project/home directory instead — writing authority state into node_modules
+// would be wrong for an installed package, and MNDE_HOME is how the CLI avoids it.
+const dataRoot = process.env.MNDE_HOME ? resolve(process.env.MNDE_HOME) : repoRoot;
 const HOST = "127.0.0.1";
 const PORT_RAW = process.env.MNDE_BIND_PORT ?? "8787";
 const PORT = Number.parseInt(PORT_RAW, 10);
 const URL_BASE = `http://${HOST}:${PORT}`;
-const receiptsDir = resolve(process.env.MNDE_RECEIPTS_DIR ?? join(repoRoot, "mnde-receipts"));
+const receiptsDir = resolve(process.env.MNDE_RECEIPTS_DIR ?? join(dataRoot, "mnde-receipts"));
 const logsDir = join(receiptsDir, "_sidecar-logs");
 const READY_TIMEOUT_MS = Number.parseInt(process.env.MNDE_SIDECAR_READY_TIMEOUT_MS ?? "20000", 10);
 
@@ -50,7 +59,7 @@ out("");
 
 // 2. Bootstrap local authority assets (existing repo logic; no new trust path).
 try {
-  bootstrapReceiptKeys({ repoRoot });
+  bootstrapReceiptKeys({ repoRoot: dataRoot });
 } catch (error) {
   failClosed([`Authority setup failed: ${error?.message ?? String(error)}`]);
 }
@@ -70,10 +79,10 @@ try {
 const problems = [];
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) problems.push(`Invalid bind port: ${PORT_RAW}`);
 if (!existsSync(join(repoRoot, "mnde-local-sidecar.mjs"))) problems.push("Sidecar runtime mnde-local-sidecar.mjs missing.");
-const localAuthority = authorityPaths(repoRoot, { kind: "local" });
+const localAuthority = authorityPaths(dataRoot, { kind: "local" });
 if (!existsSync(localAuthority.manifestPath)) problems.push("Authority manifest missing.");
-if (!existsSync(join(repoRoot, "shared", "receipt_keys", "receipt_signing_private.pem"))) problems.push("Receipt signing key missing.");
-const bundle = loadAuthorityBundle(repoRoot, { kind: "local" });
+if (!existsSync(join(dataRoot, "shared", "receipt_keys", "receipt_signing_private.pem"))) problems.push("Receipt signing key missing.");
+const bundle = loadAuthorityBundle(dataRoot, { kind: "local" });
 if (!bundle.ok) problems.push(`Authority manifest invalid: ${bundle.reason}`);
 if (problems.length > 0) failClosed(problems);
 
@@ -192,7 +201,12 @@ async function waitReady() {
   while (Date.now() < deadline) {
     if (childExited) return false;
     try {
-      const response = await fetch(`${URL_BASE}/readyz`);
+      // A bare timeout, not a full "not up yet" catch-all: without it, a
+      // foreign (non-MNDe) listener already bound to this port can leave the
+      // request hanging or surface as an uncaught low-level socket error much
+      // later instead of a clean, fast "not ready yet" — found via a hostile
+      // occupied-port test.
+      const response = await fetch(`${URL_BASE}/readyz`, { signal: AbortSignal.timeout(1500) });
       const body = await response.json();
       if (body?.ok === true) return true;
     } catch {

@@ -23,3 +23,5 @@ installer/*.pkg
 installer/*.AppImage
 .data/
 hostile-verifier-proof-bundle/
+/dist/
+*.tgz
