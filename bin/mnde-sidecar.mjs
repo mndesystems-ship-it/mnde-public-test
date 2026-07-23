@@ -110,10 +110,22 @@ function cmdInit() {
   say(`  home: ${HOME}`);
   return import(pathToFileURL(join(packageRoot, "scripts", "bootstrap_dev_receipt_keys.mjs")).href).then(({ bootstrapReceiptKeys }) => {
     // bootstrapReceiptKeys is itself idempotent (skips regeneration when a
-    // valid key pair already exists) and never overwrites a key it didn't
-    // just create — see scripts/bootstrap_dev_receipt_keys.mjs. It is the
-    // same audited helper every test in this repo uses; nothing new here.
-    const res = bootstrapReceiptKeys({ repoRoot: HOME });
+    // valid, matching key pair already exists) and fails closed — throws,
+    // touches nothing — rather than silently regenerating whenever an
+    // existing keypair is incomplete, corrupt, or mismatched. See
+    // scripts/bootstrap_dev_receipt_keys.mjs. It is the same audited helper
+    // every test in this repo uses; nothing new here.
+    let res;
+    try {
+      res = bootstrapReceiptKeys({ repoRoot: HOME });
+    } catch (error) {
+      // Caught here (rather than falling through to the top-level catch)
+      // specifically so this prints a clean, actionable message instead of a
+      // raw stack trace — this same catch also covers unrelated fs failures
+      // from this same call, e.g. an unwritable or invalid MNDE_HOME.
+      err(`Init failed: ${error?.message ?? String(error)}`);
+      return 1;
+    }
     mkdirSync(RECEIPTS_DIR, { recursive: true });
     mkdirSync(LOGS_DIR, { recursive: true });
     materializeStarterPolicy();

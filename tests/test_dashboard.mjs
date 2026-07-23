@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { bootstrapReceiptKeys } from "../scripts/bootstrap_dev_receipt_keys.mjs";
 import { startMndeSidecar } from "../executor/sidecar-harness.mjs";
 import { normalizeReceipt } from "../sidecar/production_api.mjs";
 import { buildSidecarRefusalReceipt } from "../sidecar/refusal_receipt.mjs";
@@ -140,6 +141,17 @@ async function assertGenericAuthRefusal(url, path, headers = {}) {
 
 async function main() {
   console.log("MNDe operational dashboard (no login)\n");
+
+  // A handful of tests below (buildSidecarRefusalReceipt-based) sign a real
+  // receipt directly, without going through startMndeSidecar — which is what
+  // normally bootstraps these dev keys on a fresh checkout. Without this call,
+  // this file passes only on a repo where some OTHER test already happened to
+  // create shared/receipt_keys/ first: a genuinely fresh checkout (or this
+  // file run standalone, e.g. `npm run test:dashboard`, before anything else)
+  // fails those tests with ERR_RECEIPT_SIGNING_KEYS_MISSING on the very first
+  // run, then passes on every run after (root-caused and reproduced against
+  // both main and this branch; not a race — a missing precondition here).
+  bootstrapReceiptKeys({ repoRoot });
 
   await test("receipt timestamps are never fabricated (no epoch-zero fallback)", () => {
     const iso = "2026-07-12T10:00:00.000Z";

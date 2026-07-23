@@ -21,19 +21,29 @@
 // This does not introduce a new trust path: it recompiles the exact same source
 // the repo already runs from a checkout, unmodified in logic, into a form Node
 // will load from node_modules. No signing, verification, or policy logic changes.
+//
+// Lives under build/ (not scripts/) deliberately: scripts/ is one of the
+// directories mirrored into dist/ (the packaged runtime needs the rest of it —
+// start-sidecar.mjs, bootstrap_dev_receipt_keys.mjs, etc.), and this file's own
+// `import ts from "typescript"` is a devDependency-only import that would ship
+// broken and unusable inside the published tarball if it lived there — an
+// independent review caught exactly that. build/ is never in INCLUDE_DIRS, so
+// this file and its lib/ helper are never shipped.
 
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, rmSync, existsSync, copyFileSync } from "node:fs";
 import { join, dirname, relative, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
+import { scanForPrivateKeyMaterial } from "./lib/private-key-scan.mjs";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const OUT_DIR = join(repoRoot, "dist");
 
 // Directories mirrored into dist/ (everything the packaged runtime needs).
 // Deliberately excludes: tests/, docs/, examples/, reviewer-kit/, desktop/
-// (except dashboard.html, copied explicitly), mcp/, and dev-only tooling not
-// reachable from the packaged CLI's runtime paths.
+// (except dashboard.html, copied explicitly), mcp/, build/ (this build tooling
+// itself), and dev-only tooling not reachable from the packaged CLI's runtime
+// paths.
 const INCLUDE_DIRS = [
   "shared", "preflight", "orbit", "arm", "ram0na", "audit",
   "src", "sidecar", "shell", "tools", "scripts", "bin", "policy", "authority",
@@ -71,7 +81,10 @@ function isJsLikeFile(p) { return [".mjs", ".js"].includes(extname(p)); }
 // whether they happen to exist in this working tree at build time (e.g. a
 // prior local test run generated real key material here). Checked by exact
 // path match, not by name alone, so a differently-located file named
-// "receipt_keys" elsewhere is not accidentally excluded.
+// "receipt_keys" elsewhere is not accidentally excluded. This is a first-line
+// defense (avoids ever reading/copying the known real key locations at all);
+// assertNoPrivateKeyMaterial() below is the authoritative, content-based
+// backstop that does not depend on this list being complete.
 const NEVER_COPY = new Set([
   join(repoRoot, "shared", "receipt_keys"),
   join(repoRoot, "authority", "root_authority_private.pem"),
@@ -171,15 +184,13 @@ function build() {
   assertNoPrivateKeyMaterial();
 }
 
-// Defense in depth beyond the exclusion list above: fail the build outright if
-// any private-key-shaped content made it into dist/, regardless of how.
+// Authoritative, content-based backstop: fail the build outright if any
+// private-key material made it into dist/, regardless of filename, extension,
+// directory depth, or whether it's embedded inside JSON/text/config/fixtures.
+// See build/lib/private-key-scan.mjs for exactly what markers this detects
+// (and, just as importantly, what it does not).
 function assertNoPrivateKeyMaterial() {
-  const offenders = [];
-  walk(OUT_DIR, (fileAbs) => {
-    if (!fileAbs.endsWith(".pem")) return;
-    const content = readFileSync(fileAbs, "utf8");
-    if (/PRIVATE KEY/.test(content)) offenders.push(fileAbs);
-  });
+  const offenders = scanForPrivateKeyMaterial(OUT_DIR);
   if (offenders.length > 0) {
     for (const f of offenders) process.stderr.write(`FATAL: private key material in build output: ${f}\n`);
     process.exit(1);

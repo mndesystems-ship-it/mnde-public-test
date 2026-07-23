@@ -36,13 +36,24 @@ export function receiptSigningKeyStatus(): { ok: boolean; reason: string | null 
   if (!existsSync(PUBLIC_KEY_URL)) {
     return { ok: false, reason: "ERR_RECEIPT_SIGNING_KEYS_MISSING: shared/receipt_keys/receipt_signing_public.pem is missing. Run npm run tester:init -- TESTER-001 before starting MNDe." };
   }
+  let privateKeyObject: ReturnType<typeof createPrivateKey>;
+  let publicKeyObject: ReturnType<typeof createPublicKey>;
   try {
-    createPrivateKey(readFileSync(PRIVATE_KEY_URL, "utf8"));
-    createPublicKey(readFileSync(PUBLIC_KEY_URL, "utf8"));
-    return { ok: true, reason: null };
+    privateKeyObject = createPrivateKey(readFileSync(PRIVATE_KEY_URL, "utf8"));
+    publicKeyObject = createPublicKey(readFileSync(PUBLIC_KEY_URL, "utf8"));
   } catch (error) {
     return { ok: false, reason: `ERR_RECEIPT_SIGNING_KEYS_INVALID: ${error instanceof Error ? error.message : String(error)}` };
   }
+  // Each file can parse as SOME valid key without the two actually forming a
+  // matching pair (e.g. a public key file left over from a previous keypair) —
+  // an independent review found this went undetected. Derive the public key
+  // from the private key and compare, rather than only checking each parses.
+  const derivedPublicPem = createPublicKey(privateKeyObject).export({ format: "pem", type: "spki" });
+  const storedPublicPem = publicKeyObject.export({ format: "pem", type: "spki" });
+  if (derivedPublicPem !== storedPublicPem) {
+    return { ok: false, reason: "ERR_RECEIPT_SIGNING_KEYS_MISMATCHED: shared/receipt_keys/receipt_signing_private.pem and receipt_signing_public.pem do not form a matching keypair." };
+  }
+  return { ok: true, reason: null };
 }
 
 export function assertReceiptSigningKeysAvailable(): void {
