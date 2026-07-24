@@ -41,12 +41,12 @@ const OUT_DIR = join(repoRoot, "dist");
 
 // Directories mirrored into dist/ (everything the packaged runtime needs).
 // Deliberately excludes: tests/, docs/, examples/, reviewer-kit/, desktop/
-// (except dashboard.html, copied explicitly), mcp/, build/ (this build tooling
+// (except dashboard.html, copied explicitly), build/ (this build tooling
 // itself), and dev-only tooling not reachable from the packaged CLI's runtime
 // paths.
 const INCLUDE_DIRS = [
   "shared", "preflight", "orbit", "arm", "ram0na", "audit",
-  "src", "sidecar", "shell", "tools", "scripts", "bin", "policy", "authority",
+  "src", "sidecar", "shell", "tools", "scripts", "bin", "mcp", "executor", "policy", "authority",
   "templates", "sample-policies"
 ];
 const INCLUDE_FILES = ["mnde-local-sidecar.mjs"];

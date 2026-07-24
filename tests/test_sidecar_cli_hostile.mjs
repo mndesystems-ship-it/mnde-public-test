@@ -14,6 +14,7 @@
 
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
 import { createServer } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -134,6 +135,27 @@ async function testCorruptKeys() {
   }
 }
 
+async function testMismatchedKeys() {
+  const home = freshHome("mismatched-keys");
+  try {
+    assert.equal(runCli(["init"], home).status, 0, "baseline init must succeed");
+    const keyPath = join(home, "shared", "receipt_keys", "receipt_signing_private.pem");
+    const unrelated = generateKeyPairSync("ed25519");
+    writeFileSync(keyPath, unrelated.privateKey.export({ type: "pkcs8", format: "pem" }));
+
+    const doctor = runCli(["doctor"], home);
+    assert.notEqual(doctor.status, 0, "doctor must fail closed on a mismatched signing keypair");
+    assert.match(`${doctor.stdout}\n${doctor.stderr}`, /ERR_RECEIPT_SIGNING_KEYS_MISMATCHED/);
+
+    const start = runCli(["start"], home);
+    assert.notEqual(start.status, 0, "start must fail before readiness on a mismatched signing keypair");
+    assert.match(`${start.stdout}\n${start.stderr}`, /ERR_RECEIPT_SIGNING_KEYS_MISMATCHED/);
+    assert.doesNotMatch(start.stdout, /READY/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 3. Occupied port: something else is already bound to the sidecar's port.
 //    `start` must fail closed (nonzero exit, no hang) rather than silently
@@ -214,6 +236,7 @@ async function testInterruptedStartup() {
 
 await scenario("partial initialization", testPartialInit);
 await scenario("corrupt signing keys", testCorruptKeys);
+await scenario("mismatched signing keys", testMismatchedKeys);
 await scenario("occupied port", testOccupiedPort);
 await scenario("malformed policy", testMalformedPolicy);
 await scenario("interrupted startup", testInterruptedStartup);

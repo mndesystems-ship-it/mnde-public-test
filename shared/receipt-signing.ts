@@ -17,7 +17,18 @@ const PUBLIC_KEY_URL = process.env.MNDE_HOME
   ? pathToFileURL(join(resolve(process.env.MNDE_HOME), "shared", "receipt_keys", "receipt_signing_public.pem"))
   : new URL("./receipt_keys/receipt_signing_public.pem", import.meta.url);
 const PUBLIC_KEY_PEM = existsSync(PUBLIC_KEY_URL) ? readFileSync(PUBLIC_KEY_URL, "utf8") : "";
-const PUBLIC_KEY_OBJECT = PUBLIC_KEY_PEM ? createPublicKey(PUBLIC_KEY_PEM) : null;
+function parsePublicKeyOrNull(publicKeyPem: string) {
+  if (!publicKeyPem) return null;
+  try {
+    return createPublicKey(publicKeyPem);
+  } catch {
+    return null;
+  }
+}
+// Constants exported from this module must not make the module itself
+// unimportable when the configured public key is malformed. Callers need to be
+// able to import receiptSigningKeyStatus() and receive a fail-closed diagnostic.
+const PUBLIC_KEY_OBJECT = parsePublicKeyOrNull(PUBLIC_KEY_PEM);
 const PUBLIC_KEY_DER = PUBLIC_KEY_OBJECT?.export({ format: "der", type: "spki" }) ?? Buffer.alloc(0);
 
 export const RECEIPT_PUBLIC_KEY_PEM = PUBLIC_KEY_PEM;
@@ -37,20 +48,24 @@ export function receiptSigningKeyStatus(): { ok: boolean; reason: string | null 
     return { ok: false, reason: "ERR_RECEIPT_SIGNING_KEYS_MISSING: shared/receipt_keys/receipt_signing_public.pem is missing. Run npm run tester:init -- TESTER-001 before starting MNDe." };
   }
   let privateKeyObject: ReturnType<typeof createPrivateKey>;
-  let publicKeyObject: ReturnType<typeof createPublicKey>;
   try {
     privateKeyObject = createPrivateKey(readFileSync(PRIVATE_KEY_URL, "utf8"));
+  } catch (error) {
+    return { ok: false, reason: `ERR_RECEIPT_SIGNING_PRIVATE_KEY_INVALID: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  let publicKeyObject: ReturnType<typeof createPublicKey>;
+  try {
     publicKeyObject = createPublicKey(readFileSync(PUBLIC_KEY_URL, "utf8"));
   } catch (error) {
-    return { ok: false, reason: `ERR_RECEIPT_SIGNING_KEYS_INVALID: ${error instanceof Error ? error.message : String(error)}` };
+    return { ok: false, reason: `ERR_RECEIPT_SIGNING_PUBLIC_KEY_INVALID: ${error instanceof Error ? error.message : String(error)}` };
   }
   // Each file can parse as SOME valid key without the two actually forming a
   // matching pair (e.g. a public key file left over from a previous keypair) —
   // an independent review found this went undetected. Derive the public key
   // from the private key and compare, rather than only checking each parses.
-  const derivedPublicPem = createPublicKey(privateKeyObject).export({ format: "pem", type: "spki" });
-  const storedPublicPem = publicKeyObject.export({ format: "pem", type: "spki" });
-  if (derivedPublicPem !== storedPublicPem) {
+  const derivedPublicDer = createPublicKey(privateKeyObject).export({ format: "der", type: "spki" });
+  const storedPublicDer = publicKeyObject.export({ format: "der", type: "spki" });
+  if (!derivedPublicDer.equals(storedPublicDer)) {
     return { ok: false, reason: "ERR_RECEIPT_SIGNING_KEYS_MISMATCHED: shared/receipt_keys/receipt_signing_private.pem and receipt_signing_public.pem do not form a matching keypair." };
   }
   return { ok: true, reason: null };

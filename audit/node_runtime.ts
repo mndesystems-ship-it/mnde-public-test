@@ -14,7 +14,13 @@ import {
 import { runStrictPreflight } from "../preflight/engine.ts";
 import { runStrictOrbit } from "../orbit/engine.ts";
 import { commitArmAllow, defineBudgetToken, resetArmStores, resetTransientArmStores, runStrictArm } from "../arm/engine.ts";
-import { buildReceipt, runStrictRamona, verifyReceiptReplay, verifyReceiptSignature } from "../ram0na/engine.ts";
+import {
+  buildReceipt,
+  runStrictRamona,
+  verifyReceiptReplay,
+  verifyReceiptSignature,
+  type ReceiptVerificationOptions
+} from "../ram0na/engine.ts";
 import { buildSidecarRefusalReceipt } from "../sidecar/refusal_receipt.mjs";
 
 export type PipelineTimingKey =
@@ -105,11 +111,11 @@ export function executeDeterministicPipeline(rawInput: string, options: Pipeline
   };
 }
 
-export function verifySignedReceipt(receipt: SignedReceipt): boolean {
-  return verifyReceiptSignature(receipt);
+export function verifySignedReceipt(receipt: SignedReceipt, options: ReceiptVerificationOptions = {}): boolean {
+  return verifyReceiptSignature(receipt, options);
 }
 
-export function replayReceiptStore(receiptPath: string): {
+export function replayReceiptStore(receiptPath: string, options: ReceiptVerificationOptions = {}): {
   total: number;
   exact_matches: number;
   mismatches: Array<Record<string, string>>;
@@ -127,7 +133,7 @@ export function replayReceiptStore(receiptPath: string): {
       mismatches.push({ request_hash: "unparseable_receipt", error: REASON_CODES.InvalidJsonSyntax });
       continue;
     }
-    if (!verifySignedReceipt(parsed)) {
+    if (!verifySignedReceipt(parsed, options)) {
       mismatches.push({ request_hash: parsed.request_hash, error: REASON_CODES.ReceiptSignatureInvalid });
       continue;
     }
@@ -139,7 +145,7 @@ export function replayReceiptStore(receiptPath: string): {
       continue;
     }
 
-    const replay = verifyReceiptReplay(parsed, rerun.receipt);
+    const replay = verifyReceiptReplay(parsed, rerun.receipt, options);
     if (!replay.ok) {
       mismatches.push({ request_hash: parsed.request_hash, error: replay.reason_code });
       continue;

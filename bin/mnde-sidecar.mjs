@@ -187,12 +187,18 @@ async function cmdDoctor() {
   return 1;
 }
 
-function cmdStart() {
+async function cmdStart() {
   // Fast precheck so we fail with a clear message instead of a stack trace.
   const missing = [];
   if (!existsSync(RUNTIME)) missing.push("sidecar runtime");
   if (!existsSync(PRIVATE_KEY)) missing.push("receipt signing key");
-  if (missing.length) { err(`Not initialized (${missing.join(", ")}). Run: npx @mnde/sidecar init`); return Promise.resolve(1); }
+  if (missing.length) { err(`Not initialized (${missing.join(", ")}). Run: npx @mnde/sidecar init`); return 1; }
+  const { receiptSigningKeyStatus } = await import(pathToFileURL(resolveTsOrJs("shared/receipt-signing")).href);
+  const keyStatus = receiptSigningKeyStatus();
+  if (!keyStatus.ok) {
+    err(`Not ready: ${keyStatus.reason}`);
+    return 1;
+  }
   materializeStarterPolicy();
   say(`MNDe Sidecar — starting on http://127.0.0.1:${PORT}  (Ctrl+C to stop)\n`);
   say(`  home: ${HOME}`);

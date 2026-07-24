@@ -75,6 +75,7 @@ const REPO_ROOT = dirname(fileURLToPath(import.meta.url));
 // the existing clone-and-run flow; MNDE_HOME overrides it for the packaged
 // CLI, which must never read/write authority state inside node_modules.
 const DATA_ROOT = process.env.MNDE_HOME ? resolve(process.env.MNDE_HOME) : REPO_ROOT;
+const verifySignedReceiptAtDataRoot = (receipt) => verifySignedReceipt(receipt, { dataRoot: DATA_ROOT });
 let activePolicyPath = new URL("./sample-policies/legacy-gpu-policy.signed.json", import.meta.url);
 const RECEIPT_LOG_PATH = process.env.MNDE_RECEIPT_LOG ?? join(process.cwd(), "hostile-verifier-proof-bundle", "receipts.jsonl");
 const AUTH_AUDIT_LOG_PATH = process.env.MNDE_AUTH_AUDIT_LOG ?? join(process.cwd(), "auth-audit", "auth-events.jsonl");
@@ -1020,7 +1021,7 @@ async function handleVerify(req, res) {
   }
   try {
     const input = await readStrictObject(req, {});
-    const result = verifyReceiptContract(input.value, verifySignedReceipt);
+    const result = verifyReceiptContract(input.value, verifySignedReceiptAtDataRoot);
     auditAuthority(new URL(req.url, `http://${HOST}:${PORT}`).pathname, authz, result.status === "VALID" ? "ALLOW" : "REFUSE", result.receipt_id, result.decision_hash, result.reason);
     response(res, 200, result);
   } catch (error) {
@@ -1120,7 +1121,7 @@ function recentReceiptsForApi(url) {
 }
 
 function replayRecentForApi(limit) {
-  return replayRecentReceipts(RECEIPT_LOG_PATH, limit, verifySignedReceipt, replayReceiptDeterministically);
+  return replayRecentReceipts(RECEIPT_LOG_PATH, limit, verifySignedReceiptAtDataRoot, replayReceiptDeterministically);
 }
 
 function readinessSnapshot() {
@@ -1148,7 +1149,7 @@ function auditBundleForApi() {
   const queueMetrics = receiptQueue.metrics();
   const workerMetrics = workerPool.metrics();
   return createAuditBundle({
-    outputRoot: join(process.cwd(), "audit-bundles"),
+    outputRoot: join(DATA_ROOT, "audit-bundles"),
     recentReceipts: readRecentReceipts(RECEIPT_LOG_PATH, 100, () => {
       counters.malformed_receipt_lines += 1;
     }),
@@ -1163,7 +1164,7 @@ async function handleReplay(req, res) {
   try {
     const input = await readStrictObject(req, {});
     const receipt = receiptFromInput(input.value);
-    if (!verifySignedReceipt(receipt)) {
+    if (!verifySignedReceiptAtDataRoot(receipt)) {
       response(res, 200, {
         schema_version: "mnde.receipt_replay.v1",
         request_hash: receipt?.request_hash ?? null,
