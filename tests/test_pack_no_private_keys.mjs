@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { scanForPrivateKeyMaterial } from "../build/lib/private-key-scan.mjs";
@@ -67,11 +67,10 @@ try {
   // actually inside it — not the pre-pack dist/ directory, not npm's file
   // list, the literal packed bytes.
   extractDir = mkdtempSync(join(tmpdir(), "mnde-pack-extract-"));
-  // --force-local: a Windows path like C:\Users\... contains a colon, which
-  // GNU tar otherwise parses as a "host:path" remote-archive spec (it tried
-  // to open an rsh connection to a host literally named "C"). This forces
-  // the colon to be treated as an ordinary path character.
-  assertOk("tar extract", run("tar", ["--force-local", "-xzf", tarballPath, "-C", extractDir]));
+  // Keep the archive argument relative: GNU tar otherwise parses a Windows
+  // drive letter as "host:path", while bsdtar does not support --force-local.
+  const relativeTarballPath = relative(extractDir, tarballPath).replace(/\\/g, "/");
+  assertOk("tar extract", run("tar", ["-xzf", relativeTarballPath], { cwd: extractDir }));
 
   const offenders = scanForPrivateKeyMaterial(extractDir);
   assert.deepEqual(offenders, [], `private key marker found inside the packed tarball: ${JSON.stringify(offenders)}`);
