@@ -27,6 +27,12 @@ const SIGNING_KEY_ID_ENV = "MNDE_RECEIPT_HMAC_KEY_ID";
 const RECEIPT_KEY_SET_VERSION = "receipt-key-set-v1";
 type TimingCollector = Partial<Record<"signing_ms", number>>;
 type SigningConfig = { ok: true; secret: string; keyId: string } | { ok: false; reason_code: string };
+export type ReceiptVerificationOptions = { dataRoot?: string };
+const CODE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+function receiptVerificationRoot(options: ReceiptVerificationOptions = {}): string {
+  return resolve(options.dataRoot ?? process.env.MNDE_HOME ?? CODE_ROOT);
+}
 
 function signingConfig(): SigningConfig {
   const secret = process.env[SIGNING_SECRET_ENV]?.trim();
@@ -190,17 +196,16 @@ export function buildReceipt(input: {
   return signPayload(payload, config, input.timings);
 }
 
-export function verifyReceiptSignature(receipt: SignedReceipt): boolean {
-  return verifyReceiptPublicSignature(receipt);
+export function verifyReceiptSignature(receipt: SignedReceipt, options: ReceiptVerificationOptions = {}): boolean {
+  return verifyReceiptPublicSignature(receipt, options);
 }
 
-export function verifyReceiptPublicSignature(receipt: SignedReceipt): boolean {
+export function verifyReceiptPublicSignature(receipt: SignedReceipt, options: ReceiptVerificationOptions = {}): boolean {
   if (!receipt.verifiable_signature) {
     return false;
   }
   const { signature: _legacySignature, verifiable_signature, ...payload } = receipt;
-  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const bundle = loadAuthorityBundleForReceipt(repoRoot, verifiable_signature.authority_id);
+  const bundle = loadAuthorityBundleForReceipt(receiptVerificationRoot(options), verifiable_signature.authority_id);
   if (!bundle.ok) {
     return false;
   }
@@ -226,8 +231,12 @@ export function verifyReceiptPublicSignature(receipt: SignedReceipt): boolean {
   return verifyReceiptPayloadSignature(canonicalPayload, verifiable_signature.value, keyResult.key.public_key);
 }
 
-export function verifyReceiptReplay(receipt: SignedReceipt, rerunReceipt: SignedReceipt): { ok: boolean; reason_code: string } {
-  if (!verifyReceiptSignature(receipt) || !verifyReceiptSignature(rerunReceipt)) {
+export function verifyReceiptReplay(
+  receipt: SignedReceipt,
+  rerunReceipt: SignedReceipt,
+  options: ReceiptVerificationOptions = {}
+): { ok: boolean; reason_code: string } {
+  if (!verifyReceiptSignature(receipt, options) || !verifyReceiptSignature(rerunReceipt, options)) {
     return { ok: false, reason_code: REASON_CODES.ReceiptSignatureInvalid };
   }
   const stored = canonicalizeJson(receipt as unknown as JsonValue);

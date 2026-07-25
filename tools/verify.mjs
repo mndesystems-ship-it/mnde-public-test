@@ -15,6 +15,17 @@
 // Receipt type is auto-detected. The legacy and policy-engine paths are imported
 // unchanged, preserving their byte-for-byte verification guarantees. Custody
 // verification is additive and depends only on the published bundle (no network).
+//
+// MNDE_HOME: for a mnde.pe.receipt.v1/v2 receipt signed under a non-default
+// MNDE_HOME (e.g. one produced by `npx @mnde/sidecar smoke`), this command
+// must be run with that SAME MNDE_HOME set in its environment — verification
+// resolves the local authority bundle (and therefore the trusted public key)
+// relative to it, the same way init/doctor/smoke do. Without it, this looks
+// for the authority bundle at this package's own install location instead and
+// fails with "unknown authority_id" — a real gap an independent review found:
+// this file had no mention of MNDE_HOME at all, even though its correctness
+// depends on it whenever it's run standalone against a receipt saved
+// elsewhere. Example: MNDE_HOME=./.mnde node tools/verify.mjs ./.mnde/first-receipt.json
 
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
