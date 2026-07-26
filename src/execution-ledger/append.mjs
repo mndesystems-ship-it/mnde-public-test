@@ -2,8 +2,14 @@
 //
 // Append-only, one JSON line per entry, serialized across processes by an
 // exclusive lock file. The read-modify-write (read last entry → compute next →
-// append) happens entirely while the lock is held, with no awaits inside the
-// critical section, so two concurrent appends can never mint the same sequence.
+// sign → append) happens entirely while the lock is held. The one await inside
+// the critical section is the ledger signature: because the lock is a real
+// OS-exclusive file lock (open "wx"), holding it across that await is safe for
+// correctness — no other appender can acquire it, so sequences stay monotonic.
+// It does hold the lock for the duration of signing; with a local Ed25519 key
+// that is sub-millisecond, and with a future KMS/HSM signer it becomes a network
+// round-trip that lengthens lock hold time (a contention cost, not a correctness
+// risk — see the O(n)/lock-squat items on the readiness board).
 // If the lock cannot be acquired within a bounded retry budget, the append fails
 // closed (ERR_LEDGER_LOCK_FAILED) — it never writes without the lock.
 
@@ -12,10 +18,12 @@ import { dirname } from "node:path";
 
 import { canonicalizeJson } from "../../shared/json.ts";
 import {
-  LEDGER_ENTRY_SCHEMA,
+  LEDGER_ENTRY_SCHEMA_V2,
+  LEDGER_SIGNATURE_ALGORITHM,
   LEDGER_ERRORS,
   canonicalReceiptHash,
-  computeEntryHash
+  computeEntryHash,
+  ledgerSignablePayload
 } from "./index.mjs";
 import { LEDGER_LOCK_SUFFIX } from "./paths.mjs";
 
@@ -24,12 +32,18 @@ const LOCK_RETRY_MS = 5;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Pure entry builder. Given the prior chain head, the receipt, and the ref,
-// produce a complete entry including its committed entry_hash. Exported so tests
-// can construct entries deterministically (pass createdAt for stable bytes).
-export function buildLedgerEntry({ sequence, previousEntryHash, receipt, receiptRef, engine, createdAt }) {
+// Entry builder. Given the prior chain head, the receipt, and the ref, produce a
+// complete signed v2 entry: body → entry_hash → custody ledger signature over the
+// entry (with its entry_hash). `signLedger` is the custody provider's ledger
+// signer, returning { key_id, value, fingerprint }. Async because signing is
+// async. Exported so tests can construct entries deterministically (pass createdAt
+// for stable bytes; pass the same signer the verifier's bundle trusts).
+export async function buildLedgerEntry({ sequence, previousEntryHash, receipt, receiptRef, engine, createdAt, signLedger }) {
+  if (typeof signLedger !== "function") {
+    throw new Error(LEDGER_ERRORS.SIGNER_REQUIRED);
+  }
   const body = {
-    schema: LEDGER_ENTRY_SCHEMA,
+    schema: LEDGER_ENTRY_SCHEMA_V2,
     sequence,
     created_at: createdAt ?? new Date().toISOString(),
     receipt_hash: canonicalReceiptHash(receipt),
@@ -44,7 +58,17 @@ export function buildLedgerEntry({ sequence, previousEntryHash, receipt, receipt
       version: engine?.version ?? null
     }
   };
-  return { ...body, entry_hash: computeEntryHash(body) };
+  const withHash = { ...body, entry_hash: computeEntryHash(body) };
+  const sig = await signLedger(ledgerSignablePayload(withHash));
+  return {
+    ...withHash,
+    signature: {
+      algorithm: LEDGER_SIGNATURE_ALGORITHM,
+      key_id: sig.key_id,
+      value: sig.value,
+      fingerprint: sig.fingerprint ?? null
+    }
+  };
 }
 
 function readChainHead(ledgerPath) {
@@ -103,9 +127,13 @@ function appendDurable(ledgerPath, line) {
 //   receiptRef  { path, receipt_id } locating the receipt for the verifier
 //   engine      { name, version } provenance
 //   createdAt   optional ISO timestamp (defaults to now)
+//   signLedger  custody ledger signer (REQUIRED — v2 entries are always signed)
 //   lock        set false ONLY in single-writer tests
 // Returns { ok, sequence, entry_hash, receipt_hash } or { ok:false, code, message }.
-export async function appendLedgerEntry({ ledgerPath, receipt, receiptRef, engine, createdAt, lock = true }) {
+export async function appendLedgerEntry({ ledgerPath, receipt, receiptRef, engine, createdAt, signLedger, lock = true }) {
+  if (typeof signLedger !== "function") {
+    return { ok: false, code: LEDGER_ERRORS.SIGNER_REQUIRED, message: "ledger append requires a signLedger custody function (v2 entries are signed)" };
+  }
   try {
     mkdirSync(dirname(ledgerPath), { recursive: true });
   } catch (error) {
@@ -129,7 +157,7 @@ export async function appendLedgerEntry({ ledgerPath, receipt, receiptRef, engin
     const head = readChainHead(ledgerPath);
     const sequence = head ? head.sequence + 1 : 1;
     const previousEntryHash = head ? head.entry_hash : null;
-    const entry = buildLedgerEntry({ sequence, previousEntryHash, receipt, receiptRef, engine, createdAt });
+    const entry = await buildLedgerEntry({ sequence, previousEntryHash, receipt, receiptRef, engine, createdAt, signLedger });
     appendDurable(ledgerPath, `${canonicalizeJson(entry)}\n`);
     return { ok: true, sequence, entry_hash: entry.entry_hash, receipt_hash: entry.receipt_hash };
   } catch (error) {

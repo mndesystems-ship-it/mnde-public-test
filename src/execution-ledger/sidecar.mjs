@@ -58,8 +58,9 @@ function ledgerFailure(profile, code, message) {
 //             ever references an on-disk receipt); may be null/undefined
 //   profile   "production" | "local"
 //   engine    { name, version }
+//   signLedger custody ledger signer (REQUIRED — v2 entries are signed)
 // Returns { enabled, appended, sequence?, entry_hash?, failClosed?, code? }.
-export async function recordReceiptInLedger({ runtime, receipt, durable, profile, engine, flush }) {
+export async function recordReceiptInLedger({ runtime, receipt, durable, profile, engine, flush, signLedger }) {
   if (!runtime?.enabled) return { enabled: false };
 
   // The receipt must exist on disk before we commit to referencing it. If it
@@ -79,7 +80,8 @@ export async function recordReceiptInLedger({ runtime, receipt, durable, profile
     ledgerPath: runtime.ledgerPath,
     receipt,
     receiptRef: { path: basename(runtime.receiptStorePath), receipt_id: receipt?.receipt_id ?? null },
-    engine
+    engine,
+    signLedger
   });
   if (!result.ok) return ledgerFailure(profile, result.code, result.message);
 
@@ -97,12 +99,14 @@ export function ledgerResponseMeta(outcome) {
 
 // ── Read endpoints (head / verify / export) ──────────────────────────────────
 
-function verifyRuntime(runtime) {
-  return verifyLedger({ ledgerPath: runtime.ledgerPath, receiptRoot: runtime.receiptRoot });
+// trustedBundle carries the ledger public keys; strict defaults true (signed v2
+// required). Both read responses are async because signature verification is.
+function verifyRuntime(runtime, trustedBundle, strict) {
+  return verifyLedger({ ledgerPath: runtime.ledgerPath, receiptRoot: runtime.receiptRoot, trustedBundle, strict });
 }
 
-export function ledgerHeadResponse(runtime) {
-  const result = verifyRuntime(runtime);
+export async function ledgerHeadResponse(runtime, trustedBundle = null, strict = true) {
+  const result = await verifyRuntime(runtime, trustedBundle, strict);
   return {
     schema: LEDGER_HEAD_SCHEMA,
     ledger_path: runtime.ledgerPath,
@@ -112,8 +116,8 @@ export function ledgerHeadResponse(runtime) {
   };
 }
 
-export function ledgerVerifyResponse(runtime) {
-  return verifyRuntime(runtime);
+export async function ledgerVerifyResponse(runtime, trustedBundle = null, strict = true) {
+  return verifyRuntime(runtime, trustedBundle, strict);
 }
 
 export function ledgerExportResponse(runtime) {

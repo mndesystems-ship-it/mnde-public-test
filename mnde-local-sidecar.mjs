@@ -18,6 +18,7 @@ import { parseRuntimeProfile } from "./shared/runtime-profile.mjs";
 import { resolveDecisionEngine } from "./shared/decision-engine.mjs";
 import { ledgerStartupGate, isLedgerDisabled } from "./src/execution-ledger/paths.mjs";
 import { resolveLedgerRuntime, recordReceiptInLedger, ledgerResponseMeta, ledgerHeadResponse, ledgerVerifyResponse, ledgerExportResponse } from "./src/execution-ledger/sidecar.mjs";
+import { createLocalDemoCustody } from "./src/custody/index.mjs";
 import {
   DeterministicWorkerPool,
   WORKER_POOL_SATURATED,
@@ -430,6 +431,26 @@ if (SIGNING_MODE === "custody") {
   }
 }
 
+// Ledger signing custody. Execution-ledger entries are always signed v2. In
+// custody mode reuse the already-loaded published provider (real, rotatable,
+// revocable ledger key) and its bundle. Otherwise mint an ephemeral local-demo
+// custody so local/legacy runs still produce a signed, self-verifying chain —
+// same posture as local-demo receipt signing: in-process keys, reset on restart,
+// which means entries appended before a restart won't verify against the new
+// process's bundle (a known local-demo limitation, never the production path).
+let LEDGER_SIGN = null;
+let LEDGER_BUNDLE = null;
+if (SIGNING_MODE === "custody" && signingConfig.ok && signingConfig.provider) {
+  LEDGER_SIGN = signingConfig.provider.signLedger;
+  LEDGER_BUNDLE = signingConfig.provider.getPublicBundle();
+  process.stdout.write(`MNDe execution ledger: signed (custody ledger key)\n`);
+} else {
+  const demoLedgerCustody = await createLocalDemoCustody();
+  LEDGER_SIGN = demoLedgerCustody.signLedger;
+  LEDGER_BUNDLE = demoLedgerCustody.getPublicBundle();
+  process.stdout.write(`MNDe execution ledger: signed (ephemeral local-demo ledger key; non-production)\n`);
+}
+
 // Sign a built receipt for delivery. Legacy mode is a pass-through; custody mode
 // returns a signed envelope or fails closed with a distinct reason code. No
 // automatic downgrade to legacy when custody is selected.
@@ -535,7 +556,7 @@ async function persistRefusal(reason_code, extra = {}, timings = {}) {
     return { ok: false, reason_code: queued.reason_code, receipt };
   }
   if (LEDGER_RUNTIME.enabled) {
-    const ledger = await recordReceiptInLedger({ runtime: LEDGER_RUNTIME, receipt, durable: queued.durable, profile: RUNTIME_PROFILE, engine: LEDGER_ENGINE, flush: () => receiptQueue.flush() });
+    const ledger = await recordReceiptInLedger({ runtime: LEDGER_RUNTIME, receipt, durable: queued.durable, profile: RUNTIME_PROFILE, engine: LEDGER_ENGINE, flush: () => receiptQueue.flush(), signLedger: LEDGER_SIGN });
     if (ledger.failClosed) return { ok: false, reason_code: ledger.code, receipt };
   } else if (RECEIPT_QUEUE_CONFIG.durability_mode === "strict_audit") {
     await queued.durable;
@@ -735,7 +756,7 @@ async function respondPolicyEngine(res, request, timings, totalStarted, caller) 
   }
   let ledgerMeta = null;
   if (LEDGER_RUNTIME.enabled) {
-    const ledger = await recordReceiptInLedger({ runtime: LEDGER_RUNTIME, receipt: signed.receipt, durable: queued.durable, profile: RUNTIME_PROFILE, engine: LEDGER_ENGINE, flush: () => receiptQueue.flush() });
+    const ledger = await recordReceiptInLedger({ runtime: LEDGER_RUNTIME, receipt: signed.receipt, durable: queued.durable, profile: RUNTIME_PROFILE, engine: LEDGER_ENGINE, flush: () => receiptQueue.flush(), signLedger: LEDGER_SIGN });
     if (ledger.failClosed) {
       counters.receipt_refusals += 1;
       timings.total_server_ms = Math.max(0, Math.round(performance.now() - totalStarted));
@@ -981,7 +1002,7 @@ async function handleDecide(req, res) {
     }
     let ledgerMeta = null;
     if (LEDGER_RUNTIME.enabled) {
-      const ledger = await recordReceiptInLedger({ runtime: LEDGER_RUNTIME, receipt: signed.receipt, durable: queued.durable, profile: RUNTIME_PROFILE, engine: LEDGER_ENGINE, flush: () => receiptQueue.flush() });
+      const ledger = await recordReceiptInLedger({ runtime: LEDGER_RUNTIME, receipt: signed.receipt, durable: queued.durable, profile: RUNTIME_PROFILE, engine: LEDGER_ENGINE, flush: () => receiptQueue.flush(), signLedger: LEDGER_SIGN });
       if (ledger.failClosed) {
         counters.receipt_refusals += 1;
         timings.total_server_ms = Math.max(0, Math.round(performance.now() - totalStarted));
@@ -1379,7 +1400,7 @@ const server = http.createServer(async (req, res) => {
   // export ~ export_audit. Export is never exposed without authority gating.
   if (req.method === "GET" && pathname === "/ledger/head") {
     if (!authorizeProductionRead(req, res, pathname, "ledger.head")) return;
-    response(res, 200, ledgerHeadResponse(LEDGER_RUNTIME));
+    response(res, 200, await ledgerHeadResponse(LEDGER_RUNTIME, LEDGER_BUNDLE));
     return;
   }
   if (req.method === "GET" && pathname === "/ledger/verify") {
@@ -1388,7 +1409,7 @@ const server = http.createServer(async (req, res) => {
       response(res, 403, refusalBody(authz.reason, authz.actor, "ledger.verify"));
       return;
     }
-    const result = ledgerVerifyResponse(LEDGER_RUNTIME);
+    const result = await ledgerVerifyResponse(LEDGER_RUNTIME, LEDGER_BUNDLE);
     auditAuthority(pathname, authz, result.ok ? "ALLOW" : "REFUSE", `entries:${result.entries_checked}`, null, result.ok ? null : result.errors[0]?.code);
     response(res, 200, result);
     return;

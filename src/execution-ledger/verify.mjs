@@ -14,12 +14,22 @@ import { existsSync, readFileSync } from "node:fs";
 
 import {
   LEDGER_ENTRY_SCHEMA,
+  LEDGER_ENTRY_SCHEMA_V2,
+  LEDGER_ENTRY_SCHEMAS,
+  LEDGER_SIGNING_ROLE,
+  LEDGER_SIGNATURE_ALGORITHM,
   LEDGER_VERIFY_RESULT_SCHEMA,
   LEDGER_ERRORS,
   canonicalReceiptHash,
-  computeEntryHash
+  computeEntryHash,
+  ledgerSignablePayload
 } from "./index.mjs";
 import { safeResolveReceiptRefPath } from "./paths.mjs";
+import { verifyAgainstBundle } from "../custody/bundle.mjs";
+
+function isObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 function loadReceiptStore(absolutePath) {
   if (!existsSync(absolutePath)) return null;
@@ -45,9 +55,17 @@ function loadReceiptStore(absolutePath) {
   return { byId, hashes };
 }
 
-// Verify the ledger at ledgerPath. receiptRoot is the approved root that every
-// receipt_ref.path must resolve inside (defaults to the process cwd).
-export function verifyLedger({ ledgerPath, receiptRoot = process.cwd() } = {}) {
+// Verify the ledger at ledgerPath.
+//   receiptRoot   the approved root every receipt_ref.path must resolve inside.
+//   trustedBundle an mnde.authority.bundle.v1 (public) whose "ledger" keys sign
+//                 v2 entries. REQUIRED to verify signatures.
+//   strict        true (default): v2 + a valid signature is mandatory; a legacy
+//                 v1 entry is rejected (ERR_LEDGER_LEGACY_ENTRY_REJECTED). false:
+//                 v1 entries are accepted as hash-chain-only (audit/migration
+//                 reads); v2 entries are still signature-checked when a bundle is
+//                 supplied. A signature is never accepted as valid without the
+//                 trusted bundle — there is no silent downgrade.
+export async function verifyLedger({ ledgerPath, receiptRoot = process.cwd(), trustedBundle = null, strict = true } = {}) {
   const errors = [];
   const done = (ok, entriesChecked, head) => ({
     schema: LEDGER_VERIFY_RESULT_SCHEMA,
@@ -82,7 +100,7 @@ export function verifyLedger({ ledgerPath, receiptRoot = process.cwd() } = {}) {
       return done(false, checked, null);
     }
 
-    if (entry.schema !== LEDGER_ENTRY_SCHEMA) {
+    if (!LEDGER_ENTRY_SCHEMAS.includes(entry.schema)) {
       errors.push({ code: LEDGER_ERRORS.SCHEMA, sequence: entry.sequence ?? null, message: `unexpected schema '${entry.schema}'` });
       return done(false, checked, null);
     }
@@ -118,6 +136,35 @@ export function verifyLedger({ ledgerPath, receiptRoot = process.cwd() } = {}) {
     if (computeEntryHash(entry) !== entry.entry_hash) {
       errors.push({ code: LEDGER_ERRORS.ENTRY_HASH, sequence: entry.sequence, message: "entry_hash does not match recomputed body hash" });
       return done(false, checked, null);
+    }
+
+    // ── Signature (v2 authenticity) ───────────────────────────────────────────
+    // The hash chain proves internal consistency; the signature proves the entry
+    // was minted by the ledger key. Without it, an attacker who can write the
+    // store can recompute a fully consistent forged chain (excision-and-rebuild).
+    const isV2 = entry.schema === LEDGER_ENTRY_SCHEMA_V2;
+    if (strict && !isV2) {
+      errors.push({ code: LEDGER_ERRORS.LEGACY_ENTRY_REJECTED, sequence: entry.sequence, message: `legacy ${entry.schema} entry rejected in strict mode` });
+      return done(false, checked, null);
+    }
+    if (isV2) {
+      if (!trustedBundle) {
+        errors.push({ code: LEDGER_ERRORS.NO_TRUST_BUNDLE, sequence: entry.sequence, message: "a trusted authority bundle is required to verify signed entries" });
+        return done(false, checked, null);
+      }
+      const sig = entry.signature;
+      if (!isObject(sig) || sig.algorithm !== LEDGER_SIGNATURE_ALGORITHM || typeof sig.value !== "string" || sig.value.length === 0 || typeof sig.key_id !== "string" || sig.key_id.length === 0) {
+        errors.push({ code: LEDGER_ERRORS.SIGNATURE_MISSING, sequence: entry.sequence, message: "entry signature missing or malformed" });
+        return done(false, checked, null);
+      }
+      const check = await verifyAgainstBundle(ledgerSignablePayload(entry), sig.value, LEDGER_SIGNING_ROLE, sig.key_id, entry.created_at, trustedBundle);
+      if (!check.ok) {
+        // SIGNATURE_INVALID = bytes don't verify; everything else (UNKNOWN_KEY,
+        // KEY_REVOKED, KEY_EXPIRED, INVALID_SIGNED_AT) is an untrusted-key verdict.
+        const code = check.reason === "SIGNATURE_INVALID" ? LEDGER_ERRORS.SIGNATURE_INVALID : LEDGER_ERRORS.SIGNATURE_KEY_UNTRUSTED;
+        errors.push({ code, sequence: entry.sequence, message: `ledger signature rejected: ${check.reason}` });
+        return done(false, checked, null);
+      }
     }
 
     const ref = entry.receipt_ref ?? {};
