@@ -1082,6 +1082,11 @@ expected refusal reason (recorded in the implementation's test plan).
 | C86 | event-taxonomy completeness (every SM event enumerated) | pass | §18 |
 | C87 | integer overflow in any accounting op | refuse | §8 |
 | C88 | counter approaching 2^63 | fail closed (no wraparound) | §8 |
+| C89 | credential minted for another audience presented | reject `ERR_AUDIENCE_MISMATCH`; refusal MUST NOT leak the authorized audiences | §3 |
+| C90 | principal below scope `min assurance_level` | reject `ERR_INSUFFICIENT_ASSURANCE`; token uncommitted; succeeds after genuine assurance upgrade (refusal scoped to call-time state) | §3 |
+| C91 | forged act-as field (e.g. `X-Act-As`) without signed delegation | act-as NOT inferred; caller's own identity used → `ERR_FORBIDDEN` if it lacks direct authority; forged value MUST NOT appear as effective principal in any audit event | §3 |
+| C92 | ambiguous / non-normalizable identifier (`subject`/`execution_id`/namespace) | reject `ERR_AMBIGUOUS_IDENTIFIER` (never guess); malformed (invalid UTF-8 / NFC-fail / null byte) → `ERR_MALFORMED_ID` before any authority check; no bucket change | §3.1 |
+| C93 | interrupted migration leaves an in-flight legacy hold | new authority refused `ERR_LEGACY_HOLD_UNCLEARED` until explicit drain or fail-closed; legacy hold never silently re-owned; partial transfer rolls back to `L` held / `0` granted; after a clean drain, `T = available + held` holds exactly | §23 |
 
 ## 25. PR dependency & metadata — D21
 
@@ -1124,6 +1129,18 @@ cannot duplicate/resurrect authority (§12.3,§15,§16); expiry/revocation races
 one outcome (§9.3); receipts and proofs separated (§19); rollback claims match the
 mechanism (§11.1,§21); every MUST-level invariant maps to a hostile test (§24); all
 internal references and metadata correct.
+
+**Residual gate blockers (status):**
+
+- *Coverage* — **CLOSED.** The five previously-unmapped MUST invariants now have
+  hostile cases C89–C93 (§24): audience validation and assurance minimum and
+  impersonation (§3), identifier normalization (§3.1), and in-flight legacy-hold
+  drain (§23).
+- *Independent re-review* — **OPEN.** This revision was authored and self-checked
+  in one pass; the gate **MUST NOT** flip to PASS on author self-certification. A
+  second, non-author adversarial reader **MUST** run the §29 consistency checks and
+  the cross-machine traces against the current five-bucket model and sign off. Until
+  then the gate stays **FAIL**.
 
 **Release gates (external — implementation BLOCKED):** PR #4 merged; architectural
 sign-off; implementation + §24 tests + audit — **not started.**
@@ -1209,7 +1226,7 @@ terminal-ALLOW with the composite transition (§12.2); deferred delegation (§22
 added credential liveness (§4), admin-correction SM (§16), canonical envelope +
 payloads (§17), receipt/proof split (§19), outbox identity (§20), scoped rollback
 (§11.1) and checkpoint regimes (§21); corrected all internal references and the
-D0–D38 metadata; expanded conformance to C01–C88. This revision does **not** claim
+D0–D38 metadata; expanded conformance to C01–C93. This revision does **not** claim
 implementation, does **not** modify PR #4, and does **not** weaken any fail-closed
 rule.
 
