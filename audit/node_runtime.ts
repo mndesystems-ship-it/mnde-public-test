@@ -88,18 +88,32 @@ export function executeDeterministicPipeline(rawInput: string, options: Pipeline
       receipt_bytes: measure(timings, "canonicalize_ms", () => canonicalizeJson(receipt as unknown as JsonValue))
     };
   }
-  const ramona = measure(timings, "ramona_ms", () => runStrictRamona(preflight.parsed_input, arm));
-  const receipt = measure(timings, "receipt_build_ms", () => buildReceipt({
-    canonical_request: preflight.canonical_input,
-    request_hash: preflight.request_hash,
-    policy_hash: preflight.policy_hash,
-    preflight: preflightTrace,
-    orbit,
-    arm,
-    ramona,
-    policy_version: preflight.parsed_input.policy_document.policy_version,
-    timings
-  }));
+  let receipt: SignedReceipt;
+  try {
+    const ramona = measure(timings, "ramona_ms", () => runStrictRamona(preflight.parsed_input, arm));
+    receipt = measure(timings, "receipt_build_ms", () => buildReceipt({
+      canonical_request: preflight.canonical_input,
+      request_hash: preflight.request_hash,
+      policy_hash: preflight.policy_hash,
+      preflight: preflightTrace,
+      orbit,
+      arm,
+      ramona,
+      policy_version: preflight.parsed_input.policy_document.policy_version,
+      timings
+    }));
+  } catch (error) {
+    // A hold was placed iff ARM returned ALLOW carrying a budget_token. If Ramona
+    // or receipt-build throws after that, release the hold before rethrowing so an
+    // errored, never-finalized decision does not leak reserved capacity. Live mode
+    // only; releaseBudgetHold is idempotent. (Previously a leaked hold was cleared
+    // by the worker's per-task reset, which has been removed to let budget persist
+    // across requests — see docs/budget-token-hold-lifecycle.md §4.)
+    if (options.enforceExecutionId !== false && arm.decision === "ALLOW" && arm.budget_token !== undefined) {
+      releaseBudgetHold(arm.budget_token, arm.execution_id);
+    }
+    throw error;
+  }
 
   // Finalize authority state against the TRUE, post-Ramona decision. In replay
   // mode (enforceExecutionId === false) we mutate no live authority state at
@@ -183,6 +197,10 @@ export function hashFileArtifact(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
+// Replay/test isolation ONLY — clears budget accounting between independent
+// deterministic runs. It MUST NOT run on the live per-request path (that would
+// wipe committed budget and defeat the cap); see resetTransientArmStores and
+// sidecar/deterministic_worker.mjs.
 export function resetRuntimeState(): void {
   resetTransientArmStores();
 }

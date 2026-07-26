@@ -32,8 +32,13 @@ export function resetArmStores(): void {
 }
 
 // Clears ONLY the budget store (committed spend AND any pending holds). This is
-// the reset used between independent deterministic runs / replays, where the
-// execution_id ledger must persist but budget accounting must start clean.
+// the reset for REPLAY AND TEST ISOLATION between independent deterministic
+// runs, where the execution_id ledger must persist but budget accounting must
+// start clean.
+//
+// MUST NOT be called on the live per-request path: doing so wipes committed
+// budget between requests and defeats the token spending cap. The live worker
+// (sidecar/deterministic_worker.mjs) therefore does not call it.
 export function resetTransientArmStores(): void {
   budgetTokenStore.reset();
 }

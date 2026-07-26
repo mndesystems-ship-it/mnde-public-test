@@ -168,6 +168,17 @@ These are *not* defects introduced by this change; they are the boundary of what
 an in-memory, ordering-only fix can guarantee. The durable stage (§6) closes
 each one.
 
+**Cross-request enforcement boundary (set by this change).** The live worker
+(`sidecar/deterministic_worker.mjs`) no longer resets budget state between
+requests, so committed spend and pending holds **accumulate across requests and
+the spending cap is tracked over the token's lifetime** — but only for requests
+handled by the **same worker process**. Because `budgetTokenStore` is a
+per-worker in-memory singleton, enforcement is **NOT** durable and **NOT**
+cross-worker: a restart clears it, and two workers hold independent balances.
+Durable, cross-worker enforcement is explicitly out of scope here and is the
+durable-ledger design (§6 / PR #5). The reset (`resetTransientArmStores` /
+`resetRuntimeState`) remains, but only for replay and test isolation.
+
 - **Cross-worker isolation.** `budgetTokenStore` is a per-module singleton, so
   under `worker_threads` each worker holds an independent balance. Concurrent
   holds cannot overspend a token *within one store instance* (see below), but
@@ -180,11 +191,12 @@ each one.
   cross-process.
 - **Exception after `hold()`.** If an exception is thrown between a successful
   `hold()` and finalize (e.g. inside Ramona or receipt build), the pipeline
-  throws and **no ALLOW is returned** (the criterion "release OR prevent ALLOW"
-  is met by preventing ALLOW). The hold itself is *not* explicitly released; it
-  is bounded by the worker's pre-task `resetRuntimeState()`, which clears the
-  store before the next task. The durable stage must replace this reset-bounded
-  cleanup with an explicit transactional release/`finally`.
+  **releases the hold and then rethrows** (`executeDeterministicPipeline`), so
+  **no ALLOW is returned and the reserved capacity is not leaked**. This explicit
+  release replaces the previous reset-bounded cleanup: the live worker no longer
+  resets budget per task (see the boundary note above), so an un-released hold
+  would otherwise persist and shrink the token's available balance. The durable
+  stage still owes the fully transactional version of this.
 - **`commit()` / execution-id atomicity.** The pipeline commits the
   `execution_id` and then the budget hold as two separate in-memory writes
   (neither can fail in memory). In the durable stage these must move into the
