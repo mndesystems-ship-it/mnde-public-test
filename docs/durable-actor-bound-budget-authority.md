@@ -73,18 +73,35 @@ Ramona has already observed the **actual** cost (`runtime_observation.actual_gpu
 - *Recovery* — metered means a crash between observation and commit must recover
   the **actual**, so the observed actual must be durably written *before* commit.
 
-**Recommendation (for ratification, not yet built):** **Metered**, because (a) it
-is the only option faithful to conservation under `h_after = δ(h_before, e)` —
-you commit what was *used*, not what was *guessed*; (b) the runtime meter already
-exists in Ramona, so the input is free; (c) prepaid silently overcharges every
-time actual < projected, which for a spending cap is the same class of quiet
-error as the no-refund defect we just fixed. **Cost:** the committed amount
-becomes trust-bearing, so Ramona's observed actuals must be authenticated into
-the receipt (see §6). If that authentication is not acceptable near-term,
-**prepaid is the safe interim** and metering can be layered later without
-breaking receipts *if* the receipt reserves the `actual_cents` field now.
+**Recommendation (for ratification, not yet built):** the **safe target** is a
+*reserve-cap → commit-actual → release-remainder* model — but it must **not** be
+ratified merely because Ramona surfaces `actual`. Metered commit *trusts* that
+number, so a precondition gates the whole decision:
 
-**Status: OPEN — product/architecture decision.**
+> **D1a (gating sub-question):** Is `actual_cents` **authoritative,
+> tamper-resistant, and available before the irreversible execution point**? If
+> it is operator-asserted, or observable only *after* irreversible spend, it is
+> not yet a safe basis for commit.
+
+Target model, **only once D1a is satisfied**:
+
+1. **Reserve a worst-case cap** atomically at hold — the hold is a *ceiling*, not
+   an estimate.
+2. **Commit the verified actual** cost.
+3. **Release the unused remainder** (`hold − actual`).
+4. **Never permit actual to exceed the hold** without an **atomic top-up hold
+   taken before execution proceeds**. Reconciliation only ever adjusts
+   *downward*; any upward move is a new atomic reservation, never a post-hoc
+   overshoot. (A consuming action must never be allowed to run past its reserved
+   ceiling.)
+5. **Retain prepaid** (commit the full cap) wherever trustworthy actual
+   measurement is unavailable — prepaid is the correct model, not a fallback to
+   apologize for, when the meter cannot be trusted.
+
+Reserve the `actual_cents` / `released_delta_cents` receipt fields now so that a
+later prepaid → metered transition is non-breaking.
+
+**Status: OPEN** — and **D1a** must be answered before D1 can be ruled.
 
 ---
 
@@ -134,6 +151,11 @@ violation and, worse, a rewrite of settled history. The rule:
 predicate is `grant_issued ≺ execution_committed ≺ grant_revoked`; a commit whose
 authenticated order precedes `t_r` stands, one after `t_r` does not. This is
 **event-order**, not wall-clock — see §5.
+
+*Consistency with §6:* `held → released` applies only when non-consumption is
+**provable**. If a revoked grant has an **in-flight** hold whose execution may
+already have performed a consuming action, that reservation goes to
+`RECOVERY_REQUIRED` (freeze + reconcile), never blind release.
 
 **Status: OPEN — but the recommended rule above is the conservation-preserving
 one; ratify it.**
@@ -218,7 +240,7 @@ framing line at the top.
 A `budget_reservations` record keyed by `(budget_token, execution_id)`:
 
 ```
-state ∈ { PENDING_HOLD, COMMITTED, RELEASED }        // + PARTIALLY_COMMITTED if §1 = metered
+state ∈ { PENDING_HOLD, COMMITTED, RELEASED, RECOVERY_REQUIRED }   // + PARTIALLY_COMMITTED if §1 = metered
 held_cents          // reserved at hold
 actual_cents        // observed at Ramona (metered only)
 committed_cents     // = held (prepaid) | actual (metered)
@@ -232,19 +254,26 @@ commit-or-release, and (c) the authoritative receipt bytes. This prevents the
 split-state the no-refund defect could otherwise reintroduce durably (one
 authority persisted without the other).
 
-**Fail-closed default under ambiguity: RELEASE.** If the process crashes between
-the two writes, or a transaction outcome is unknown, recovery must default to
-**not having spent** the budget, then reconcile. For a spending cap the
-security-relevant failure is *over*charging, so fail-closed points toward
-conserving the caller's budget — the mirror image of `execution_id`, where
-fail-closed means blocking reuse.
+**Ambiguity must FREEZE, not release.** RELEASE is safe **only** when the system
+can *prove* no budget-consuming action occurred (e.g. the crash is provably
+before any irreversible execution *and* before the commit transaction). If it is
+*unknown* whether a consuming action fired, recovery must transition the
+reservation to **`RECOVERY_REQUIRED`** (a.k.a. `FROZEN`): the hold is
+**preserved**, further spending against the token is **blocked**, and the
+reservation is resolved to COMMITTED-or-RELEASED **only** by explicit
+reconciliation against authenticated history. Blindly releasing under uncertainty
+would return capacity that may already have been spent — a latent *overspend*,
+the same class of error as the no-refund defect but in the opposite direction.
+Contrast `execution_id`, where fail-closed means blocking reuse; here fail-closed
+means **freeze and reconcile**, never auto-refund.
 
 **Recovery table (sketch):**
 
 | Crash point | `execution_id` | budget | Receipt | Recovery |
 |---|---|---|---|---|
-| before commit tx | inflight | PENDING_HOLD | none | release hold, no consume |
-| tx durably applied | allowed | COMMITTED/PARTIAL | persisted | replay-safe; nothing to do |
+| before dispatch — no irreversible action possible, before commit tx | inflight | PENDING_HOLD | none | **provably** no consumption → RELEASE hold |
+| dispatched; unknown whether the consuming action fired; commit tx not durably recorded | inflight/unknown | PENDING_HOLD → **RECOVERY_REQUIRED** | none | **FREEZE**: preserve hold, block token, reconcile against history |
+| commit tx durably applied | allowed | COMMITTED/PARTIAL | persisted | replay-safe; nothing to do |
 | after tx, before response | allowed | COMMITTED | persisted | idempotent re-send of receipt |
 
 ---
@@ -287,7 +316,7 @@ compared, plus a reason code to separate collision from replay. **This must land
 
 | # | Decision | Recommendation (to ratify) | Blocks |
 |---|---|---|---|
-| D1 | Prepaid vs **metered** commit | Metered (reserve `actual_cents` field even if prepaid interim) | state machine, receipt schema, recovery |
+| D1 | Prepaid vs metered commit | Reserve-cap → commit-actual → release-remainder **iff** actual is authoritative (**D1a**); else prepaid. Reserve `actual_cents` field now. | state machine, receipt schema, recovery |
 | D2 | Strict reservation vs overbooking | Strict at spend boundary; state as axiom | delegation/flow model |
 | D3 | Revocation for available/held/committed | 0 / released / unchanged | timeline regime, recovery |
 | D4 | Atomic shared `hold()` substrate | Reuse parent-owned/execution-ledger; atomic conditional hold | durability engine, transaction boundary |
