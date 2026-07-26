@@ -31,12 +31,27 @@ export function resetArmStores(): void {
   budgetTokenStore.reset();
 }
 
+// Clears ONLY the budget store (committed spend AND any pending holds). This is
+// the reset used between independent deterministic runs / replays, where the
+// execution_id ledger must persist but budget accounting must start clean.
 export function resetTransientArmStores(): void {
   budgetTokenStore.reset();
 }
 
 export function defineBudgetToken(token: string, maxBudgetCents: number): void {
   budgetTokenStore.define(token, maxBudgetCents);
+}
+
+// Finalizers for the budget hold placed by runStrictArm below. These are called
+// by the pipeline AFTER the true, post-Ramona decision is known — never inside
+// ARM, because ARM only produces an intermediate verdict that Ramona can still
+// overturn. See docs/budget-token-hold-lifecycle.md for the full rationale.
+export function commitBudgetHold(token: string, executionId: string): void {
+  budgetTokenStore.commit(token, executionId);
+}
+
+export function releaseBudgetHold(token: string, executionId: string): void {
+  budgetTokenStore.release(token, executionId);
 }
 
 export function runStrictArm(input: CanonicalExecutionInput, orbit: OrbitTrace, requestHash: string, options: { enforceExecutionId?: boolean } = {}): ArmTrace {
@@ -177,8 +192,19 @@ export function runStrictArm(input: CanonicalExecutionInput, orbit: OrbitTrace, 
 
   const budgetToken = input.execution_request.budget_token;
   if (budgetToken !== undefined) {
-    const budgetStatus = budgetTokenStore.reserve(budgetToken, projected);
-    if (budgetStatus === "exhausted") {
+    // PLACE A HOLD, do not charge. ARM's ALLOW is only provisional — Ramona
+    // still runs after this and can turn the final decision into a REFUSE
+    // (kill switch, runtime drift). The hold is committed or released later by
+    // the pipeline once that final decision exists (audit/node_runtime.ts).
+    // Previously this called reserve(), which mutated consumed_cents here and
+    // now — permanently charging budget for executions that Ramona then denied,
+    // with no code path able to give it back. That was the no-refund defect.
+    const budgetStatus = budgetTokenStore.hold(budgetToken, executionId, projected);
+    if (budgetStatus !== "held") {
+      // Both "exhausted" (over cap) and "unknown_token" (never provisioned)
+      // are unfundable and map to the same caller-visible REFUSE, preserving
+      // the pre-existing contract on ERR_BUDGET_TOKEN_EXHAUSTED. No hold was
+      // recorded in either case, so there is nothing to release downstream.
       return {
         layer: "arm",
         decision: "REFUSE",

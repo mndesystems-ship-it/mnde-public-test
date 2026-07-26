@@ -13,7 +13,7 @@ import {
 } from "../shared/index.ts";
 import { runStrictPreflight } from "../preflight/engine.ts";
 import { runStrictOrbit } from "../orbit/engine.ts";
-import { commitArmAllow, defineBudgetToken, resetArmStores, resetTransientArmStores, runStrictArm } from "../arm/engine.ts";
+import { commitArmAllow, commitBudgetHold, defineBudgetToken, releaseBudgetHold, resetArmStores, resetTransientArmStores, runStrictArm } from "../arm/engine.ts";
 import {
   buildReceipt,
   runStrictRamona,
@@ -101,8 +101,27 @@ export function executeDeterministicPipeline(rawInput: string, options: Pipeline
     timings
   }));
 
-  if (receipt.decision_output.decision === "ALLOW" && options.enforceExecutionId !== false) {
-    commitArmAllow(arm.execution_id, preflight.request_hash, receipt.decision_output.decision_hash);
+  // Finalize authority state against the TRUE, post-Ramona decision. In replay
+  // mode (enforceExecutionId === false) we mutate no live authority state at
+  // all — neither the execution_id ledger nor the budget ledger — so a stored
+  // receipt can be re-run without consuming anything.
+  if (options.enforceExecutionId !== false) {
+    const finalAllow = receipt.decision_output.decision === "ALLOW";
+    if (finalAllow) {
+      commitArmAllow(arm.execution_id, preflight.request_hash, receipt.decision_output.decision_hash);
+    }
+    // A budget hold exists iff ARM itself returned ALLOW carrying a budget_token
+    // (hold() is ARM's final gate and only records capacity on success). Commit
+    // it on a final ALLOW; release it on ANY final REFUSE — including a Ramona
+    // refusal that overturned ARM's provisional ALLOW. That release is the fix
+    // for the no-refund defect: budget is no longer charged for denied work.
+    if (arm.decision === "ALLOW" && arm.budget_token !== undefined) {
+      if (finalAllow) {
+        commitBudgetHold(arm.budget_token, arm.execution_id);
+      } else {
+        releaseBudgetHold(arm.budget_token, arm.execution_id);
+      }
+    }
   }
 
   return {
