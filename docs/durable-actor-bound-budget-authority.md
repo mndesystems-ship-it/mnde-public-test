@@ -10,9 +10,10 @@
 This document specifies the design for making budget-token authority **durable**
 (survives restart), **shared-atomic** (correct across all executors), and
 **actor-bound** (a token spends only for the actor it was issued to). It does
-**not** change runtime behavior. It resolves four decisions first, because those
-decisions determine the state machine, the receipt schema, and the recovery
-semantics — everything downstream depends on them.
+**not** change runtime behavior. Owner rulings D0 through D4 were ratified on
+2026-07-26. They establish the authenticated cost basis, prepaid settlement,
+strict reservation, freeze-on-uncertainty revocation, and the parent-owned
+atomic ledger that determine the downstream implementation.
 
 Nothing here modifies PR #4. The correctness fix (defer the charge to a
 post-Ramona commit; release on any terminal refuse) is the *foundation* this
@@ -31,7 +32,7 @@ only answerable against authenticated history `H`. The governing invariant, at
 every instant, for every token:
 
 ```
-C_issued = C_available + C_held + C_committed
+C_issued = C_available + C_held + C_committed + C_frozen + C_revoked
 ```
 
 and the conservation law that the no-refund defect violated:
@@ -40,72 +41,95 @@ and the conservation law that the no-refund defect violated:
 ΔC_committed = 0  unless an execution validly commits.
 ```
 
-A failure must never reduce total authority. This spec is the durable, shared,
-actor-scoped realization of that invariant.
+`C_revoked` is issued but permanently unavailable capacity; it is not erased.
+A failure must never reduce or duplicate total authority. This spec is the
+durable, shared, actor-scoped realization of that invariant.
 
 ---
 
-## 1. DECISION 1 — Prepaid vs. Metered commit  *(decide first)*
 
-**Why first:** this choice defines what `commit` *means*, therefore the state
-machine's terminal transitions, the receipt's cost fields, and what recovery
-must reconcile after a crash. Nothing else can be finalized until this is set.
+## 1. DECISION 0 — Authenticated cost basis
 
-**The fork.** At `hold` time we only know the **projected** cost. By commit time,
-Ramona has already observed the **actual** cost (`runtime_observation.actual_gpu_count`,
-`actual_hours`, `actual_total_cost_cents`) — today it uses these only as a drift
-*gate*, then discards them.
+**Decision: RATIFIED (2026-07-26).**
 
-| | **Prepaid (book the estimate)** | **Metered (reconcile to actual)** |
+Treat every sidecar request as untrusted unless each security-relevant claim is
+cryptographically authenticated. A deployment assumption that "the control
+plane is trusted" is not an authority proof.
+
+Requirements:
+
+1. **Actor identity** comes from authenticated execution context. A caller field
+   such as `execution_request.actor.user_id` is an asserted identifier, not proof
+   of identity by itself.
+2. **Price** comes from a signed policy schedule or a separately trusted pricing
+   authority. Caller-provided `pricing_data` cannot establish or reduce a hold
+   or charge.
+3. **Usage** cannot reduce settlement unless it is authenticated by an approved
+   executor or metering authority and bound to the execution, policy, actor,
+   price schedule, and ledger event.
+4. Caller-provided `runtime_observation` remains admissible as diagnostic input,
+   but it is not authoritative cost evidence.
+5. Failure to validate required cost-basis evidence fails closed before an
+   authoritative hold.
+
+Current code type-checks caller-provided pricing and actuals but does not
+cryptographically authenticate them. Therefore neither prepaid nor metered
+budget enforcement is sound against an untrusted submitter until D0 is
+implemented. D0 is a release prerequisite for durable budget enforcement.
+
+**Rationale:** an unauthenticated price or usage claim lets the spender choose
+its own charge, defeating conservation regardless of ledger correctness.
+
+---
+
+## 2. DECISION 1 — Prepaid now; Metered later
+
+**Decision: RATIFIED (2026-07-26).**
+
+This choice defines what `commit` means, the state machine's terminal
+transitions, the receipt cost fields, and what recovery must reconcile.
+
+| | **Prepaid — ratified now** | **Metered — deferred** |
 |---|---|---|
-| Committed amount | `projected` (the full hold) | `actual` (from runtime observation) |
-| On `actual < projected` | over-charges vs. usage | refunds the delta (`release(projected − actual)`) |
-| State machine | `held → committed \| released` (binary) | adds `held → partially_committed` (commit `actual`, release remainder) |
-| Receipt fields | `held_cents`, `committed_cents = held` | `held_cents`, `actual_cents`, `committed_cents = actual`, `released_delta_cents` |
-| Recovery after crash | resolve hold to committed-or-released | resolve hold to committed-**at-actual**-or-released; needs the observed actual persisted |
-| Trust surface | simplest; no dependence on runtime meter | commit trusts Ramona's observed actuals → those actuals must be authenticated (signed into `h_after`) |
+| Committed amount | authenticated worst-case cost: the full hold | authenticated actual usage |
+| Unused amount | no settlement reduction | authenticated remainder is released |
+| Required trust | authenticated actor and price | authenticated actor, price, and usage meter |
+| Receipt fields | `held_cents`, `committed_cents = held` | also `actual_cents`, `released_delta_cents`, meter evidence |
+| Recovery | committed-or-released/frozen | also recovers authenticated usage evidence |
 
-**Consequence chain (why this is decision #1):**
-- *State machine* — metered introduces a third terminal state (partial commit).
-- *Receipt* — metered requires `actual_cents` and `released_delta_cents` as
-  **signed** fields, because the committed amount is now a claim about observed
-  reality, not just the request.
-- *Recovery* — metered means a crash between observation and commit must recover
-  the **actual**, so the observed actual must be durably written *before* commit.
+Current enforcement uses **prepaid settlement**:
 
-**Recommendation (for ratification, not yet built):** the **safe target** is a
-*reserve-cap → commit-actual → release-remainder* model — but it must **not** be
-ratified merely because Ramona surfaces `actual`. Metered commit *trusts* that
-number, so a precondition gates the whole decision:
+1. Resolve an authenticated worst-case authorized cost under D0.
+2. Atomically hold that full amount.
+3. On terminal ALLOW, commit the full hold.
+4. On terminal REFUSE, release only when non-consumption is proven.
+5. Never use caller-supplied `actual_cents` to reduce settlement.
 
-> **D1a (gating sub-question):** Is `actual_cents` **authoritative,
-> tamper-resistant, and available before the irreversible execution point**? If
-> it is operator-asserted, or observable only *after* irreversible spend, it is
-> not yet a safe basis for commit.
+The receipt schema may reserve nullable `actual_cents` and
+`released_delta_cents` fields for compatibility, but those fields are
+explicitly non-authoritative and unenforced in prepaid mode.
 
-Target model, **only once D1a is satisfied**:
+A future metered mode requires a separately reviewed trust path:
 
-1. **Reserve a worst-case cap** atomically at hold — the hold is a *ceiling*, not
-   an estimate.
-2. **Commit the verified actual** cost.
-3. **Release the unused remainder** (`hold − actual`).
-4. **Never permit actual to exceed the hold** without an **atomic top-up hold
-   taken before execution proceeds**. Reconciliation only ever adjusts
-   *downward*; any upward move is a new atomic reservation, never a post-hoc
-   overshoot. (A consuming action must never be allowed to run past its reserved
-   ceiling.)
-5. **Retain prepaid** (commit the full cap) wherever trustworthy actual
-   measurement is unavailable — prepaid is the correct model, not a fallback to
-   apologize for, when the meter cannot be trusted.
+1. Reserve an authenticated worst-case cap before execution.
+2. Commit authenticated actual usage.
+3. Release the authenticated unused remainder.
+4. Never permit actual usage to exceed the hold without an atomic top-up before
+   execution proceeds.
+5. Bind meter evidence to the actor, execution ID, policy, price schedule,
+   ledger order, and receipt.
 
-Reserve the `actual_cents` / `released_delta_cents` receipt fields now so that a
-later prepaid → metered transition is non-breaking.
+Ramona merely exposing `actual` does not satisfy this requirement. Metered mode
+remains disabled until trusted usage evidence exists.
 
-**Status: OPEN** — and **D1a** must be answered before D1 can be ruled.
+**Rationale:** conservative prepaid charging can be enforced with authenticated
+pricing; metered settlement cannot be trusted without authenticated usage.
 
 ---
 
-## 2. DECISION 2 — Strict reservation vs. Overbooking
+## 3. DECISION 2 — Strict reservation vs. Overbooking
+
+**Decision: RATIFIED (2026-07-26).**
 
 Delegation makes budget a **flow** on the authority graph. The conservation
 constraint across a node `u` and its children:
@@ -124,18 +148,21 @@ The ambiguity is *what `C_{u→v}` counts*:
 | Analogy | escrow | airline overbooking / cloud quota |
 | Verification | `Σ child-limits ≤ issued` — checkable at issuance, statelessly | requires live `Σ child-committed ≤ issued` — ledger-relative, at spend time |
 
-**Recommendation:** **Strict reservation at the leaf / spend boundary** (a token
+**Decision:** **Strict reservation at the leaf / spend boundary** (a token
 that authorizes real spend must be fully backed), with overbooking permitted, if
 ever, only at *internal allocation* tiers under an explicit, separately-audited
 policy. For a security-authority system the default must be that a valid grant is
 always honorable — no bank runs on authority. This is the invariant the flow
-formula should state as an **axiom**, not leave implicit.
+formula states as an **axiom**, not an implementation preference.
 
-**Status: OPEN — must be stated as an explicit axiom of the delegation model.**
+**Rationale:** overbooking converts a hard security limit into probabilistic
+accounting.
 
 ---
 
-## 3. DECISION 3 — Revocation behavior for available / held / committed
+## 4. DECISION 3 — Revocation behavior for available / held / committed
+
+**Decision: RATIFIED (2026-07-26).**
 
 Revocation (`Θ`, timeline regime) interacts with conservation (`C`). Clawing
 back **committed** capacity would be a refund-in-reverse — itself a conservation
@@ -144,25 +171,30 @@ violation and, worse, a rewrite of settled history. The rule:
 | Bucket at revocation time `t_r` | Behavior | Rationale |
 |---|---|---|
 | `C_available` | → **0** | no new holds may be taken after revocation |
-| `C_held` (in-flight) | → **released**, executions denied | in-flight work is not yet settled; deny fail-closed |
+| `C_held` (in-flight) | → **released only if non-consumption is proven; otherwise RECOVERY_REQUIRED / FROZEN** | uncertainty cannot return capacity to circulation |
 | `C_committed` | **unchanged** | already settled; the past is immutable |
 
 **Revocation caps the future; it cannot rewrite the past.** Formally the ordering
 predicate is `grant_issued ≺ execution_committed ≺ grant_revoked`; a commit whose
 authenticated order precedes `t_r` stands, one after `t_r` does not. This is
-**event-order**, not wall-clock — see §5.
+**event-order**, not wall-clock — see §6.
 
-*Consistency with §6:* `held → released` applies only when non-consumption is
+*Consistency with §7:* `held → released` applies only when non-consumption is
 **provable**. If a revoked grant has an **in-flight** hold whose execution may
 already have performed a consuming action, that reservation goes to
 `RECOVERY_REQUIRED` (freeze + reconcile), never blind release.
 
-**Status: OPEN — but the recommended rule above is the conservation-preserving
-one; ratify it.**
+A hold associated with a released ALLOW remains frozen until authoritative
+settlement. Revocation never rewrites historical receipts.
+
+**Rationale:** revocation stops future authority but cannot erase past or
+potentially in-progress consumption.
 
 ---
 
-## 4. DECISION 4 — Atomic shared `hold()` across all executors
+## 5. DECISION 4 — Parent-owned atomic shared `hold()`
+
+**Decision: RATIFIED (2026-07-26).**
 
 The conservation invariant is only real if capacity can be reserved
 **atomically over state shared by every executor**. Per-worker in-memory holds
@@ -182,20 +214,23 @@ Options for the shared, durable substrate:
 |---|---|---|---|
 | **Parent-owned store** (single owning process holds the ledger; workers RPC to it) | serialized in the owner | owner persists | matches the "parent-owned claim" pattern already used for `execution_id`; no new storage engine |
 | **SQLite + WAL**, one row per token, `UPDATE … WHERE available ≥ cost` | DB transaction / conditional update | WAL on disk | conditional-update is the atomic hold; survives restart natively |
-| **Append-only ledger with a compare-and-append** | CAS on ledger head | the ledger *is* the store | unifies with §5 conserved receipts; heaviest |
+| **Append-only ledger with a compare-and-append** | CAS on ledger head | the ledger *is* the store | unifies with §6 conserved receipts; heaviest |
 
-**Recommendation:** reuse the **execution-ledger / parent-owned** machinery that
-already backs `execution_id` durability, so budget holds and execution-id claims
-finalize in the **same transaction** (see §6) rather than introducing a second,
-independent persistence engine. The atomic conditional hold
-(`available ≥ cost` → decrement) is the primitive to implement.
+Use the **parent-owned shared SQLite authority**. Execution-ID claims, budget
+holds, authoritative receipt bytes, and terminal execution and budget
+transitions use the same database and coordinated transactions. The atomic
+conditional hold (`available ≥ authenticated_cost` → move available to held) is
+the overspend-prevention primitive.
 
-**Status: OPEN — pick the substrate; the atomic-`hold` requirement is fixed
-regardless of substrate.**
+Workers remain stateless evaluators. They do not own, reset, reconstruct, or
+mutate durable authority state. A separate worker-local fallback is prohibited.
+
+**Rationale:** the hold is the overspend-prevention boundary; execution state
+and budget state must not diverge after crashes.
 
 ---
 
-## 5. Conserved receipts as chained state-transition proofs
+## 6. Conserved receipts as chained state-transition proofs
 
 Qualitative receipts describe an *event* and verify statelessly. **Conserved
 receipts must prove a valid state transition** and are therefore **chained**.
@@ -213,7 +248,7 @@ R_n = Sign_k( Canon[ e, g, p, h_before, h_after, o, π ] )
 - `p` — authority-path commitment (root ⇝ execution), for §0's `Chain(D,H)`
 - `h_before` / `h_after` — authenticated commitments to the token's conserved
   state *before* and *after* this transition (available / held / committed vector)
-- `o` — outcome (ALLOW/REFUSE and, if **metered**, the reconciled `actual`)
+- `o` — outcome (ALLOW/REFUSE and, in future **metered** mode, authenticated `actual`)
 - `π` — inclusion proof tying `h_before`/`h_after` into the **append-only ledger**
   (Merkle root / accumulator), so a third party can verify the transition without
   the operator's word
@@ -235,17 +270,19 @@ framing line at the top.
 
 ---
 
-## 6. Storage & transaction model (informed by §1, §4)
+## 7. Storage & transaction model (informed by D0, D1, and D4)
 
 A `budget_reservations` record keyed by `(budget_token, execution_id)`:
 
 ```
-state ∈ { PENDING_HOLD, COMMITTED, RELEASED, RECOVERY_REQUIRED }   // + PARTIALLY_COMMITTED if §1 = metered
-held_cents          // reserved at hold
-actual_cents        // observed at Ramona (metered only)
-committed_cents     // = held (prepaid) | actual (metered)
-owner_actor_id      // §7
-h_before, h_after   // §5 ledger commitments
+state ∈ { PENDING_HOLD, COMMITTED, RELEASED, RECOVERY_REQUIRED }
+held_cents           // reserved at hold
+actual_cents         // nullable schema reservation; non-authoritative in prepaid mode
+released_delta_cents // nullable schema reservation; non-authoritative in prepaid mode
+committed_cents      // = held in ratified prepaid mode
+owner_actor_id       // authenticated context under D0
+cost_basis_ref       // signed policy schedule or trusted pricing authority
+h_before, h_after    // ledger commitments
 ```
 
 **Transaction boundary.** The final decision must atomically write, in **one
@@ -278,7 +315,7 @@ means **freeze and reconcile**, never auto-refund.
 
 ---
 
-## 7. Actor binding & provisioning (ratified: actor-bound)
+## 8. Actor binding & provisioning (ratified: actor-bound)
 
 Tokens are **actor-bound**. The non-negotiable sequencing invariant:
 
@@ -291,16 +328,21 @@ Design:
   is the piece that does **not exist today** (`defineBudgetToken` has no
   production caller).
 - **Enforcement** — `hold(token, execution_id, cost, actor_id)` checks
-  `actor_id == owner_actor_id`; mismatch → fail-closed refuse. The actor is
-  already available on the canonical input (`execution_request.actor.user_id`).
-- **Bearer fallback** — a token minted with no owner is bearer; this must be an
-  explicit, logged provisioning choice, never a silent default.
+  `actor_id == owner_actor_id`; mismatch → fail-closed refuse. The supplied
+  `execution_request.actor.user_id` is not sufficient by itself: `actor_id`
+  must come from authenticated execution context under D0 and be bound to the
+  canonical request.
+- **No bearer fallback** — the durable authority rejects a token without an
+  authenticated owner. Any legacy bearer token remains outside this authority
+  model and cannot exercise durable budget enforcement.
 
-**Status: OPEN — provisioning mechanism to design; enforcement point is known.**
+The actor-bound product decision is ratified. The concrete provisioning
+mechanism remains an implementation-design item and must ship atomically with
+owner enforcement.
 
 ---
 
-## 8. Replay-hash prerequisite (carried, not resolved here)
+## 9. Replay-hash prerequisite (carried, not resolved here)
 
 Under today's hard-fail retry semantics, `begin()` not comparing `request_hash`
 is **not** an enforcement bypass. But the approved future *same-hash
@@ -312,23 +354,36 @@ compared, plus a reason code to separate collision from replay. **This must land
 
 ---
 
-## 9. Open decisions summary
 
-| # | Decision | Recommendation (to ratify) | Blocks |
+## 10. Decision status
+
+| # | Decision | Status | Ruling |
 |---|---|---|---|
-| D1 | Prepaid vs metered commit | Reserve-cap → commit-actual → release-remainder **iff** actual is authoritative (**D1a**); else prepaid. Reserve `actual_cents` field now. | state machine, receipt schema, recovery |
-| D2 | Strict reservation vs overbooking | Strict at spend boundary; state as axiom | delegation/flow model |
-| D3 | Revocation for available/held/committed | 0 / released / unchanged | timeline regime, recovery |
-| D4 | Atomic shared `hold()` substrate | Reuse parent-owned/execution-ledger; atomic conditional hold | durability engine, transaction boundary |
-| P | Owned-token provisioning | Ship provisioning + enforcement together | actor binding |
-| R | Replay-hash comparison | Land with retry-semantics change | future cached-response |
+| D0 | Authenticated cost basis | **RATIFIED** | authenticate actor and price; require authenticated usage before metered settlement |
+| D1 | Prepaid vs metered commit | **RATIFIED** | prepaid now; metered disabled until trusted usage evidence exists |
+| D2 | Strict reservation vs overbooking | **RATIFIED** | strict reservation at the spend boundary |
+| D3 | Revocation for available/held/committed | **RATIFIED** | stop future holds; preserve committed history; freeze uncertain holds |
+| D4 | Atomic shared `hold()` substrate | **RATIFIED** | parent-owned shared SQLite authority and coordinated transactions |
+| P | Owned-token provisioning mechanism | Implementation design | provisioning and enforcement must ship together |
+| R | Replay-hash comparison | Deferred prerequisite | land atomically with cached-response retry semantics |
+
+### Decision log
+
+| Date | Decision | Ruling | Rationale |
+|---|---|---|---|
+| 2026-07-26 | D0 — Authenticated cost basis | Ratified | An unauthenticated price or usage claim lets the spender choose its own charge. |
+| 2026-07-26 | D1 — Settlement model | Ratified: prepaid now; metered later | Prepaid can be enforced with authenticated pricing; metered settlement also requires authenticated usage. |
+| 2026-07-26 | D2 — Reservation model | Ratified: strict | A conserved security limit cannot rely on probabilistic overbooking. |
+| 2026-07-26 | D3 — Revocation and uncertainty | Ratified: freeze uncertain holds | Capacity that may have been consumed cannot safely return to circulation. |
+| 2026-07-26 | D4 — Durable ownership | Ratified: parent-owned shared SQLite | Atomic holds and coordinated terminal transitions prevent cross-worker overspend and split state. |
 
 ---
 
-## 10. Non-goals
+## 11. Non-goals
 
 - **No runtime code changes on this branch.** This is a spec.
 - Does not re-open PR #4's correctness fix; it is the foundation.
-- Does not select a concrete DB schema/DDL — that follows D4 ratification.
+- Does not define final SQLite DDL, migration code, or operational tuning;
+  those follow architectural review of the ratified D4 substrate.
 - Does not design cross-*organization* delegation or risk-budget semantics beyond
   naming `risk` as a conserved dimension.
