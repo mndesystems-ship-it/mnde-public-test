@@ -6,6 +6,7 @@
   "test:authority-grants",
   "test:authority-init",
   "test:authority-key-validation-migration",
+  "test:budget-token-lifecycle",
   "test:ci-contract",
   "test:conformance",
   "test:conformance-installed-artifact",

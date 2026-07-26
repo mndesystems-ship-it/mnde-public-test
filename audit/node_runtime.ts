@@ -13,7 +13,7 @@ import {
 } from "../shared/index.ts";
 import { runStrictPreflight } from "../preflight/engine.ts";
 import { runStrictOrbit } from "../orbit/engine.ts";
-import { commitArmAllow, defineBudgetToken, resetArmStores, resetTransientArmStores, runStrictArm } from "../arm/engine.ts";
+import { commitArmAllow, commitBudgetHold, defineBudgetToken, releaseBudgetHold, resetArmStores, resetTransientArmStores, runStrictArm } from "../arm/engine.ts";
 import {
   buildReceipt,
   runStrictRamona,
@@ -88,21 +88,54 @@ export function executeDeterministicPipeline(rawInput: string, options: Pipeline
       receipt_bytes: measure(timings, "canonicalize_ms", () => canonicalizeJson(receipt as unknown as JsonValue))
     };
   }
-  const ramona = measure(timings, "ramona_ms", () => runStrictRamona(preflight.parsed_input, arm));
-  const receipt = measure(timings, "receipt_build_ms", () => buildReceipt({
-    canonical_request: preflight.canonical_input,
-    request_hash: preflight.request_hash,
-    policy_hash: preflight.policy_hash,
-    preflight: preflightTrace,
-    orbit,
-    arm,
-    ramona,
-    policy_version: preflight.parsed_input.policy_document.policy_version,
-    timings
-  }));
+  let receipt: SignedReceipt;
+  try {
+    const ramona = measure(timings, "ramona_ms", () => runStrictRamona(preflight.parsed_input, arm));
+    receipt = measure(timings, "receipt_build_ms", () => buildReceipt({
+      canonical_request: preflight.canonical_input,
+      request_hash: preflight.request_hash,
+      policy_hash: preflight.policy_hash,
+      preflight: preflightTrace,
+      orbit,
+      arm,
+      ramona,
+      policy_version: preflight.parsed_input.policy_document.policy_version,
+      timings
+    }));
+  } catch (error) {
+    // A hold was placed iff ARM returned ALLOW carrying a budget_token. If Ramona
+    // or receipt-build throws after that, release the hold before rethrowing so an
+    // errored, never-finalized decision does not leak reserved capacity. Live mode
+    // only; releaseBudgetHold is idempotent. (Previously a leaked hold was cleared
+    // by the worker's per-task reset, which has been removed to let budget persist
+    // across requests — see docs/budget-token-hold-lifecycle.md §4.)
+    if (options.enforceExecutionId !== false && arm.decision === "ALLOW" && arm.budget_token !== undefined) {
+      releaseBudgetHold(arm.budget_token, arm.execution_id);
+    }
+    throw error;
+  }
 
-  if (receipt.decision_output.decision === "ALLOW" && options.enforceExecutionId !== false) {
-    commitArmAllow(arm.execution_id, preflight.request_hash, receipt.decision_output.decision_hash);
+  // Finalize authority state against the TRUE, post-Ramona decision. In replay
+  // mode (enforceExecutionId === false) we mutate no live authority state at
+  // all — neither the execution_id ledger nor the budget ledger — so a stored
+  // receipt can be re-run without consuming anything.
+  if (options.enforceExecutionId !== false) {
+    const finalAllow = receipt.decision_output.decision === "ALLOW";
+    if (finalAllow) {
+      commitArmAllow(arm.execution_id, preflight.request_hash, receipt.decision_output.decision_hash);
+    }
+    // A budget hold exists iff ARM itself returned ALLOW carrying a budget_token
+    // (hold() is ARM's final gate and only records capacity on success). Commit
+    // it on a final ALLOW; release it on ANY final REFUSE — including a Ramona
+    // refusal that overturned ARM's provisional ALLOW. That release is the fix
+    // for the no-refund defect: budget is no longer charged for denied work.
+    if (arm.decision === "ALLOW" && arm.budget_token !== undefined) {
+      if (finalAllow) {
+        commitBudgetHold(arm.budget_token, arm.execution_id);
+      } else {
+        releaseBudgetHold(arm.budget_token, arm.execution_id);
+      }
+    }
   }
 
   return {
@@ -164,6 +197,10 @@ export function hashFileArtifact(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
+// Replay/test isolation ONLY — clears budget accounting between independent
+// deterministic runs. It MUST NOT run on the live per-request path (that would
+// wipe committed budget and defeat the cap); see resetTransientArmStores and
+// sidecar/deterministic_worker.mjs.
 export function resetRuntimeState(): void {
   resetTransientArmStores();
 }
