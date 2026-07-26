@@ -1,1129 +1,1218 @@
 # Durable, Actor-Bound Budget Authority — Normative Design Specification
 
-**Status:** DESIGN — normative, implementation-ready · **no runtime code changes in this branch**
-**Branch:** `design/durable-actor-bound-budget` (documentation only)
-**Depends on:** PR #4 (`fix/budget-token-hold-finalization`) — see §21. PR #5 stays dormant until PR #4 is resolved.
-**Frames:** the MNDe *authority-flow calculus*
+**Status:** DESIGN — normative · **documentation only; no runtime code in this branch**
+**Branch:** `design/durable-actor-bound-budget`
+**Depends on:** PR #4 (`fix/budget-token-hold-finalization`) — see §25. PR #5 stays dormant until PR #4 is resolved.
+**Documentation gate:** **FAIL — remediation in progress** (see §27).
 
-> **Trust a fixed cryptographic root and a witnessed append-only history — verify everything else relative to that trust context.**
+> **Trust a fixed cryptographic root and, at startup, the latest authenticated external checkpoint. Verify everything else relative to that trust context.** (v1 history is operator-signed, not independently witnessed — §21.)
 
 ### Normative language
 
-The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**,
-**SHOULD**, **SHOULD NOT**, **MAY**, and **OPTIONAL** are used per RFC 2119/8174.
-A statement without a normative keyword is descriptive, not a requirement.
+**MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**, **SHOULD**,
+**SHOULD NOT**, **MAY**, **OPTIONAL** are used per RFC 2119/8174. Statements
+without a normative keyword are descriptive.
 
 ### What this document is
 
-A source-of-truth design for making budget-token authority **durable** (survives
-restart), **process-shared and atomic within one authoritative database**, and
-**actor-bound** (a token spends only for the authenticated actor it was issued
-to). It does **not** change runtime behavior; it does not authorize
-implementation (§22). Owner rulings **D0–D19** are ratified (§10). This revision
-also removes claim overreach (§17), fixes the numeric model to cents-only (§13),
-and removes prepaid PARTIAL settlement (§2, §11).
+A source-of-truth design for budget-token authority that is **durable** (survives
+restart), **atomic across threads/processes sharing one authoritative SQLite
+database on one host** (§1), and **actor-bound** (spends only for the
+authenticated principal it was issued to). It does not change runtime behavior
+and does not authorize implementation (§26). Ratified rulings are **D0–D38**
+(§28). This revision remediates the post-remediation hostile-review findings
+F1–F18: quantity-ceiling refusal, no linked replacement token, expiry
+linearization, status-scoped recovery destinations, durable release-consumption
+before execution, the composite terminal-ALLOW transition, deferral of
+delegation, an administrative-correction state machine, principal-level SoD,
+scoped rollback and checkpoint claims, outbox identity/ordering, receipt/proof
+separation, credential liveness, migration genesis, weakened replica-detection
+claims, a canonical event envelope, and metadata/reference correctness.
 
-Nothing here modifies PR #4. The correctness fix (defer the charge to a
-post-Ramona commit; release on any terminal refuse) is the *foundation* this
-builds on, not something to revisit.
+Nothing here modifies PR #4.
 
 ---
 
 ## PART I — FOUNDATIONS
 
-## 0. Why budget is special (the calculus)
+## 0. Calculus & conservation
 
 An authority grant is `A = (Q, C, Θ, D)`: qualitative permissions `Q`, conserved
 capacities `C`, temporal/state conditions `Θ`, delegation provenance `D`.
-Qualitative authority is a **set** governed by containment (`Q_{i+1} ⪯ Q_i`) and
-verifies **statelessly**. Budget is **conserved** authority — it depletes, so its
-validity is **ledger-relative**: "is this within budget?" is only answerable
-against authenticated history `H`.
+Qualitative authority is a set governed by containment and verifies statelessly.
+Budget is **conserved** authority; its validity is ledger-relative.
 
-The calculus is stated generally for a conserved vector `C ∈ ℤ^k_{≥0}`. **MNDe v1
-scopes `C` to a single monetary dimension in checked integer minor units** (§13);
-`k = 1`. All balances are non-negative integers. The governing invariant, at
-every instant, for every token:
+**v1 scopes `C` to a single monetary dimension in checked integer minor units**
+(§8); `k = 1`. **Budget delegation / child tokens are deferred (§22);** the v1
+conservation model is single-tier. Per token, at every instant:
 
 ```
-C_issued = C_available + C_held + C_committed + C_frozen + C_revoked
+C_issued = C_available + C_held + C_committed + C_revoked + C_expired
 ```
 
-- `C_available` — spendable now.
+- `C_available` — spendable now (token ACTIVE only).
 - `C_held` — reserved by a live `PENDING_HOLD` reservation.
-- `C_committed` — settled spend; monotonically non-decreasing.
-- `C_frozen` — capacity attached to a `RECOVERY_REQUIRED` reservation; not
-  spendable and not released until reconciliation.
-- `C_revoked` — issued capacity permanently removed from circulation; not erased.
+- `C_committed` — settled spend; monotonically non-decreasing; immutable history.
+- `C_revoked` — capacity removed from circulation by revocation; not spendable, not erased.
+- `C_expired` — capacity removed from circulation by expiry; not spendable, not erased.
+
+There is **no `C_frozen` bucket and no budget `RECOVERY_REQUIRED` state in prepaid
+v1** (§12.4 explains why: the charge commits atomically before execution, so a
+budget hold is never outstanding across an execution).
 
 Conservation laws (normative):
 
-- The five-bucket sum **MUST** equal `C_issued` after every committed
-  authority-changing transaction.
-- `ΔC_committed = 0` **unless** an execution validly commits (the no-refund
-  invariant PR #4 restored).
+- `C_issued` is fixed at issuance; the five-bucket sum **MUST** equal `C_issued`
+  after every committed authority-changing transaction (per-transition proof in §12.5).
+- `C_committed` **MUST** be monotonically non-decreasing; `ΔC_committed < 0` is
+  **prohibited** for every transition, including administrative correction (§16).
 - A failure **MUST NOT** reduce or duplicate `C_issued`.
+- Capacity **MUST NOT** move into `C_available` except from `C_held` **while the
+  token is ACTIVE**, or by an authenticated funding/issuance event (§16).
 
 ---
 
 ## PART II — DEPLOYMENT & TRUST SCOPE
 
-## 1. Deployment scope (v1) — D14
+## 1. Deployment scope (v1) — D14, D37
 
 **Decision: RATIFIED (2026-07-26).**
-
-v1 authority is scoped to a single authoritative store on one host:
 
 - The system **MUST** run against exactly **one authoritative SQLite database** on
   **one host**, on a **supported local filesystem** (ext4, xfs, APFS, NTFS).
-- Multiple **threads or OS processes on that host MAY** share that exact database
-  file as concurrent clients of the same authority.
-- The system **MUST NOT** operate in active-active multi-host mode in v1.
-- The authoritative database **MUST NOT** be placed on **NFS**, **SMB/CIFS**, or
-  any network filesystem, nor on a replicated writable copy.
-- On detecting a network/unsupported filesystem, or more than one writable
-  replica, the authority **MUST** fail closed at startup (§19).
+- Multiple **threads or OS processes on that host MAY** be concurrent clients of
+  that exact database.
+- The system **MUST NOT** operate active-active multi-host in v1; the DB **MUST
+  NOT** be placed on **NFS**, **SMB/CIFS**, any network filesystem, or a
+  replicated writable copy.
+- **Replica/copy detection is a deployment control, not a runtime guarantee (F17):**
+  a local SQLite process **cannot** generally detect a *disconnected* writable
+  copy of its database. Therefore:
+  - Disconnected/alternate writable copies are **prohibited deployment behavior**;
+    operators **MUST** enforce single-writer topology through deployment controls.
+  - Startup **MUST** fail closed on **locally observable** violations only
+    (network/unsupported filesystem; a detectable second attached writer via OS
+    file locking; missing single-writer lock).
+  - Stronger guarantees (external lease/registry/fencing) are **deferred (§22).**
 
-All claims in this document are scoped to this model. Any statement of
-cross-executor correctness means **"correct across supported threads and
-processes sharing the one authoritative local database"**, never "correct across
-all executors" or across hosts.
+All correctness claims are scoped to "supported threads and processes sharing the
+one authoritative local database," never "all executors" or across hosts.
 
-## 2. DECISION 0 — Authenticated cost basis (D0)
+## 2. Authenticated cost basis — D0
 
 **Decision: RATIFIED (2026-07-26).**
 
-Every sidecar request is untrusted unless each security-relevant claim is
-cryptographically authenticated. "The control plane is trusted" is a deployment
-assumption, not an authority proof.
+Every request is untrusted unless each security-relevant claim is authenticated.
 
-- **Actor identity** **MUST** come from an authenticated principal (§3). A caller
-  field such as `execution_request.actor.user_id` is an asserted identifier and
-  **MUST NOT** by itself establish identity or ownership.
-- **Price** **MUST** come from a signed pricing-authority envelope (§4). Caller
-  `pricing_data` **MUST NOT** establish, raise, or reduce a hold or charge.
-- **Usage** **MUST NOT** reduce settlement unless authenticated by an approved
-  executor/metering authority and bound to the execution, policy, actor, price
-  schedule, and ledger event. Caller `runtime_observation` **MAY** be retained as
-  diagnostic input but **MUST NOT** be authoritative cost evidence.
-- Failure to validate required cost-basis evidence **MUST** fail closed before an
-  authoritative hold.
-
-**Rationale:** an unauthenticated price or usage claim lets the spender choose its
-own charge, defeating conservation regardless of ledger correctness.
+- **Actor identity MUST** come from an authenticated principal (§3); a caller
+  `actor.user_id` string **MUST NOT** by itself establish identity/ownership.
+- **Price MUST** come from a signed pricing envelope (§5); caller `pricing_data`
+  **MUST NOT** establish, raise, or reduce a hold or charge.
+- **Usage MUST NOT** reduce settlement in v1; prepaid settlement does not use it
+  (§12). Caller `runtime_observation` is diagnostic only.
+- Missing/invalid required evidence **MUST** fail closed before an authoritative hold.
 
 ## 3. Authenticated principal model — D7
 
 **Decision: RATIFIED (2026-07-26).**
 
-A principal is the tuple:
-
 ```
 Principal = (issuer, tenant, subject, audience, assurance_level, delegation_chain)
 ```
 
-Requirements:
-
 - **Credential type** — the authority **MUST** accept only configured credential
-  types (e.g., signed identity assertion / OIDC-style token / mTLS client cert
-  bound to the request). A raw string user_id is **NOT** a credential.
-- **Canonical principal derivation** — the authority **MUST** derive a canonical
-  principal by normalizing `(issuer, tenant, subject)` under §3.1 normalization,
-  then binding `audience` and `assurance_level`. A copied `user_id` string
-  **MUST NOT** count as authentication.
-- **`owner_actor_id` derivation** — `owner_actor_id = H(namespace ‖ issuer ‖
-  tenant ‖ subject)` using a domain-separated hash. It **MUST** be stable across
-  credential rotation and **MUST** differ across tenants even for identical
-  subject strings.
-- **Namespace separation & tenant isolation** — every token, reservation, and
-  execution record **MUST** carry `tenant`. Cross-tenant access **MUST** be
-  rejected; a principal in tenant A **MUST NOT** hold, commit, revoke, or read
-  authority in tenant B.
-- **Audience validation** — the credential's `audience` **MUST** match this
-  authority's configured identifier; mismatched-audience credentials **MUST** be
-  rejected.
-- **Delegation** — a delegated principal's authority **MUST** be `⪯` its
-  delegator (qualitative narrowing) and its budget grant strictly backed (§15).
-  `delegation_chain` **MUST** be authenticated end-to-end; a broken or unbacked
-  link invalidates the chain.
-- **Impersonation** — impersonation (act-as) **MUST** be an explicit,
-  authenticated, audited capability; it **MUST NOT** be inferrable from a caller
-  field.
-- **Assurance level** — the authority **MAY** require a minimum `assurance_level`
-  per policy scope; below-minimum principals **MUST** be refused for the affected
-  operations.
-- **Key rotation** — issuer key rotation **MUST NOT** change `owner_actor_id`;
-  validation **MUST** accept keys valid at the credential's authenticated time
-  under the issuer's published key set.
-- **Deprovisioning** — a deprovisioned principal **MUST** be unable to create new
-  holds; existing committed history is immutable (§8).
-- **Cross-tenant identity collision** — identical `subject` in different tenants
-  **MUST** derive distinct `owner_actor_id` and **MUST NOT** collide.
+  types (signed identity assertion / OIDC-style token / request-bound mTLS cert).
+  A raw string user_id is **NOT** a credential.
+- **Canonical derivation** — normalize `(issuer, tenant, subject)` per §3.1, bind
+  `audience`, `assurance_level`. A copied `user_id` **MUST NOT** count as auth.
+- **`owner_actor_id`** = `H_owner(issuer ‖ tenant ‖ subject)` using the
+  domain-separated hash defined in §17.2. **MUST** be stable across credential
+  rotation; **MUST** differ across tenants for identical subjects.
+- **Tenant isolation** — every token/reservation/execution record **MUST** carry
+  `tenant`; cross-tenant hold/commit/revoke/read **MUST** be rejected.
+- **Audience validation** — credential `audience` **MUST** match this authority.
+- **Impersonation** — act-as **MUST** be an explicit, authenticated, audited
+  capability; **MUST NOT** be inferrable from a caller field.
+- **Assurance level** — the authority **MAY** require a per-scope minimum; below
+  minimum **MUST** be refused.
+- **Cross-tenant collision** — identical `subject` in different tenants **MUST**
+  derive distinct `owner_actor_id`.
+- Delegation of **qualitative** authority narrows monotonically; **budget child
+  tokens are deferred (§22).**
 
 ### 3.1 Normalization
 
-Normalization of `(issuer, tenant, subject)` **MUST** be deterministic:
-NFC Unicode, case-folding only where the issuer declares case-insensitivity,
-trimming of insignificant whitespace, and rejection of embedded null/control
-characters. Ambiguous or non-normalizable identifiers **MUST** be rejected, not
-guessed.
+Deterministic: NFC Unicode; case-folding only where the issuer declares
+case-insensitivity; trim insignificant whitespace; reject embedded null/control
+characters. Ambiguous/non-normalizable identifiers **MUST** be rejected.
 
-**Bearer fallback is prohibited** (§8, §17). A token without an authenticated
-owner **MUST NOT** exercise durable budget authority.
+**Bearer fallback is prohibited.** A token without an authenticated owner **MUST
+NOT** exercise durable budget authority.
 
-## 4. Pricing authority envelope — D6
+## 4. Credential liveness — D35
 
 **Decision: RATIFIED (2026-07-26).**
 
-Price is established only by a signed pricing envelope. Fields:
+Authentication requires that the credential is *live for new authority*, not merely
+well-formed.
 
-```
-PricingEnvelope = {
-  issuer, key_role, tenant_scope, environment_scope, policy_scope,
-  resource_class, region, currency, canonical_unit, quantity_ceiling,
-  effective_time, expiry, schedule_version (monotonic),
-  unit_price_minor_units, canonical_serialization, signature
-}
-```
+- Each credential has an **issuer**, **expiry**, and a **revocation/deprovisioning
+  status** from a named **deprovisioning authority**.
+- New authority (issue/hold/terminal-ALLOW/release/consume/admin) **MUST** verify
+  credential status within a configured **maximum status freshness** window,
+  evaluated against the **authenticated time source (§9.2)**.
+- If status **cannot** be checked within freshness, the authority **MUST** fail
+  closed for new authority (it **MUST NOT** assume live).
+- **Key rotation** **MUST NOT** change `owner_actor_id`; validation accepts keys
+  valid at the credential's authenticated time under the issuer's published set.
+- **Grace periods**, if any, **MUST** be explicit, bounded, and audited; none by default.
+- **Historical verification vs current authorization** — a credential valid at
+  historical time remains valid for **verifying past receipts** even after it is
+  expired/revoked, but **MUST NOT** authorize **new** authority once
+  expired/revoked/deprovisioned.
 
-Requirements:
-
-- **Signature validation** — the envelope **MUST** be signed by a key whose
-  `key_role` is authorized to publish pricing for `(tenant_scope,
-  environment_scope, policy_scope)`. Validation **MUST** occur **before** the
-  hold transaction. Invalid/absent signature ⇒ fail closed.
-- **Canonical serialization** — pricing **MUST** be canonicalized before signing
-  and verification; non-canonical encodings **MUST** be rejected.
-- **Scope match** — `resource_class`, `region`, `currency`, `policy_scope`,
-  `tenant`, and `environment` in the envelope **MUST** match the request's
-  authenticated context; any mismatch ⇒ refuse.
-- **Effective window** — the envelope **MUST** be valid at the request's
-  authenticated decision time (`effective_time ≤ t < expiry`). Expired or
-  not-yet-effective envelopes **MUST** be refused.
-- **Monotonic schedule version & anti-rollback** — the authority **MUST** persist
-  the highest accepted `schedule_version` per `(tenant, environment, policy_scope,
-  resource_class, region)` and **MUST** reject any envelope with a lower version
-  (rollback). Equal-version envelopes **MUST** be byte-identical or be rejected as
-  a fork.
-- **Conflicting versions** — if two valid envelopes with the same scope and
-  version but different content are seen, the authority **MUST** fail closed and
-  raise an administrative alert; it **MUST NOT** silently pick one.
-- **Key rotation & revocation** — pricing keys **MUST** support rotation and
-  revocation; a revoked pricing key's envelopes **MUST NOT** authorize new holds.
-- **Quantity ceiling & worst-case charge** — the authorized maximum for a hold is
-  computed as
-  `worst_case_charge = unit_price_minor_units × authorized_quantity`, where
-  `authorized_quantity = min(requested_quantity, quantity_ceiling, policy_caps)`,
-  using checked integer arithmetic (§13). Overflow ⇒ refuse.
-- **Caller price is untrusted** — caller `pricing_data` **MUST NOT** feed
-  `worst_case_charge`. It **MAY** be logged as diagnostic only.
-
-## 5. Administrative authority & separation of duties — D8
+## 5. Pricing authority envelope — D6, D22
 
 **Decision: RATIFIED (2026-07-26).**
 
-Administrative operations are distinct from spending. Roles (least-privilege):
+Canonical schema in §17.3. Fields: `issuer, key_role, tenant_scope,
+environment_scope, policy_scope, resource_class, region, currency, canonical_unit,
+quantity_ceiling, effective_time, expiry, schedule_version (monotonic),
+unit_price_minor_units, signature`.
 
-| Role | May | MUST NOT |
-|---|---|---|
-| `issuer-admin` | issue tokens, assign owner, set caps/expiry | perform destructive recovery, migrate |
-| `pricing-admin` | publish/rotate/revoke pricing envelopes | issue tokens, spend |
-| `revocation-admin` | revoke tokens, bump generation | reissue to self, alter committed history |
-| `recovery-admin` | reconcile FROZEN holds, resolve RECOVERY_REQUIRED | issue tokens, publish pricing |
-| `migration-admin` | run authenticated migrations | issue/spend/price |
-| `root-admin` | authority-root & key-set changes | routine issuance/spend/pricing |
+- **Signature/scope/window** — signed by a `key_role` authorized for the scope;
+  validated **before** the hold; `resource_class/region/currency/policy_scope/
+  tenant/environment` **MUST** match the request's authenticated context;
+  `effective_time ≤ t < expiry`. Any failure ⇒ refuse.
+- **Anti-rollback** — persist the highest accepted `schedule_version` per
+  `(tenant, environment, policy_scope, resource_class, region)`; reject lower
+  (rollback). Equal version, different content ⇒ **fork**, fail closed + alert;
+  **MUST NOT** silently pick one.
+- **Key rotation/revocation** — a revoked pricing key's envelopes **MUST NOT**
+  authorize new holds.
 
-Requirements:
+### 5.1 Oversized requests are REFUSED, never clamped (F1)
 
-- All administrative commands **MUST** be authenticated (§3-grade principal with
-  the admin role) and **MUST** emit an immutable audit event (§18).
-- **Separation of duties** — issuance, destructive recovery, migration, and
-  administrative correction **MUST** require distinct roles; no single role may
-  perform two of these classes. Destructive/irreversible operations **SHOULD**
-  require two-person authorization.
-- **Normal spending authority MUST NOT grant administrative authority.** A budget
-  token or spend principal confers no admin capability.
-- Terminal-state administrative correction (PART V common rules) **MUST** be a separate,
-  dual-authorized, fully audited procedure and **MUST NOT** be reachable by
-  normal transitions.
+- **The request hash MUST bind the exact `requested_quantity` the executor may
+  consume.** The authority **MUST NOT** silently clamp an executable request.
+- **Rule:** if `requested_quantity` exceeds **any** authenticated applicable
+  ceiling (`quantity_ceiling` or policy cap for the scope), the authority **MUST
+  REFUSE** (reason `ERR_QUANTITY_CEILING`). It **MUST NOT** substitute a smaller
+  quantity for the same canonical request.
+- **Worst-case charge** = `unit_price_minor_units × requested_quantity` using
+  checked integer arithmetic (§8); overflow ⇒ refuse (`ERR_CHARGE_OVERFLOW`).
+  Because oversized requests are refused, the charged quantity always equals the
+  exact bounded executable quantity.
+- The **release artifact (§13) MUST bind**: `authorized_quantity` (= the exact
+  `requested_quantity`), `quantity_unit`, `resource_class`, `region`,
+  `target_constraints`, and `monetary_maximum` (= worst-case charge).
+- **Deferred:** authority-side request *rewriting* to a smaller quantity is
+  **out of scope (§22)**; if ever added it **MUST** produce a **new canonical
+  request and new `request_hash`**, never mutate an existing one.
 
-## 6. Parent/worker authority boundary — D9
+## 6. Administrative authority & separation of duties — D8, D10
 
 **Decision: RATIFIED (2026-07-26).**
 
-The **durable authority owner** (the process owning the authoritative SQLite
-database) is the only component that mutates authority. Workers are stateless
-evaluators.
+Roles (least privilege): `issuer-admin`, `pricing-admin`, `revocation-admin`,
+`recovery-admin`, `migration-admin`, `root-admin`. A budget/spend principal
+confers **no** administrative capability.
 
-The **canonical authority tuple** the authority owner **MUST** validate or
-cryptographically verify before any authority transaction:
+### 6.1 Principal-level separation of duties (F10)
+
+- **The same authenticated principal MUST NOT satisfy two required approval slots**
+  of one operation, even if it holds multiple roles. A single principal counts as
+  **one** approver regardless of role membership.
+- **Destructive recovery, administrative correction (§16), migration (§23), and
+  trust-root replacement MUST require two distinct, independently authenticated
+  principals** (two-person). This is **MUST**, not SHOULD.
+- Both **role membership and principal identity MUST** be checked; approvals
+  **MUST** bind distinct credentials verified live (§4).
+- Duplicate/withdrawn/expired approvals **MUST NOT** count; a replayed approval
+  **MUST** be rejected.
+- **Emergency override**, if retained, is **deferred (§22)**: it **MUST** be
+  separately specified, time-limited, fully audited, and **unable to rewrite
+  history**. Absent that spec, no override exists.
+- Every administrative command **MUST** be authenticated and emit an immutable
+  audit event (§18).
+
+## 7. Parent/worker authority boundary — D9
+
+**Decision: RATIFIED (2026-07-26).**
+
+The **authority owner** (the process owning the authoritative SQLite DB) is the
+only component that mutates authority. Workers/evaluators/executors are not.
+
+Canonical authority tuple validated before any authority transaction:
 
 ```
 AuthTuple = (execution_id, request_hash, actor, budget_token,
-             cost_basis_ref, policy_hash, target, expiry, token_generation)
+             cost_basis_ref, policy_hash, target, authorized_quantity,
+             expiry, token_generation)
 ```
 
-- Every worker result **MUST** be bound to this exact tuple (e.g., the worker
-  echoes a signed/hashed copy of the tuple it evaluated).
-- The authority owner **MUST NOT** trust free-form identity, pricing, cost,
-  request, or target values *returned by a worker*; it **MUST** re-derive or
-  re-verify each tuple field against authenticated inputs it holds.
-- There **MUST** be **no TOCTOU gap**: the tuple validated at evaluation and the
-  tuple used in the authority transaction **MUST** be identical, and the hold /
-  commit **MUST** execute under the token-row conditional predicate (§9) so any
-  concurrent change (generation bump, balance change) invalidates the transaction.
-- Workers **MUST NOT** own, reset, reconstruct, or mutate durable authority state.
-  A worker-local authority fallback is **prohibited**.
+- A worker result **MUST** be bound to this exact tuple; the authority owner
+  **MUST NOT** trust free-form identity/pricing/cost/request/target values
+  returned by a worker and **MUST** re-derive/re-verify each field.
+- **No TOCTOU:** the tuple validated at evaluation and used in the authority
+  transaction **MUST** be identical and executed under the token-row conditional
+  predicate (§10), so any concurrent generation/balance/pricing-key change
+  invalidates the transaction.
 
 ---
 
 ## PART III — DATA MODEL & CONCURRENCY
 
-## 7. Numeric model — D17
+## 8. Numeric model — D17
 
 **Decision: RATIFIED (2026-07-26).**
 
-- v1 accounting **MUST** use a **single monetary dimension** in **checked integer
-  minor units** (e.g., cents). Floating-point accounting is **prohibited**.
-- Every monetary value **MUST** carry an explicit `currency` identifier; values of
-  different currencies **MUST NOT** be added, compared for balance, or netted.
-- Integer width **MUST** be a signed 64-bit integer; the enforced domain is
-  `0 ≤ value ≤ 2^63 − 1`. Balances **MUST NOT** be negative.
-- Addition and subtraction **MUST** be checked; any overflow, underflow, or
-  domain violation **MUST** refuse the operation (fail closed), never wrap or
-  saturate.
-- **No rounding** occurs on integer minor units; any computation that would
-  introduce a fraction (e.g., unit conversion) is **prohibited** unless performed
-  by a separate, authenticated conversion authority that emits its own signed,
-  audited record. Cross-currency conversion is out of scope for v1.
-- Incompatible-unit or unknown-currency inputs **MUST** be rejected.
+- Single monetary dimension, **checked integer minor units**; floating-point
+  accounting **prohibited**.
+- Every value carries an explicit `currency`; different currencies **MUST NOT** be
+  added/compared/netted. Cross-currency conversion is out of scope (§22).
+- Width: signed 64-bit; enforced domain `0 ≤ value ≤ 2^63 − 1`; balances **MUST
+  NOT** be negative.
+- Add/subtract/multiply **MUST** be checked; overflow/underflow/domain violation
+  **MUST** refuse (fail closed), never wrap/saturate.
+- No rounding on integer minor units. Incompatible-unit/unknown-currency ⇒ reject.
+- `token_generation` and `event_sequence` are unbounded monotone counters on
+  signed-64; approaching the domain maximum **MUST** fail closed (no wraparound).
 
-The general `ℤ^k` calculus notation (§0) is retained only as framing; **v1 stores
-and enforces `k = 1`**. Multidimensional conserved authority is deferred (§23);
-if ever added, each dimension **MUST** have a typed schema and its own
-conservation equation, and dimensions **MUST NOT** be netted against each other.
-
-## 8. Token generation, expiry & anti-rollback — D10
+## 9. Token generation, expiry & anti-rollback — D10, D24
 
 **Decision: RATIFIED (2026-07-26).**
 
 - Every token row carries a **monotonically increasing `token_generation`**.
-- Revocation and any authority-root/ownership change **MUST** increment
-  `token_generation`.
-- Every hold, release, commit, recovery, child-grant, and administrative
-  transaction **MUST** atomically validate the **expected `token_generation`** in
-  its conditional predicate (§9). A mismatch **MUST** abort the transaction
-  (fail closed) and return a generation-stale status.
-- **Revocation's linearization point is its database commit.** An operation
-  linearizes before revocation iff its transaction commits before the revocation
-  transaction on the same token row; ordering is total per token via the row's
-  `event_sequence` (§9).
-- **Expiry enforcement.** `expiry` is enforced, not descriptive. A token past
-  `expiry` (by authenticated timeline, §16) **MUST NOT** accept new holds.
-- **Hold-before-expiry, commit-after-expiry:** a hold created and still valid
-  before `expiry` **MAY** commit after `expiry` **only if** its terminal
-  transaction linearizes before any revocation and the hold has not entered
-  `RECOVERY_REQUIRED`; otherwise it **MUST** freeze or release per §11. Expiry
-  **MUST NOT** silently release a live hold whose consumption is unproven — it
-  freezes (fail closed).
+- Revocation and any authority-root/ownership change **MUST** increment it.
+- Every hold, terminal-ALLOW commit, release, consume, recovery, and admin
+  transaction **MUST** atomically validate the **expected `token_generation`**
+  (§10); mismatch ⇒ abort (generation-stale, fail closed).
 
-### 8.1 Race resolution (normative)
+### 9.1 Expiry linearization (F3)
 
-For each pair, the outcome is decided by which transaction commits first on the
-token row (the linearization point); the loser observes a changed
-`token_generation`/`event_sequence` and **MUST** abort:
+- **Expiry linearizes at its own authority transaction commit** (`expiry_applied`,
+  SM-TOKEN), which increments `token_generation`.
+- **After expiry linearizes, the token accepts: no new hold, no new terminal ALLOW,
+  no new release artifact, no new execution start.**
+- A reservation that **already reached terminal ALLOW** (composite commit, §12.2)
+  and issued release authority **before** expiry **remains COMMITTED** under
+  prepaid semantics. **Expiry MUST NOT retroactively invalidate committed prepaid
+  charges.**
+- A reservation still **PENDING_HOLD** when expiry linearizes is resolved by
+  §12.3 hold-resolution: because no release artifact was issued/consumed for it
+  (terminal ALLOW never occurred), **execution provably could not start**, so the
+  held amount resolves to the **`expired` bucket** (not `available`).
+- **Grandfathering predicate:** a terminal-ALLOW commit is admissible iff its
+  `expected_token_generation` equals the token's current generation **and** the
+  token status is ACTIVE at commit; the composite transaction (§12.2) enforces
+  both atomically. There is no other grandfathering.
+
+### 9.2 Authenticated time source
+
+Expiry is a wall-clock condition evaluated against an **authenticated time source**
+(a signed time attestation or the monotonic checkpoint timeline, §21). Where a
+fresh authenticated time reading is unavailable, the authority **MUST** fail
+closed for expiry-sensitive new authority (no new holds/ALLOW on a token whose
+expiry cannot be evaluated). Ordering between authority transactions on one token
+is total via `event_sequence` (§10); expiry vs. hold/commit races resolve by
+which transaction commits first (§9.3).
+
+### 9.3 Race resolution (normative)
+
+The loser observes a changed `token_generation`/`event_sequence` and **MUST** abort.
 
 | Race | Resolution |
 |---|---|
-| hold vs revoke | If hold commits first → hold stands, revoke then blocks further holds. If revoke first → hold aborts (generation stale) → refuse. |
-| release vs revoke | Independent buckets; both apply in commit order; release never resurrects revoked capacity. |
-| commit vs revoke | Commit before revoke → commit stands (settled, immutable). Revoke before commit → commit aborts; reservation → `RECOVERY_REQUIRED` if consumption unproven. |
-| recovery vs revoke | Recovery holds an exclusive lease (§12); revoke during recovery is queued behind lease resolution, then applied. |
-| child-grant vs revoke | Revoke before child-grant commit → child-grant aborts. Child-grant first → child exists but is transitively revoked by parent generation bump. |
-| expiry vs hold | Expiry effective before hold commit → hold aborts. |
-| expiry vs release | Release proceeds (returns capacity); expiry blocks new holds. |
-| expiry vs commit | Commit linearizing before expiry stands; after expiry with unproven consumption → freeze. |
+| hold vs revoke | hold-first → hold stands, revoke blocks further holds; revoke-first → hold aborts (stale) → refuse |
+| hold vs expiry | expiry-first → hold aborts → refuse; hold-first → hold stands (resolved later per status) |
+| terminal-ALLOW commit vs revoke | commit-first → COMMITTED stands (immutable); revoke-first → composite commit aborts (stale) → reservation stays PENDING_HOLD → resolves to `revoked` bucket (§12.3) |
+| terminal-ALLOW commit vs expiry | commit-first → COMMITTED stands; expiry-first → composite aborts → PENDING_HOLD → resolves to `expired` bucket |
+| release/resolution vs revoke | apply in commit order; a PENDING_HOLD resolved after revoke goes to `revoked`, never `available` |
+| release/resolution vs expiry | resolved after expiry goes to `expired`, never `available` |
+| child-grant vs anything | N/A in v1 (delegation deferred, §22) |
 
-## 9. Per-token serialization & the authoritative row — D11
+## 10. Per-token serialization & the authoritative row — D11
 
 **Decision: RATIFIED (2026-07-26).**
 
-One authoritative token row is the serialization point. Minimum columns:
-
 ```
 token_id, tenant, owner_actor_id, currency,
-available_minor, held_minor, committed_minor, frozen_minor, revoked_minor,
-token_generation, event_sequence, current_state_hash, latest_event_ref,
-status, expiry, schema_version
+available_minor, held_minor, committed_minor, revoked_minor, expired_minor,
+token_generation, event_sequence, current_state_hash, latest_event_id,
+status (ACTIVE|REVOKED|EXPIRED), expiry, schema_version
 ```
 
-- Every authority-changing transaction **MUST** conditionally update the token row
-  using **both** its expected `token_generation` **and** expected `event_sequence`
-  (optimistic concurrency): `UPDATE … WHERE token_id = ? AND token_generation = ?
-  AND event_sequence = ?`. Zero rows affected ⇒ abort (fail closed) and retry from
-  a fresh read or refuse.
-- On success the transaction **MUST** increment `event_sequence`, update the
-  affected balance buckets, recompute `current_state_hash` (§18 chain), and set
-  `latest_event_ref`.
-- **Two concurrent transitions MUST NOT extend the same `h_before` into two valid
-  histories.** The conditional predicate guarantees exactly one linear successor
-  per state; the loser aborts. This is the anti-fork invariant.
-- The five-bucket conservation sum (§0) **MUST** hold after every committed
-  transaction.
+- Every authority-changing transaction **MUST** conditionally update the row on
+  **both** expected `token_generation` **and** `event_sequence`:
+  `UPDATE … WHERE token_id=? AND token_generation=? AND event_sequence=?`.
+  Zero rows ⇒ abort (fail closed).
+- On success: increment `event_sequence`, update buckets, recompute
+  `current_state_hash` (§17.2 chain), set `latest_event_id`.
+- **Anti-fork:** the predicate guarantees exactly one linear successor per state;
+  two concurrent transitions **MUST NOT** extend the same `current_state_hash`.
+- The five-bucket sum (§0) **MUST** hold after every committed transaction.
 
-## 10. SQLite minimum security profile — D19
+## 11. SQLite security profile & rollback — D19, D11-rollback
 
-**Decision: RATIFIED (2026-07-26).** (Exact indexes/perf tuning deferred, §23.)
+**Decision: RATIFIED (2026-07-26).** (Indexes/perf deferred, §22.)
 
-Mandatory invariants:
+- **Local FS only** (§1); verify at startup; fail closed otherwise.
+- **Path validation**: absolute, normalized, no traversal; **reject symlinks** on
+  the path or on DB/WAL/SHM files.
+- **Permissions**: DB/WAL/SHM created `0600` (Windows ACL equivalent); broader
+  access ⇒ fail-closed startup.
+- **Transaction mode**: `BEGIN IMMEDIATE`/`EXCLUSIVE`; `journal_mode=WAL`,
+  `synchronous=FULL` (or EXTRA).
+- **busy_timeout** configured; on lock timeout **refuse** (fail closed).
+- **Disk full / write failure** ⇒ refuse; **MUST NOT** partially apply.
+- **Corruption**: startup `PRAGMA integrity_check`; fail closed on corruption or
+  missing/corrupt WAL/SHM.
+- **No silent recreation**: a missing/empty authoritative DB **MUST NOT** be
+  created in a serving role; requires explicit authenticated provisioning/migration.
+- **Schema versioning & migration lock** (§23).
 
-- **Local filesystem only** (§1); startup **MUST** verify the DB path resolves to
-  a supported local filesystem and **MUST** fail closed otherwise.
-- **Path validation** — the DB path **MUST** be validated (absolute, normalized,
-  no traversal); **symlinks in the path or on the DB/WAL/SHM files MUST be
-  rejected** (fail closed).
-- **File permissions** — DB, WAL, and SHM files **MUST** be created with
-  owner-only permissions (`0600`); world/group access **MUST** cause fail-closed
-  startup on POSIX. Windows ACL equivalent required.
-- **WAL/SHM protection** — WAL and SHM files **MUST** reside in the same protected
-  directory and inherit the same permission and symlink rules.
-- **Transaction mode** — authority transactions **MUST** use `BEGIN IMMEDIATE`
-  (or `EXCLUSIVE`) to avoid write-skew; `journal_mode=WAL`,
-  `synchronous=FULL` (or `EXTRA`) **MUST** be set.
-- **Lock contention / busy** — a `busy_timeout` **MUST** be configured; on lock
-  timeout the operation **MUST** refuse (fail closed), never proceed unsynchronized.
-- **Disk full** — on `SQLITE_FULL`/write failure the authority **MUST** refuse and
-  preserve state; it **MUST NOT** partially apply an authority transaction.
-- **Corruption detection** — startup **MUST** run an integrity check
-  (`PRAGMA integrity_check`/`quick_check`) and **MUST** fail closed on corruption.
-- **Fail-closed startup** — any failed invariant above **MUST** prevent the
-  authority from serving holds.
-- **No silent recreation** — the authority **MUST NOT** silently create or
-  re-initialize a missing/empty authoritative DB in a serving role; a missing DB
-  **MUST** require an explicit, authenticated provisioning/migration command.
-- **Schema versioning & migration locking** — the DB **MUST** carry
-  `schema_version`; migrations **MUST** run under an exclusive migration lock
-  (§17) and be refused if `schema_version` is unexpected.
-- **Backup/restore & rollback detection** — restores **MUST** preserve or advance
-  `token_generation`/checkpoint state; a restore to an **older** authoritative
-  state (rollback) **MUST** be detected via the witnessed checkpoint (§17)
-  and **MUST** fail closed rather than silently accept rolled-back balances.
+### 11.1 Rollback detection — scoped (F11)
 
-## 11. Storage & transaction model
+v1 does **not** claim complete rollback detection from asynchronous operator
+checkpoints. Normative:
 
-A `budget_reservations` record keyed by `(budget_token, execution_id)`:
+- The authority **MUST** obtain, authenticate, and durably store the **latest
+  trusted external checkpoint** (§21) available **at startup**, and compare the DB
+  state against it.
+- **v1 detects rollback only relative to that latest trusted external checkpoint.**
+  Authority transactions committed **after** the last such checkpoint but before its
+  publication **MAY** be lost by a DB rollback **without cryptographic detection**.
+- If continuity from the latest trusted checkpoint **cannot be proven**, startup
+  **MUST fail closed**.
+- **Operator-controlled local state alone does not prove non-rollback.**
+- If per-transaction rollback detection is required, it **MUST** use a durable
+  **external monotonic high-water mark** updated before authority becomes
+  executable; that stronger guarantee is otherwise **deferred (§22)**.
+
+## 12. Storage, transaction model & prepaid settlement — D1, D5, D7-composite
+
+**Decision: RATIFIED (2026-07-26).**
+
+Reservation record keyed by `(budget_token, execution_id)`:
 
 ```
-reservation_state ∈ { PENDING_HOLD, COMMITTED, RELEASED, RECOVERY_REQUIRED }
-held_minor            // reserved at hold (the authenticated worst-case cost)
-committed_minor       // = held_minor in ratified prepaid v1
-actual_minor          // NULLABLE schema reservation; NON-AUTHORITATIVE, unused in prepaid v1
-released_delta_minor  // NULLABLE schema reservation; NON-AUTHORITATIVE, unused in prepaid v1
-owner_actor_id        // authenticated principal (§3)
-cost_basis_ref        // pricing envelope reference (§4)
-token_generation      // generation observed at hold
-h_before, h_after     // ledger state commitments (§18)
+reservation_state ∈ { PENDING_HOLD, COMMITTED, RELEASED }
+held_minor            // reserved at hold = worst-case charge
+committed_minor       // = held_minor on terminal ALLOW (prepaid, full)
+release_bucket        // for RELEASED: which bucket the hold returned to (available|revoked|expired)
+owner_actor_id, cost_basis_ref, authorized_quantity, token_generation
+h_before, h_after     // state-hash commitments (§17.2)
 ```
 
-### 11.1 Prepaid settlement (ratified v1) — D1
+### 12.1 Hold
 
-Prepaid v1 charges for **released authorization**, not proven execution:
+`hold` (SM-RES) requires token ACTIVE, not expired, `owner_actor_id` matches,
+credential live (§4), pricing valid (§5), `available ≥ worst_case_charge`.
+Effect: `available -= c; held += c`.
 
-- On **terminal ALLOW**, the reservation **MUST** transition
-  `PENDING_HOLD → COMMITTED` **in the same transaction** that records the terminal
-  ALLOW execution state, releases execution authority (issues the one-shot release
-  artifact, §12), and writes the authoritative receipt bytes.
-- On commit, **the full `held_minor` becomes `committed_minor`** (`committed_minor
-  = held_minor`). There is **no PARTIAL settlement in prepaid v1**.
-- A terminal ALLOW is **fully settled at commit**; it is **not** "unsettled" and is
-  **not** "frozen awaiting later settlement." (Freezing applies only to
-  *uncertain* outcomes, §11.3, never to a completed terminal ALLOW.)
-- Caller-supplied `actual_*` **MUST NOT** reduce settlement (§2). `actual_minor` /
-  `released_delta_minor` remain nullable, non-authoritative schema reservations
-  for a future metered mode (§2 deferred) and **MUST** be unused in prepaid v1.
+### 12.2 Composite `TERMINAL_ALLOW_COMMIT` (F7)
 
-### 11.2 Transaction boundary
+Terminal ALLOW is **one atomic composite transition** referenced by both SM-RES and
+SM-EXEC. There are **no normative intermediate sub-states**.
 
-The terminal decision **MUST** atomically write, in **one SQLite transaction**:
-(a) the `execution_id` terminal state, (b) the budget commit-or-release, (c) the
-authoritative receipt bytes, and (d) the token-row conditional update (§9). A
-failed budget commit **MUST** block the terminal ALLOW response. Split state (one
-authority persisted without the other) **MUST** be impossible.
+```
+TERMINAL_ALLOW_COMMIT
+Preconditions (all in one tx):
+  token.status = ACTIVE ; token.token_generation = expected_generation
+  reservation.state = PENDING_HOLD ; execution.state = INFLIGHT
+  AuthTuple matches ; pricing + actor + credential evidence valid ; not expired/revoked
+Atomic effects:
+  reservation.state := COMMITTED
+  execution.state   := ALLOWED
+  token.held_minor  -= amount ; token.committed_minor += amount
+  release_artifact.state := ISSUED           (bound per §13)
+  immutable receipt bytes stored (§19)
+  token.event_sequence += 1 ; current_state_hash advanced (§17.2)
+  outbox rows inserted (§20) for hold_committed, execution_allowed, release_issued
+```
 
-### 11.3 Ambiguity must FREEZE, not release
+A failed budget commit **MUST** block the terminal-ALLOW response. Split state is
+impossible (single tx). This composite resolves the prior circular SM2/SM3
+dependency.
 
-RELEASE is permitted **only** when the system can **prove** no budget-consuming
-action occurred (crash provably before any irreversible execution *and* before the
-commit transaction). If it is **unknown** whether a consuming action fired,
-recovery **MUST** transition the reservation to **`RECOVERY_REQUIRED`** (a.k.a.
-`FROZEN`): the hold is preserved, further spending against the token is blocked,
-and the reservation is resolved to `COMMITTED` or `RELEASED` **only** by
-authenticated reconciliation (§12). Blind release under uncertainty is a latent
-**overspend** and is **prohibited**. Fail-closed here means **freeze and
-reconcile**, never auto-refund.
+### 12.3 Terminal REFUSE & hold resolution (status-scoped) (F4)
 
-**Recovery table:**
+A `PENDING_HOLD` that does not reach terminal ALLOW is **resolved** (SM-RES) to
+`RELEASED`, returning `held` to a bucket **chosen by current token status** —
+never increasing spendable `available` on a non-ACTIVE token:
 
-| Crash point | `execution_id` | reservation | Receipt | Recovery |
-|---|---|---|---|---|
-| before dispatch — no irreversible action possible, before commit tx | INFLIGHT | PENDING_HOLD | none | **provably** no consumption → RELEASE hold |
-| dispatched; unknown whether the consuming action fired; commit tx not durable | INFLIGHT/unknown | PENDING_HOLD → **RECOVERY_REQUIRED** | none | **FREEZE**: preserve, block token, reconcile (§12) |
-| commit tx durably applied | ALLOWED | **COMMITTED** | persisted | replay-safe; nothing to do |
-| after tx, before response | ALLOWED | COMMITTED | persisted | idempotent re-send of receipt |
+| Token status at resolution | Destination bucket | Effect |
+|---|---|---|
+| ACTIVE | `available` | `held -= c; available += c` |
+| REVOKED | `revoked` | `held -= c; revoked += c` |
+| EXPIRED | `expired` | `held -= c; expired += c` |
+
+Resolution is triggered by terminal REFUSE, evaluator abandonment, or a
+generation-stale composite abort (§9.3). It is permitted **only** when no durable
+`release_consumed` event exists for the reservation (proof execution did not start,
+§13); the composite commit and consume protocol guarantee that a resolvable
+`PENDING_HOLD` has no consumed release.
+
+### 12.4 Why there is no budget freeze in prepaid v1
+
+Prepaid commits the full charge **atomically at terminal ALLOW, before any
+execution** (§12.2). The release artifact is issued in that same transaction and
+is **durably consumed before the executor may act** (§13). Therefore:
+
+- A budget hold is **never outstanding across an execution**; its outcome cannot
+  depend on whether the irreversible action completed.
+- The only ambiguity a crash can create is whether the **atomic composite tx**
+  committed — a **binary** fact resolved by SQLite durability (`synchronous=FULL`).
+- Hence **no `RECOVERY_REQUIRED` / `frozen` budget state is needed or defined** in
+  prepaid v1. Execution-outcome uncertainty (did the side effect finish?) is a
+  **separate** concern (§15) that does **not** alter settled budget.
+
+A budget `frozen`/recovery state is a **metered-mode concern and is deferred**
+(§22) together with metered settlement.
+
+### 12.5 Conservation proof (per transition)
+
+Each transition changes exactly two buckets by ±c (or issues at genesis), so the
+sum is invariant:
+
+| Transition | available | held | committed | revoked | expired | Σ |
+|---|---|---|---|---|---|---|
+| issue (cap) | +cap | 0 | 0 | 0 | 0 | =issued |
+| hold | −c | +c | | | | 0 |
+| TERMINAL_ALLOW_COMMIT | | −c | +c | | | 0 |
+| resolve (ACTIVE) | +c | −c | | | | 0 |
+| resolve (REVOKED) | | −c | | +c | | 0 |
+| resolve (EXPIRED) | | −c | | | +c | 0 |
+| revoke | −A | | | +A | | 0 |
+| expiry | −A | | | | +A | 0 |
+| admin correction | see §16 (conservation-preserving, paired) | | | | | 0 |
+
+`committed` never decreases in any row (monotonic). `available` increases only
+from `held` while ACTIVE, or via §16 funded issuance.
 
 ---
 
 ## PART IV — PROTOCOLS
 
-## 12. Executor one-shot release protocol — D5
+## 13. Executor one-shot release & durable consumption — D5, D26
 
 **Decision: RATIFIED (2026-07-26).**
 
-Execution authority is a **one-shot release artifact**, distinct from a receipt.
-A receipt is *evidence of a past decision*; it is **NOT** execution authority.
+A **receipt is evidence; it is NOT execution authority.** Execution authority is a
+signed, single-use **release artifact** (canonical schema §17.5) binding:
+`release_id (unique, single-use), execution_id, request_hash, actor,
+budget_token, token_generation, target_executor_or_class, target_constraints,
+policy_hash, pricing_basis (cost_basis_ref), authorized_quantity, quantity_unit,
+resource_class, region, monetary_maximum, issued_at, expiry`.
 
-The release artifact **MUST** be signed by the authority and **MUST** bind:
+### 13.1 One-shot consumption protocol (ordering is normative) (F5)
 
-```
-ReleaseArtifact = {
-  release_id (unique, single-use), execution_id, request_hash,
-  actor (authenticated principal), budget_token, token_generation,
-  target_executor_or_class, policy_hash, pricing_basis (cost_basis_ref),
-  authorized_maximum_minor, issued_at, expiry
-}
-```
+1. Executor submits the signed release artifact **to the authority owner**.
+2. Authority validates: `release_id`; signature + trust chain; `execution_id`;
+   `request_hash`; `actor`; `target`/`target_constraints`; `policy_hash`;
+   `pricing_basis`; `authorized_quantity`; `token_generation` current (not
+   revoked); `expiry` not passed (authenticated time, §9.2); credential live (§4);
+   execution.state = ALLOWED and reservation.state = COMMITTED.
+3. Authority **atomically** transitions the artifact `ISSUED → CONSUMED` in a
+   durable SQLite transaction that emits the **`release_consumed`** event
+   (§18) under the token-row predicate (§10).
+4. **Only after that transaction is durable may the executor begin the irreversible
+   action.**
 
-Issuance:
+Normative:
 
-- A release artifact **MUST** be issued **only** in the same terminal-ALLOW
-  transaction that commits the hold (§11.1) — i.e., **after** final authority
-  commit, never before.
+- **Worker/executor-local consumption state is NOT authoritative.** The single
+  source of truth for consumption is the authority-owner's SQLite transaction.
+- **Executing before durable consumption is prohibited** and nonconformant.
+- **Duplicate consume returns a non-executable "duplicate/already-consumed" result**
+  (`ERR_RELEASE_ALREADY_CONSUMED`); it **MUST NOT** authorize a second execution.
+- **Direct execution without authority-owner consumption is outside MNDe's
+  guarantees and is nonconformant.**
 
-Executor obligations — an executor **MUST** accept a release artifact only if all
-hold:
+### 13.2 Crash behavior (F5)
 
-- signature valid; `expiry` not passed (authenticated timeline, §16);
-- `release_id` not previously consumed (one-shot);
-- `request_hash` matches the request the executor is about to run;
-- `actor` and `target_executor_or_class` match the executing context;
-- `token_generation` is current (not revoked, §8);
-- the referenced execution has a committed terminal ALLOW.
+| Crash point | Execution authority | Budget | Recovery |
+|---|---|---|---|
+| before durable consume | **none** (artifact still ISSUED) | committed (prepaid) | executor MAY retry consume within expiry; else artifact EXPIRED |
+| after durable consume, before action | granted once | committed | artifact remains CONSUMED; retry ⇒ duplicate result; **no second execution** |
+| during action | granted | committed | execution-outcome recovery (§15); budget unchanged |
+| lost response after consume | — | committed | retry returns duplicate/stored result; **MUST NOT** execute twice |
 
-Executors **MUST** reject:
+Executors **MUST** reject: cached receipts presented as authority; reused/replayed
+artifacts; mismatched `request_hash`/`actor`/`target`; expired artifacts; artifacts
+whose `token_generation` was revoked; any action before durable consume.
 
-- **cached terminal receipts presented as execution authority**;
-- reused/replayed release artifacts (`release_id` already consumed);
-- mismatched `request_hash`;
-- mismatched `actor` or `target`;
-- expired artifacts;
-- artifacts whose `token_generation` has been revoked;
-- any execution attempted **before** final authority commit.
-
-**Direct execution outside this protocol is outside MNDe's guarantee.** MNDe
-makes no authority or conservation claim over actions taken without a valid,
-fresh, execution-bound release artifact.
-
-## 13. Replay & execution identity — D15
+## 14. Replay & execution identity — D15
 
 **Decision: RATIFIED (2026-07-26).**
 
-- There **MUST** be **one globally authoritative execution record** per execution,
-  keyed by `execution_id`.
-- `execution_id` **MUST** be either globally unique or drawn from a
-  cryptographically authenticated namespace (`H(namespace ‖ issuer ‖ …)`); a bare
-  caller-chosen string in a shared namespace is **NOT** acceptable.
-- Every reservation **MUST** reference the authoritative execution record.
+- **One globally authoritative execution record** per `execution_id`, which **MUST**
+  be globally unique or from a cryptographically authenticated namespace
+  (`H_execid`, §17.2). Every reservation references it.
+- Evaluated atomically with `request_hash` comparison:
 
-Idempotency / replay semantics (evaluated atomically with request-hash comparison):
-
-| Presented | Required behavior |
+| Presented | Behavior |
 |---|---|
-| same `execution_id` + same `request_hash` + terminal state | **Return stored terminal information only; MUST NOT execute again.** |
-| same `execution_id` + **different** `request_hash` | **Reject** (collision / forgery). |
-| same `execution_id` + INFLIGHT or RECOVERY_REQUIRED | **Reject**, or return the defined non-executable status; **MUST NOT** start a second execution. |
-| same `execution_id` + a **different** budget token | **Reject**, unless explicitly defined as the same authoritative execution record. |
+| same `execution_id` + same `request_hash` + terminal state | **return stored terminal information; MUST NOT execute again** |
+| same `execution_id` + different `request_hash` | **reject** (collision/forgery) |
+| same `execution_id` + INFLIGHT | **reject** / return non-executable status; no second start |
+| same `execution_id` + different budget token | **reject** unless defined as the same authoritative record |
 
-Cached-response semantics **MUST** be coupled atomically with `request_hash`
-comparison in the same transaction that reads execution state; a cached ALLOW
-**MUST NOT** be returned without confirming `request_hash` equality, and a cached
-ALLOW **is not** execution authority (§12).
+A cached ALLOW **is not** execution authority (§13); returning it **MUST NOT**
+start execution.
 
-## 14. Revocation & expiry semantics
-
-See §8 (generation, linearization, race table) and §16 (timeline). Normatively:
-revocation stops future holds, preserves committed history, and freezes uncertain
-in-flight holds (D3, §16 below). Expiry is enforced, not descriptive (§8).
-
-## 15. Crash recovery — D12
+## 15. Execution-outcome recovery (budget-decoupled) — D12, D25
 
 **Decision: RATIFIED (2026-07-26).**
 
-Fail-closed rule (retained): **unknown outcomes preserve authority and MUST NOT
-auto-release it** (§11.3).
+This governs **execution status**, not budget (which is already committed, §12.4).
 
-- **Permitted recovery evidence** — only **authenticated** evidence bound to the
-  execution may resolve a `RECOVERY_REQUIRED` reservation: a signed executor
-  completion/non-execution attestation, a committed authoritative receipt, or a
-  signed release-artifact-consumption record. **Unauthenticated logs MUST NOT
-  release uncertain capacity.**
-- **Evidence authentication & binding** — evidence **MUST** be signed by an
-  approved authority and **MUST** bind `execution_id` and `request_hash`
-  (and, where relevant, `release_id`); unbound evidence **MUST** be rejected.
-- **Evidence priority** — committed authoritative receipt > signed release-consumption
-  record > signed executor attestation. Higher-priority evidence wins on conflict.
-- **Recovery authority & ownership** — reconciliation is a `recovery-admin`
-  operation (§5) executed by the authority owner (§6).
-- **Exclusive recovery lease** — a reservation under recovery **MUST** be held
-  under an exclusive lease (or a dedicated generation/`event_sequence` guard) so
-  two reconcilers cannot both resolve it.
-- **Reconciliation transaction & idempotency** — resolution **MUST** be a single
-  conditional transaction (§9); re-running it **MUST** be idempotent (no double
-  commit/release).
-- **Terminal recovery outcomes** — `COMMITTED` (proven consumption) or `RELEASED`
-  (proven non-consumption).
-- **Permanent uncertainty** — if authenticated evidence is unobtainable, the
-  reservation **MUST** remain `FROZEN` (capacity stays out of circulation);
-  the authority **MUST** raise operator escalation and **MUST NOT** auto-resolve.
-- **Replacement-token procedure** — to restore the owner's spendable capacity
-  without releasing uncertain funds, an `issuer-admin` **MAY** issue a
-  **replacement token** for the frozen amount under audit; the frozen reservation
-  stays frozen and reconciles independently.
-- **Observability** — every FROZEN reservation, its age, and escalation status
-  **MUST** be observable (metric + audit event).
+- **Evaluator dispatch, executor release, and irreversible execution are distinct
+  (F6).** Evaluator (worker) work **MUST NOT** consume external authority.
+- **Before a release artifact is durably ISSUED and CONSUMED, the absence of a
+  durable `release_issued`/`release_consumed` record is authoritative evidence that
+  the irreversible action could not have started.** An evaluator crash therefore
+  **MUST NOT** freeze authority; the reservation resolves per §12.3.
+- Execution status uncertainty is admissible **only after** a durable
+  `release_consumed` exists (or another explicitly defined irreversible external
+  boundary was crossed and authenticated evidence cannot determine its result). In
+  that case SM-EXEC enters `EXEC_UNCERTAIN`.
+- Resolving `EXEC_UNCERTAIN` uses **only authenticated evidence** bound to
+  `execution_id`/`request_hash`/`release_id` (signed executor completion/non-completion
+  attestation, or committed authoritative receipt), under an **exclusive recovery
+  lease** and a single **idempotent** conditional transaction (§10).
+- **Budget settlement is unchanged** by execution-outcome recovery in prepaid v1;
+  it only updates observable execution status.
+- **Language implying a consuming action between evaluator dispatch and terminal
+  ALLOW is removed;** no such action exists in this protocol.
 
----
-
-## PART V — NORMATIVE STATE MACHINES (D-SM)
-
-**Decision: RATIFIED (2026-07-26).** Common rules:
-
-- Every transition executes under the token-row conditional predicate (§9) unless
-  it does not touch a token (noted per machine).
-- **Terminal states are immutable except through the separately authenticated
-  administrative correction procedure** (§5); no normal transition may leave a
-  terminal state.
-- **Duplicate/retry:** unless stated, a retried transition that observes the
-  destination already reached **MUST** be a no-op returning the stored result
-  (idempotent); a retry observing a changed generation/sequence **MUST** abort.
-- Any transition not listed is **prohibited**.
-
-Each transition below lists: **from → to** | **event** | **auth inputs** |
-**preconditions** | **transactional predicate** | **balance Δ** | **generation Δ**
-| **emitted** | **duplicate/retry** | **prohibited**.
-
-### SM1 — Budget-token state machine
-
-States: `ACTIVE` (initial after issue), `EXPIRED` (terminal), `REVOKED` (terminal).
-
-1. `∅ → ACTIVE` | **issue** | issuer-admin principal, owner principal, currency,
-   cap, expiry, pricing scope | owner authenticated; cap ≥ 0; unique `token_id` |
-   insert row if absent | set `available=cap`, others 0 | `generation=1` |
-   `token_issued` receipt+event | retry with same `token_id` → no-op return existing |
-   prohibited: issue with unauthenticated owner / bearer.
-2. `ACTIVE → REVOKED` | **revoke** | revocation-admin | token ACTIVE | conditional
-   on `(generation, sequence)` | `available → revoked` (moves remaining available
-   to `revoked`); `held` frozen per §16 | `generation += 1` | `token_revoked` |
-   duplicate revoke → no-op | prohibited: reducing `committed`.
-3. `ACTIVE → EXPIRED` | **expiry_applied** (authenticated timeline) | timeline
-   witness | `now ≥ expiry` | conditional | `available → revoked`-equivalent
-   (blocked for new holds); live holds per §8 | `generation += 1` | `expiry_applied`
-   | idempotent | prohibited: new holds after EXPIRED.
-4. Terminal `REVOKED`/`EXPIRED` → any | **prohibited** except §5 admin correction.
-
-### SM2 — Reservation state machine
-
-States: `PENDING_HOLD` (initial), `COMMITTED` (terminal), `RELEASED` (terminal),
-`RECOVERY_REQUIRED` (frozen, non-terminal until reconciled).
-
-1. `∅ → PENDING_HOLD` | **hold** | AuthTuple (§6) | token ACTIVE; not expired;
-   `owner_actor_id` matches; pricing valid (§4); `available ≥ worst_case_charge` |
-   `UPDATE … WHERE generation=? AND sequence=? AND available ≥ cost` |
-   `available -= cost; held += cost` | `sequence += 1` | `hold_created` +
-   `h_after` | retry same `(token,execution_id)` in PENDING_HOLD → no-op return |
-   prohibited: hold on REVOKED/EXPIRED; hold exceeding available.
-2. `PENDING_HOLD → COMMITTED` | **terminal_allow** | AuthTuple + terminal decision
-   | execution terminal ALLOW in same tx; generation current | conditional |
-   `held -= cost; committed += cost` (full amount) | `sequence += 1` |
-   `hold_committed` receipt + `release_artifact` (§12) | idempotent (return stored
-   receipt) | prohibited: partial commit; commit after REVOKED linearized first
-   (→ RECOVERY_REQUIRED).
-3. `PENDING_HOLD → RELEASED` | **terminal_refuse_proven** | AuthTuple + proof of
-   non-consumption | terminal REFUSE with proven non-consumption | conditional |
-   `held -= cost; available += cost` | `sequence += 1` | `hold_released` | idempotent
-   | prohibited: release under uncertainty.
-4. `PENDING_HOLD → RECOVERY_REQUIRED` | **uncertain_outcome** | crash/timeout signal
-   | consumption unproven | conditional | `held -= cost; frozen += cost` |
-   `sequence += 1` | `recovery_required` | idempotent | prohibited: release.
-5. `RECOVERY_REQUIRED → COMMITTED` | **reconcile_consumed** | authenticated evidence
-   (§15) + recovery lease | proven consumption | conditional | `frozen -= cost;
-   committed += cost` | `sequence += 1` | `recovery_resolved(committed)` | idempotent
-   under lease | prohibited: resolution without authenticated evidence.
-6. `RECOVERY_REQUIRED → RELEASED` | **reconcile_not_consumed** | authenticated
-   evidence + lease | proven non-consumption | conditional | `frozen -= cost;
-   available += cost` | `sequence += 1` | `recovery_resolved(released)` | idempotent |
-   prohibited: release on unauthenticated logs.
-7. `RECOVERY_REQUIRED` (permanent uncertainty) → stays FROZEN; escalate (§15).
-
-### SM3 — Execution state machine
-
-States: `NONE`, `INFLIGHT`, `ALLOWED` (terminal), `REFUSED` (terminal),
-`RECOVERY_REQUIRED`.
-
-1. `NONE → INFLIGHT` | **begin** | AuthTuple | unique `execution_id`; request_hash
-   recorded | insert execution record | — | — | `execution_begin` | duplicate id →
-   §13 table | prohibited: reuse across tokens (§13).
-2. `INFLIGHT → ALLOWED` | **commit_allow** | AuthTuple + reservation COMMITTED |
-   same tx as reservation commit (§11.2) | conditional | — | — | terminal receipt +
-   release artifact | idempotent (return stored) | prohibited: allow without
-   reservation commit.
-3. `INFLIGHT → REFUSED` | **commit_refuse** | AuthTuple | terminal refuse | conditional
-   | reservation released/frozen per §11.3 | — | refuse receipt | idempotent |
-   prohibited: refuse after allow.
-4. `INFLIGHT → RECOVERY_REQUIRED` | **crash_uncertain** | recovery signal | unproven
-   | conditional | reservation → RECOVERY_REQUIRED | — | `recovery_required` | idempotent.
-5. `RECOVERY_REQUIRED → ALLOWED|REFUSED` | **reconcile** | authenticated evidence
-   (§15) | — | conditional | mirrors reservation reconcile | — | resolved receipt |
-   idempotent.
-6. Terminal `ALLOWED`/`REFUSED` immutable except §5.
-
-### SM4 — Revocation state machine
-
-States: `NONE`, `REVOKE_REQUESTED`, `REVOKED` (terminal for the generation).
-
-1. `NONE → REVOKE_REQUESTED` | **admin_revoke** | revocation-admin | token exists |
-   record intent | — | — | `revoke_requested` audit | duplicate → no-op.
-2. `REVOKE_REQUESTED → REVOKED` | **commit_revoke** (linearization point) |
-   revocation-admin | conditional on `(generation, sequence)` | move `available →
-   revoked`; freeze uncertain holds (§16) | `generation += 1` | `token_revoked` |
-   idempotent | prohibited: altering committed.
-
-### SM5 — Recovery state machine
-
-States: `FROZEN` (= RECOVERY_REQUIRED), `RECONCILING` (lease held), `RESOLVED_COMMITTED`
-(terminal), `RESOLVED_RELEASED` (terminal), `PERMANENT_UNCERTAIN` (escalated, frozen).
-
-1. `FROZEN → RECONCILING` | **acquire_lease** | recovery-admin | no active lease |
-   set exclusive lease/guard | — | — | `recovery_lease_acquired` | duplicate → same
-   lease holder no-op; different holder → abort.
-2. `RECONCILING → RESOLVED_COMMITTED` | **evidence_consumed** | authenticated
-   evidence (§15) | proven consumption | conditional | `frozen→committed` | `+=1` |
-   `recovery_resolved` | idempotent.
-3. `RECONCILING → RESOLVED_RELEASED` | **evidence_not_consumed** | authenticated
-   evidence | proven non-consumption | conditional | `frozen→available` | `+=1` |
-   `recovery_resolved` | idempotent.
-4. `RECONCILING → PERMANENT_UNCERTAIN` | **evidence_unobtainable** | recovery-admin
-   + escalation | evidence unavailable | conditional | stays frozen | — |
-   `recovery_escalated` | idempotent | prohibited: release.
-5. Lease expiry returns `RECONCILING → FROZEN` (no state resolution without evidence).
-
-### SM6 — Release-capability (artifact) state machine
-
-States: `ISSUED`, `CONSUMED` (terminal), `EXPIRED` (terminal), `INVALIDATED` (terminal).
-
-1. `∅ → ISSUED` | **issue_release** | terminal-ALLOW tx (§12) | reservation COMMITTED
-   | same tx as commit | — | — | signed `ReleaseArtifact` | idempotent (same
-   `release_id`) | prohibited: issue before commit.
-2. `ISSUED → CONSUMED` | **executor_consume** | executor presents artifact | valid,
-   fresh, bound (§12); `release_id` unconsumed | conditional single-use claim on
-   `release_id` | — | — | `release_consumed` | duplicate consume → reject (one-shot) |
-   prohibited: reuse.
-3. `ISSUED → EXPIRED` | **expiry** | timeline | `now ≥ expiry` | conditional | — | — |
-   `release_expired` | idempotent.
-4. `ISSUED → INVALIDATED` | **generation_revoked** | revoke bumps `token_generation`
-   | artifact generation stale | conditional | — | — | `release_invalidated` |
-   idempotent | prohibited: consume after invalidation.
-
-### SM7 — Receipt / event state machine
-
-States: `DRAFT` (in-tx), `COMMITTED` (terminal, immutable), `PUBLISHED`
-(outbox-delivered), `CHECKPOINTED` (in a signed checkpoint).
-
-1. `DRAFT → COMMITTED` | **authority_tx_commit** | inside the authoritative tx
-   (§11.2) | tx commits | same tx | — | `sequence += 1` | immutable receipt/event
-   bytes + `h_after` | idempotent (same `event_sequence`) | prohibited: mutate after
-   COMMITTED.
-2. `COMMITTED → PUBLISHED` | **outbox_deliver** | outbox worker (§16) | event
-   COMMITTED | outbox conditional | — | — | external projection/Merkle leaf |
-   at-least-once → dedup by `event_sequence` | prohibited: publish uncommitted.
-3. `PUBLISHED → CHECKPOINTED` | **checkpoint_sign** | checkpoint authority | included
-   in signed checkpoint | — | — | — | signed checkpoint entry | idempotent |
-   prohibited: checkpoint unpublished/uncommitted.
-
-Deterministic per-token ordering is the strictly increasing `event_sequence`
-(§9); receipts/events for one token **MUST** form one linear chain via
-`current_state_hash`.
-
----
-
-## PART VI — EVENTS, RECEIPTS & VERIFICATION
-
-## 16. Ledger, transactional outbox & publication — D16
+## 16. Administrative correction protocol & state machine — D29
 
 **Decision: RATIFIED (2026-07-26).**
 
-- **SQLite is the sole authoritative transaction store.** Execution state, budget
-  state, canonical event data, and authoritative receipt bytes **MUST** be written
-  in the **same** authoritative transaction (§11.2).
-- A **transactional outbox** (a table written in that same transaction) **MUST**
-  drive all secondary publication: Merkle publication, external ledger export,
-  filesystem projection, and checkpoint publication. A filesystem append or
-  external write **MUST NOT** be presented as participating in the SQLite
-  transaction.
-- **Outbox semantics:** delivery is **at-least-once**; consumers **MUST** dedup by
-  `event_sequence`; publication order **MUST** follow `event_sequence` per token;
-  failed deliveries **MUST** retry with backoff and **MUST NOT** drop events.
-- **Proof-availability status** is a first-class, observable field: an event may be
-  `COMMITTED` but not yet `PUBLISHED`/`CHECKPOINTED`.
-- **Proof publication MUST NOT block an ALLOW response.** An ALLOW depends only on
-  the authoritative SQLite transaction; Merkle/checkpoint publication is
-  asynchronous. Verifiers requiring proof **MUST** consult proof-availability
-  status.
+Corrections are the **only** way to touch terminal state, and are strictly
+conservation-preserving and append-only.
 
-### 16.1 Timeline / revocation / expiry (D3 + D16 timeline)
+Every correction **MUST**:
 
-Revocation and expiry are ordered by the authenticated timeline: the per-token
-`event_sequence` provides total local order; cross-token/global order is provided
-by signed checkpoints (§17). "Before/after revocation" means **event-order**
-relative to the linearization point (§8), not wall-clock. Wall-clock `expiry` is
-enforced against an authenticated time source; where only ordering is available,
-expiry **MUST** be enforced at the next authenticated timeline observation and
-**MUST** fail closed in the interim (no new holds on a token whose expiry cannot be
-evaluated).
+- be **append-only**: emit a new `administrative_correction` event with a new
+  `event_sequence`, preserving all prior receipts/events unchanged (no signature or
+  prior receipt is mutated);
+- carry a **unique `correction_id`**, an explicit **reason**, and **authenticated
+  evidence**;
+- name the **compensating funding source/destination** for any capacity movement;
+- **preserve the five-bucket conservation equation (§0)** within the same atomic
+  transaction;
+- require **two distinct authenticated principals** (§6.1);
+- be **idempotent** on `correction_id`; a conflicting retry (same id, different
+  payload) **MUST** be rejected.
 
-## 17. Verification & proof model — D13 (claims narrowed)
+**Allowed correction classes** (each conservation-preserving):
 
-**Decision: RATIFIED (2026-07-26).** Claims are narrowed to what the mechanism
-supports. **Overclaims removed.**
+1. **Stuck-hold reclassification** — resolve a `PENDING_HOLD` per §12.3 when the
+   normal path failed, with evidence.
+2. **Funded compensating transfer** — atomically `debit funding_token.available −=
+   x` and `credit target_token.available += x`, both ACTIVE, same tenant, with
+   authenticated funding evidence. Net Σ across the two tokens unchanged.
+3. **Status reconciliation** — record a `revoked`/`expired` classification an
+   automated path missed, with evidence (moves `held`/`available` → `revoked`/`expired`).
 
-**Defensible v1 claims (normative):**
+**Prohibited corrections** (MUST NOT):
 
-- The authority is **correct across supported threads and processes sharing the
-  one authoritative local database** (§1) — **not** "correct across all executors"
-  and **not** across hosts.
-- **Historical signature integrity is offline-verifiable relative to supplied
-  trust roots and the stated validation context** — **not** "offline, eternal."
-  Signature checks require the trust roots and the validity context (issuer key
-  sets, validity windows) as inputs.
-- **Current authority (remaining balance, not-revoked, not-expired) requires
-  timeline, revocation, expiry, and checkpoint evidence** — a Merkle inclusion
-  proof alone **does not** prove remaining balance or that no later spend exists.
-- The history is **append-only relative to a witnessed signed checkpoint** — not
-  "append-only" without qualification.
-- Conserved-authority legitimacy is **verifiable relative to an externally trusted
-  signed checkpoint**, not "without the operator's word" in the absolute.
+- `committed → released/available` (reducing settled spend) — `ΔC_committed < 0`
+  is prohibited;
+- increasing any `available` without a matching authenticated funding debit or
+  issuance;
+- removing/rewriting committed spend, prior event order, or historical actor
+  identity;
+- reactivating `revoked`/`expired` capacity into `available`;
+- treating `frozen` (nonexistent in v1) or another token's committed history as a
+  funding source.
 
-**Checkpoint machinery (normative requirements; see deferral note):**
+---
 
-- **Signed checkpoints** — the authority **MUST** periodically emit a checkpoint
-  signing `(checkpoint_sequence, per_token_latest_state_root, global_root, time)`.
-- **Checkpoint sequence numbers** **MUST** be monotonic; a verifier **MUST** reject
-  a checkpoint with a sequence ≤ its last trusted checkpoint (stale/rollback).
-- **Trusted checkpoint acquisition** — verifiers **MUST** obtain checkpoints from a
-  trusted distribution channel (out of band from the operator's live claims).
-- **Consistency proofs** — between checkpoints the authority **MUST** provide an
-  append-only consistency proof; a verifier **MUST** reject inconsistent histories.
-- **Fork detection** — two signed checkpoints with the same sequence and different
-  roots **MUST** be treated as a fork (fail closed, escalate).
-- **Per-token latest-state proof** — a verifier **MUST** be able to obtain, for a
-  token at a trusted checkpoint, a proof of its latest state and that **no later
-  spend exists at that checkpoint** (via `event_sequence` + latest-state root).
-- **Stale-checkpoint rejection** — verification against an old checkpoint **MUST**
-  be labeled as such; current-authority decisions **MUST NOT** rely on stale
-  checkpoints.
+## PART V — EVENTS, RECEIPTS, VERIFICATION
 
-**Deferral (explicit):** the **full transparency-log / external witness / consistency-proof
-system is DEFERRED beyond v1** (§23). Until it ships, v1 **MUST NOT** claim
-third-party verification "without the operator's word"; v1 verification is
-**operator-attested via signed checkpoints**, and the stronger independent-witness
-claims are removed from this document until the mechanism exists.
+## 17. Canonical event envelope & signed payload schemas — D38
+
+**Decision: RATIFIED (2026-07-26).** "Canonical" is a defined format, not an
+adjective. All signed objects use the canonicalization and domain separation below.
+
+### 17.1 Canonicalization algorithm
+
+All signed/hashed payloads **MUST** be serialized with the repository's existing
+deterministic JSON canonicalization (`shared/json.ts` `canonicalizeJson`:
+lexicographic key order, no insignificant whitespace, rejection of duplicate keys
+and non-finite numbers) **as normatively referenced here**; unknown/duplicate
+fields **MUST** be rejected on verification; excluded fields (signatures) are
+removed before canonicalization. A signed object's schema **MUST** pin
+`schema` + `version`.
+
+### 17.2 Hashes & domain separation
+
+All hashes are SHA-256 over the §17.1 canonical bytes with a **domain-separation
+prefix** (label ‖ 0x00 ‖ bytes):
+
+- `owner_actor_id = H("mnde.owner.v1" ‖ issuer ‖ tenant ‖ subject)`
+- `request_hash   = H("mnde.request.v1" ‖ canonical_request)`
+- `H_execid       = H("mnde.execid.v1" ‖ namespace ‖ issuer ‖ nonce)`
+- `current_state_hash_n = H("mnde.state.v1" ‖ current_state_hash_{n-1} ‖ canonical_event_n)`
+  (genesis `current_state_hash_0 = H("mnde.state.v1" ‖ token_genesis)`)
+- checkpoint roots per §21.
+
+### 17.3–17.8 Canonical signed payloads
+
+Each schema **MUST** define: `schema`/`version`; canonicalization (§17.1);
+required fields; excluded fields; signature algorithm (Ed25519 unless stated);
+`key_role`; trust chain; expiry/historical-validation rules (§4); duplicate/
+unknown-field behavior (reject); domain-separation label.
+
+- **17.3 Pricing envelope** — fields §5; label `mnde.pricing.v1`; `key_role=pricing`.
+- **17.4 Authenticated principal evidence** — the credential/assertion proving
+  `Principal` (§3); label `mnde.principal.v1`; issuer trust chain; liveness §4.
+- **17.5 Release artifact** — fields §13; label `mnde.release.v1`; `key_role=authority`.
+- **17.6 Terminal decision receipt** — §19 immutable receipt; label `mnde.receipt.v1`.
+- **17.7 Administrative command** — §16; label `mnde.admin.v1`; dual-signed (§6.1).
+- **17.8 Recovery evidence** — §15; label `mnde.recovery.v1`; bound to
+  `execution_id`/`request_hash`/`release_id`.
+- **17.9 Checkpoint** and **17.10 later proof artifact** — §21/§19; labels
+  `mnde.checkpoint.v1`, `mnde.proof.v1`.
+
+The generic signed object for **non-execution** events is the **canonical event
+envelope** (§18.1), **not** "canonical execution."
 
 ## 18. Event & receipt taxonomy — D20
 
-**Decision: RATIFIED (2026-07-26).**
+**Decision: RATIFIED (2026-07-26).** Every authority-changing transition emits
+exactly one immutable event. Events are totally ordered per token by
+`event_sequence` and globally identified by `event_id` (§20).
 
-Every authority-changing event **MUST** be recorded as an immutable event with a
-per-token `event_sequence` and chained `current_state_hash`. Classification:
-
-| Event | Signed receipt | Immutable event | Merkle leaf | Externally visible proof |
-|---|---|---|---|---|
-| `token_issued` | ✓ | ✓ | ✓ | via checkpoint |
-| `hold_created` | ✓ | ✓ | ✓ | via checkpoint |
-| `hold_rejected` | — | ✓ | ✓ | via checkpoint |
-| `execution_released` (release artifact) | ✓ | ✓ | ✓ | via checkpoint |
-| `hold_committed` | ✓ | ✓ | ✓ | via checkpoint |
-| `hold_released` | ✓ | ✓ | ✓ | via checkpoint |
-| `token_revoked` | ✓ | ✓ | ✓ | via checkpoint |
-| `expiry_applied` | — | ✓ | ✓ | via checkpoint |
-| `recovery_required` | — | ✓ | ✓ | via checkpoint |
-| `recovery_resolved` | ✓ | ✓ | ✓ | via checkpoint |
-| `child_authority_issued` | ✓ | ✓ | ✓ | via checkpoint |
-| `child_authority_reclaimed` | ✓ | ✓ | ✓ | via checkpoint |
-| `administrative_correction` | ✓ (dual-signed) | ✓ | ✓ | via checkpoint |
-
-- Events **MUST** be totally ordered per token by `event_sequence`.
-- Terminal receipts are immutable (SM7); corrections append a new
-  `administrative_correction` event, they **MUST NOT** mutate prior receipts.
-
-### 18.1 Conserved receipts as chained state-transition proofs
-
-For a budget token, receipt `n` commits to pre-/post-state:
+### 18.1 Canonical event envelope
 
 ```
-R_n = Sign_k( Canon[ e, g, p, h_before, h_after, o, π ] )
-    where  h_after = δ(h_before, e)
-           h_before(R_{n+1}) == h_after(R_n)   for the same token
+Event = {
+  schema: "mnde.event.v1", version,
+  event_id,                       // globally unique, immutable (§20)
+  event_type,                     // enumerated below
+  authority_owner_id,
+  token_id?, tenant?,             // when token-scoped
+  execution_id?,                  // when execution-scoped
+  token_event_sequence?,          // per-token order when token-scoped
+  global_publication_sequence?,   // assigned at outbox publication (§20)
+  h_before?, h_after?,            // state-hash chain when token-scoped
+  payload,                        // type-specific canonical body
+  authority_signature             // authority key over canonical envelope
+}
 ```
 
-- `e` canonical execution; `g` grant id + content hash; `p` authority-path
-  commitment; `h_before/h_after` authenticated state commitments; `o` outcome
-  (prepaid v1: ALLOW/REFUSE, committed = held); `π` inclusion reference into the
-  outbox-published Merkle root **relative to a signed checkpoint** (§17).
+### 18.2 Event table
 
-Verification regimes (claims per §17):
+| event_type | token-scoped | exec-scoped | signed receipt | outbox | proof-eligible | retry |
+|---|---|---|---|---|---|---|
+| `token_issued` | ✓ | | ✓ | ✓ | ✓ | idempotent (token_id) |
+| `hold_created` | ✓ | ✓ | — | ✓ | ✓ | idempotent (token,exec) |
+| `hold_rejected` | ✓ | ✓ | — | ✓ | ✓ | idempotent |
+| `hold_committed` | ✓ | ✓ | ✓ | ✓ | ✓ | idempotent |
+| `hold_resolved` (RELEASED→bucket) | ✓ | ✓ | ✓ | ✓ | ✓ | idempotent |
+| `execution_allowed` | ✓ | ✓ | ✓ | ✓ | ✓ | idempotent |
+| `execution_refused` | ✓ | ✓ | ✓ | ✓ | ✓ | idempotent |
+| `release_issued` | ✓ | ✓ | ✓ | ✓ | ✓ | idempotent (release_id) |
+| `release_consumed` | ✓ | ✓ | ✓ | ✓ | ✓ | duplicate ⇒ non-executable result |
+| `release_expired` | ✓ | ✓ | — | ✓ | ✓ | idempotent |
+| `release_invalidated` | ✓ | ✓ | — | ✓ | ✓ | idempotent |
+| `revoke_requested` | ✓ | | — | ✓ | ✓ | idempotent |
+| `token_revoked` | ✓ | | ✓ | ✓ | ✓ | idempotent |
+| `expiry_applied` | ✓ | | — | ✓ | ✓ | idempotent |
+| `execution_recovery_required` | ✓ | ✓ | — | ✓ | ✓ | idempotent |
+| `execution_recovery_resolved` | ✓ | ✓ | ✓ | ✓ | ✓ | idempotent |
+| `recovery_lease_acquired` | ✓ | ✓ | — | ✓ | ✓ | one holder |
+| `recovery_lease_released` | ✓ | ✓ | — | ✓ | ✓ | idempotent |
+| `administrative_correction` | ✓ | | ✓ (dual-signed) | ✓ | ✓ | idempotent (correction_id) |
+| `pricing_rejected` | | ✓ | — | ✓ | ✓ | idempotent |
+| `credential_rejected` | | ✓ | — | ✓ | ✓ | idempotent |
+| `migration_started` | ✓? | | ✓ | ✓ | ✓ | idempotent |
+| `migration_committed` | ✓? | | ✓ | ✓ | ✓ | idempotent |
+| `migration_failed` | ✓? | | ✓ | ✓ | ✓ | idempotent |
 
-| Regime | Verifies | Requires |
-|---|---|---|
-| **Stateless** `V_s` | signature integrity, canonical action, containment, delegation narrowing, policy-hash equality | supplied trust roots + validation context (not "eternal") |
-| **Ledger-relative** `V_ℓ` | remaining budget, sibling allocation, hold/commit state, replay | authenticated history commitment at a trusted checkpoint |
-| **Timeline** `V_t` | revocation, expiry, ordering | authenticated ordering source + signed checkpoint |
+"proof-eligible" means an asynchronous later proof artifact (§19.2) MAY bind to
+the event; it does **not** assert a proof exists at commit time.
+
+## 19. Immutable receipts vs later proof artifacts — D34
+
+**Decision: RATIFIED (2026-07-26).** (F14)
+
+### 19.1 Immutable receipt (signed in the authority transaction)
+
+Contains only what exists at commit — **no Merkle proof, no `π`:**
+`schema/version, event_id, canonical_event_commitment (= h_after or event hash),
+token_id, token_event_sequence, execution_id?, decision/result, h_before, h_after,
+timestamp (authenticated time), authority_key_id`. Signed by the authority key.
+
+### 19.2 Later proof artifact (produced asynchronously)
+
+`schema/version, event_id, merkle_leaf, inclusion_path, checkpoint_root,
+checkpoint_sequence, checkpoint_signature, consistency_info?`. It **binds to** the
+immutable receipt/event commitment (`event_id` + commitment) and **MUST NOT**
+mutate the receipt. A receipt formula that signs a not-yet-existing `π` is
+**prohibited**. The conserved-receipt chain is
+`h_after_n = current_state_hash_n` (§17.2); proof of inclusion is a **separate**
+artifact.
+
+## 20. Ledger, transactional outbox & publication — D16, D33
+
+**Decision: RATIFIED (2026-07-26).** (F13)
+
+- **SQLite is the sole authoritative transaction store.** Execution state, budget
+  state, canonical event data, and immutable receipt bytes are written in the
+  **same** transaction (§12.2). A filesystem/external write **MUST NOT** be
+  presented as part of the SQLite transaction.
+- **Event identity/ordering:**
+  - `event_id` — **globally unique, immutable** — is the **deduplication key**.
+    Consumers **MUST** dedup by `event_id`, **not** by per-token `event_sequence`
+    (which collides across tokens).
+  - `(token_id, token_event_sequence)` — deterministic **per-token** order.
+  - `global_publication_sequence` — a monotonic counter assigned **by the outbox
+    publisher at publication**, providing a total cross-token publication order; its
+    authority/serialization is the single outbox publisher within the authority owner.
+- **Transactional outbox** (rows in the authority tx) drives Merkle publication,
+  external ledger export, filesystem projection, and checkpoint publication.
+- **Outbox semantics:** at-least-once delivery; **idempotent retry** and **duplicate
+  delivery** deduped by `event_id`; per-token order by `token_event_sequence`;
+  cross-token equal `event_sequence` values are expected and **MUST NOT** be treated
+  as duplicates; out-of-order delivery tolerated by consumers keyed on `event_id`;
+  **publication gaps** (missing `global_publication_sequence`) **MUST** be detected
+  and retried; **outbox replay after crash** re-delivers undelivered rows
+  idempotently.
+- **Proof publication MUST NOT block an ALLOW response**; ALLOW depends only on the
+  authoritative SQLite transaction. Proof-availability status is observable.
+
+## 21. Verification & checkpoint model — v1 vs deferred — D13, D31, D32
+
+**Decision: RATIFIED (2026-07-26).** (F11, F12)
+
+### 21.1 v1 regime (operator-signed checkpoints)
+
+- The authority **MUST** periodically emit an **operator-signed checkpoint**
+  `(checkpoint_sequence (monotonic), per_token_latest_state_root, global_root,
+  authenticated_time)`.
+- Verification is **relative to a trusted checkpoint** obtained out-of-band.
+- v1 provides **no independent non-equivocation guarantee**; v1 history **MUST NOT**
+  be called "witnessed" (no independent witness participates).
+- **Stale-checkpoint rejection:** a checkpoint with `checkpoint_sequence ≤` the
+  verifier's last trusted one is rejected; current-authority decisions **MUST NOT**
+  rely on stale checkpoints.
+- **Per-token latest-state proof:** at a trusted checkpoint, a verifier can obtain a
+  token's latest state and that no later spend exists **at that checkpoint**
+  (via `token_event_sequence` + latest-state root). This is **relative to the
+  checkpoint**, not absolute.
+
+### 21.2 Deferred regime (independent verification) — §22
+
+External witnesses, cross-checkpoint **consistency proofs**, gossip, independent
+fork detection / non-equivocation, and transparency-log guarantees are **deferred**.
+v1 makes **none** of these claims. (Consistency proofs are therefore **not** a v1
+MUST; the earlier "MUST provide consistency proof" is removed.)
+
+### 21.3 Claim scoping (normative)
+
+- **Correct** across supported threads/processes sharing one authoritative local DB
+  (§1) — not "all executors," not across hosts.
+- **Historical signature integrity is offline-verifiable relative to supplied trust
+  roots and validation context** — not "offline, eternal."
+- **Current authority** (balance/not-revoked/not-expired) **requires** timeline,
+  revocation, expiry, and a **trusted checkpoint** — a Merkle inclusion proof alone
+  does not prove remaining balance or absence of later spend.
+- **Rollback** is detected only per §11.1 (relative to the latest trusted external
+  checkpoint at startup).
+
+---
+
+## PART VI — STATE MACHINES
+
+**Common rules.** Each transition runs under the token-row predicate (§10) unless
+noted. **Terminal states are immutable except through §16 administrative
+correction.** Unlisted transitions are **prohibited**. Retry that observes the
+destination already reached is an idempotent no-op returning the stored result; a
+retry observing changed generation/sequence **MUST** abort.
+
+### SM-TOKEN (budget token)
+
+States: `ACTIVE` (initial), `REVOKED` (terminal), `EXPIRED` (terminal).
+
+1. `∅ → ACTIVE` — **issue** — issuer-admin + owner principal (§3), cap≥0, unique
+   `token_id`; sets `available=cap`; `generation=1`; emits `token_issued`.
+2. `ACTIVE → REVOKED` — **token_revoked** (linearizes at commit) — revocation-admin;
+   `available → revoked`; `generation+=1`; prohibited: reducing `committed`.
+3. `ACTIVE → EXPIRED` — **expiry_applied** — authenticated time (§9.2);
+   `available → expired`; `generation+=1`; prohibited: new holds/ALLOW/release/
+   execution after EXPIRED.
+4. Terminal → any: prohibited except §16.
+
+### SM-RES (reservation)
+
+States: `PENDING_HOLD` (initial), `COMMITTED` (terminal), `RELEASED` (terminal).
+
+1. `∅ → PENDING_HOLD` — **hold** (§12.1) — `available-=c; held+=c`; emits `hold_created`.
+2. `PENDING_HOLD → COMMITTED` — **TERMINAL_ALLOW_COMMIT** (§12.2, composite) —
+   `held-=c; committed+=c`; emits `hold_committed`, `execution_allowed`,
+   `release_issued`; prohibited: partial commit; commit when token not ACTIVE/gen-stale.
+3. `PENDING_HOLD → RELEASED` — **hold_resolved** (§12.3) — destination bucket by
+   token status (ACTIVE→available, REVOKED→revoked, EXPIRED→expired); emits
+   `hold_resolved`; prohibited when a durable `release_consumed` exists.
+
+No `RECOVERY_REQUIRED`/`frozen` in prepaid v1 (§12.4).
+
+### SM-EXEC (execution)
+
+States: `NONE`, `INFLIGHT`, `ALLOWED` (terminal), `REFUSED` (terminal),
+`EXEC_UNCERTAIN` (execution-status only; budget already committed).
+
+1. `NONE → INFLIGHT` — **begin** — unique `execution_id`, `request_hash` recorded.
+2. `INFLIGHT → ALLOWED` — via **TERMINAL_ALLOW_COMMIT** (§12.2).
+3. `INFLIGHT → REFUSED` — **execution_refused** — reservation resolved (§12.3).
+4. `ALLOWED → EXEC_UNCERTAIN` — only after durable `release_consumed` and an
+   undeterminable irreversible-action result (§15); **budget unchanged**.
+5. `EXEC_UNCERTAIN → ALLOWED_COMPLETED|ALLOWED_INCOMPLETE` — **execution_recovery_resolved**
+   — authenticated evidence (§15) under lease; **budget unchanged**.
+6. Terminal execution status immutable except §16.
+
+### SM-RELEASE (release artifact)
+
+States: `ISSUED`, `CONSUMED` (terminal), `EXPIRED` (terminal), `INVALIDATED` (terminal).
+
+1. `∅ → ISSUED` — inside **TERMINAL_ALLOW_COMMIT** (§12.2); idempotent on `release_id`.
+2. `ISSUED → CONSUMED` — **release_consumed** — authority-owner durable tx (§13.1);
+   duplicate consume ⇒ non-executable duplicate result; prohibited: consume before
+   issue, or executor-local consumption.
+3. `ISSUED → EXPIRED` — **release_expired** — authenticated time.
+4. `ISSUED → INVALIDATED` — **release_invalidated** — `token_generation` revoked;
+   prohibited: consume after invalidation.
+
+### SM-REVOKE (revocation command)
+
+States: `NONE`, `REVOKE_REQUESTED`, `REVOKED`.
+
+1. `NONE → REVOKE_REQUESTED` — **revoke_requested** — revocation-admin.
+2. `REVOKE_REQUESTED → REVOKED` — **token_revoked** (linearization point) —
+   `available→revoked`, `generation+=1`; prohibited: altering committed.
+
+### SM-EXEC-RECOVERY (execution-outcome recovery; budget-decoupled, §15)
+
+States: `EXEC_UNCERTAIN`, `RECONCILING` (lease), `RESOLVED_COMPLETED` (terminal),
+`RESOLVED_INCOMPLETE` (terminal), `PERMANENT_UNCERTAIN` (escalated).
+
+1. `EXEC_UNCERTAIN → RECONCILING` — **recovery_lease_acquired** — recovery-admin; one holder.
+2. `RECONCILING → RESOLVED_COMPLETED|RESOLVED_INCOMPLETE` — authenticated evidence (§15).
+3. `RECONCILING → PERMANENT_UNCERTAIN` — evidence unobtainable; escalate; **budget
+   remains committed** (no capacity moves).
+4. Lease expiry: `RECONCILING → EXEC_UNCERTAIN`.
+
+### SM-CORRECTION (administrative correction, §16)
+
+States: `NONE`, `PROPOSED` (one principal), `AUTHORIZED` (two distinct principals),
+`APPLIED` (terminal), `REJECTED` (terminal).
+
+1. `NONE → PROPOSED` — first authenticated admin principal + reason + evidence + `correction_id`.
+2. `PROPOSED → AUTHORIZED` — **second, distinct** authenticated principal (§6.1).
+3. `AUTHORIZED → APPLIED` — atomic conservation-preserving tx (§16); emits dual-signed
+   `administrative_correction`; idempotent on `correction_id`.
+4. `PROPOSED/AUTHORIZED → REJECTED` — conflicting retry / withdrawn / expired approval.
+
+### SM-MIGRATION (§23)
+
+States: `NONE`, `STARTED` (lock held), `COMMITTED` (terminal), `FAILED` (terminal).
+
+1. `NONE → STARTED` — **migration_started** — migration-admin ×2 (§6.1) under the
+   exclusive migration lock (§11).
+2. `STARTED → COMMITTED` — **migration_committed** — transactional; genesis per §23.
+3. `STARTED → FAILED` — **migration_failed** — leaves prior consistent state.
 
 ---
 
 ## PART VII — DELEGATION, MIGRATION
 
-## 19. Strict reservation & delegation backing — D2 (extended)
+## 22. Strict backing; delegation deferred — D2, D28
 
-**Decision: RATIFIED (2026-07-26).**
+**Decision: RATIFIED (2026-07-26).** (F8)
 
-- Every object accepted as **spend authority MUST be fully backed**: for any node
-  `u`, `Σ_children C_{u→v}(issued) + C_u^held + C_u^committed ≤ C_u^issued`.
-  **Overbooking of authoritative grants is prohibited.**
-- Internal, non-authoritative **forecasts MAY** exist but **MUST**: not be called
-  "grants"; not authorize spending; not appear in conservation equations as
-  committed authority; and **MUST NOT** be accepted at the execution boundary.
-- A child grant is itself a token row (§9) with its own generation, backed by a
-  reservation against the parent; reclaiming a child returns unspent backing to the
-  parent atomically.
+- Every object accepted as **spend authority MUST be fully backed** by issuance;
+  **overbooking is prohibited.** In single-tier v1 this means `held + committed ≤
+  issued` per token (guaranteed by §12.5).
+- Internal **forecasts MAY** exist but **MUST NOT** be called grants, authorize
+  spending, appear in conservation as committed authority, or be accepted at the
+  execution boundary.
+- **Budget delegation / cross-token child grants are DEFERRED beyond v1.** v1
+  contains **no** child-authority state machine, accounting, events, or guarantees.
+  (`child_authority_*` events are removed from the v1 taxonomy.) If added later,
+  delegation **MUST** ship with an explicit delegated bucket, a single
+  non-double-counting conservation equation, child issuance/use/reclaim/expiry/
+  revocation/recovery transitions, parent+child serialization, and hostile tests.
 
-## 20. Migration — D18
+### Deferred features (v1 non-goals)
 
-**Decision: RATIFIED (2026-07-26).**
+Metered settlement & budget freeze/recovery; multidimensional authority (`k>1`);
+budget delegation/child tokens; independent transparency-log / witness verification
+& consistency proofs; per-transaction external rollback high-water mark; emergency
+admin override; authority-side request rewriting; external lease/registry/fencing
+for replica detection; cross-currency conversion; concrete SQLite DDL/indexes/
+tuning. **Deferred features MUST NOT be presented as current guarantees.**
 
+## 23. Migration — D18, D36
+
+**Decision: RATIFIED (2026-07-26).** (F16)
+
+- **Balance initialization MUST** be one of: (a) legacy remaining balance **derived
+  from authenticated historical evidence**; or (b) legacy tokens **invalidated and
+  reissued from an explicit separately-funded source** under `issuer-admin`.
+  **Caller-supplied identity/balance MUST NOT** initialize an owned token.
+- **If authenticated legacy history is unavailable, fresh-install-only v1 is
+  acceptable** and MUST be stated in the deployment's migration record.
+- Migration **MUST** define: a **genesis event** and **initial state hash** per
+  token; an **initial checkpoint**; **committed historical spend** and
+  **frozen/in-flight work** handling (in-flight legacy holds are drained or failed
+  closed, never silently reinterpreted as owned); **duplicate import** rejection;
+  **partial-failure** rollback (transactional, prior consistent state); **restart**
+  idempotency; **rollback** detection (§11.1); **downgrade rejection** (refuse
+  older schema/state).
 - **Legacy bearer tokens MUST NOT gain authenticated ownership from caller-supplied
-  identity.** They are either invalidated or reissued under an authenticated
-  `issuer-admin` assignment.
-- **Ownership assignment** during migration **MUST** be an authenticated admin act
-  (§5), recorded as an immutable `administrative_correction`/migration event.
-- **In-flight requests** at migration **MUST** be drained or failed closed; a
-  migration **MUST NOT** silently reinterpret an in-flight legacy hold as an owned
-  hold.
-- **Receipt & API versioning** — receipts and APIs **MUST** carry a version; mixed
-  legacy/new deployments **MUST** be explicitly supported or refused, never
-  ambiguously mixed.
-- **Downgrade prevention** — after migration to an owned-authority schema, the
-  authority **MUST** refuse to start against an older schema/state (rollback
-  detection, §10, §17).
-- **Migration authorization & audit** — migrations run under `migration-admin`
-  with SoD (§5), under the exclusive migration lock (§10), and emit immutable
-  audit records.
-- **Rollback behavior** — a migration **MUST** be transactional; a failed
-  migration **MUST** leave the prior consistent state, never a partial mix.
+  identity.**
+- Migration runs under `migration-admin` ×2 (§6.1), the exclusive migration lock
+  (§11), and emits immutable `migration_*` events.
 
 ---
 
-## PART VIII — CONFORMANCE, PR METADATA, READINESS
+## PART VIII — CONFORMANCE, READINESS, METADATA
 
-## 21. Conformance — normative hostile test matrix — D-Conf
+## 24. Conformance — normative hostile test matrix — D-Conf
 
-**Decision: RATIFIED (2026-07-26).** Every ratified invariant **MUST** map to at
-least one required test. Tests are specified here; **no test code is written in
-this branch** (§22). Implementation **MUST** provide at least these tests:
+**Decision: RATIFIED (2026-07-26).** Every ratified MUST-level invariant maps to ≥1
+hostile test. **No test code is written in this branch (§26);** these specify
+required tests. Each test defines setup, concurrent actors/processes, fault-injection
+point, expected durable state, expected receipt/event, expected retry result, and
+expected refusal reason (recorded in the implementation's test plan).
 
-| # | Hostile scenario | Asserted invariant | Maps to |
+| # | Hostile scenario | Invariant | Maps to |
 |---|---|---|---|
-| C01 | simultaneous holds across threads | no overspend; one linear history | §9 |
-| C02 | simultaneous holds across processes (same DB) | no overspend | §1, §9 |
-| C03 | hold vs revoke | §8.1 resolution | §8 |
-| C04 | release vs revoke | correct bucket order | §8 |
-| C05 | commit vs revoke | commit-before-revoke stands; else RECOVERY | §8 |
-| C06 | expiry races (hold/release/commit) | §8.1 rows | §8 |
-| C07 | duplicate finalization | idempotent commit | SM2 |
-| C08 | conflicting request hashes (same exec_id) | reject | §13 |
-| C09 | execution-ID reuse across tokens | reject | §13 |
-| C10 | crash before hold | no state, no leak | §11.3 |
-| C11 | crash after hold, before commit | RECOVERY_REQUIRED (freeze) | §11.3 |
-| C12 | crash before receipt write | atomic; no split state | §11.2 |
-| C13 | crash after receipt write, before response | idempotent re-send | §11.3 |
-| C14 | crash before response (ALLOW) | committed, replay-safe | §11.3 |
-| C15 | recovery concurrency (two reconcilers) | exclusive lease | §15 |
-| C16 | stale pricing envelope | refuse | §6 |
-| C17 | pricing rollback (lower schedule_version) | refuse | §6 |
-| C18 | actor spoofing (copied user_id) | reject; not authenticated | §3 |
-| C19 | cross-tenant identity collision | distinct owner_actor_id; reject cross-tenant | §3 |
-| C20 | worker/parent tuple substitution | authority re-verifies tuple; no TOCTOU | §6 |
-| C21 | release-artifact replay | one-shot reject | §12 |
-| C22 | direct executor bypass (no artifact / cached receipt as authority) | rejected; outside guarantee | §12 |
-| C23 | database rollback / restore to older state | detected via checkpoint; fail closed | §10, §17 |
-| C24 | disk full mid-transaction | atomic refuse; no partial apply | §10 |
-| C25 | DB corruption at startup | fail closed | §10 |
-| C26 | outbox delivery failure | retry; no dropped events; ALLOW not blocked | §16 |
-| C27 | duplicate outbox delivery | dedup by event_sequence | §16 |
-| C28 | Merkle fork (two roots, same checkpoint seq) | fork detected; fail closed | §17 |
-| C29 | stale checkpoint used for current authority | rejected/labeled | §17 |
-| C30 | integer overflow in charge calc | refuse | §7 |
-| C31 | unsupported multi-host startup | fail closed | §1 |
-| C32 | network filesystem (NFS/SMB) startup | fail closed | §1, §10 |
-| C33 | migration + downgrade attempt | refuse downgrade; transactional | §20 |
-| C34 | bearer token presented to durable authority | reject | §3, §20 |
-| C35 | metered/`actual_*` used to reduce settlement in prepaid | ignored; full held committed | §2, §11.1 |
-
-## 22. Non-goals & implementation boundary
-
-- **No runtime code changes on this branch.** This is a specification.
-- Does not re-open PR #4's correctness fix; it is the foundation.
-- **No test code is written here**; §21 specifies required tests for implementation.
-- Does not define final SQLite DDL/indexes or operational tuning (§23).
-- **This document does not authorize implementation.** Implementation is gated on
-  §24 and PR #4 (§25).
-
-## 23. Explicitly deferred beyond v1
-
-- **Metered settlement** (authenticated usage meter) — §2. Prepaid only in v1.
-- **Multidimensional conserved authority** (`k > 1`) — §7. One monetary dimension
-  in v1.
-- **Full external transparency-log / independent-witness verification** — §17. v1
-  is operator-attested signed checkpoints; stronger independent claims removed
-  until the mechanism ships.
-- **Cross-currency conversion** — §7.
-- **Active-active multi-host / replicated authority** — §1.
-- **Cross-organization delegation & risk-budget dimensions** — beyond naming.
-- **Concrete SQLite DDL, indexes, and performance tuning** — §10.
-
-Deferred features **MUST NOT** be presented anywhere as current guarantees.
-
-## 24. Implementation-readiness checklist
-
-**Documentation completeness** (each required normative section present):
-
-- [x] Deployment scope (§1)
-- [x] Authenticated cost basis D0 (§2)
-- [x] Authenticated principal model (§3)
-- [x] Pricing authority envelope (§4)
-- [x] Administrative authority & SoD (§5)
-- [x] Parent/worker boundary & canonical tuple (§6)
-- [x] Numeric model, cents-only (§7)
-- [x] Token generation, expiry, anti-rollback, race table (§8)
-- [x] Per-token serialization & authoritative row (§9)
-- [x] SQLite minimum security profile (§10)
-- [x] Storage/transaction model; prepaid full-commit; no PARTIAL; freeze-on-uncertainty (§11)
-- [x] Executor one-shot release protocol (§12)
-- [x] Replay & execution identity (§13)
-- [x] Revocation & expiry semantics (§8, §14, §16.1)
-- [x] Crash recovery evidence model (§15)
-- [x] Seven normative state machines (SM1–SM7)
-- [x] Ledger, transactional outbox, publication (§16)
-- [x] Verification & proof model; claims narrowed (§17)
-- [x] Event & receipt taxonomy (§18)
-- [x] Strict reservation & delegation backing (§19)
-- [x] Migration policy (§20)
-- [x] Conformance hostile-test matrix (§21)
-- [x] Deferred-features list (§23)
-- [x] Decision log complete (Decision status, below)
-
-**Documentation gate:** **PASS** — all required normative sections exist and are
-internally consistent as of this revision.
-
-**Release gates (external, still OPEN — implementation remains BLOCKED):**
-
-- [ ] PR #4 merged (dependency, §25).
-- [ ] Architectural sign-off on the ratified D4 substrate and the state machines.
-- [ ] Implementation, tests (§21), and audit — **not started**.
-
-**Overall implementation-readiness verdict:** **BLOCKED.** The specification is
-documentation-complete and internally consistent (documentation gate PASS), but
-implementation is **not authorized**: it is gated on PR #4 landing, architectural
-sign-off, and a build+test cycle that has not begun. No runtime implementation has
-started.
+| C01 | simultaneous holds across threads | no overspend; one linear history | §10 |
+| C02 | simultaneous holds across processes (same DB) | no overspend | §1,§10 |
+| C03 | hold vs revoke | §9.3 | §9 |
+| C04 | hold vs expiry | §9.3 | §9 |
+| C05 | terminal-ALLOW commit vs revoke | commit-first stands; else PENDING→revoked | §9.3,§12.3 |
+| C06 | terminal-ALLOW commit vs expiry | commit-first stands; else PENDING→expired | §9.3,§12.3 |
+| C07 | duplicate terminal ALLOW | idempotent; single commit | §12.2 |
+| C08 | concurrent REFUSE vs ALLOW | one outcome; composite atomic | §12.2 |
+| C09 | crash before composite commit | PENDING_HOLD; no split state | §12.2 |
+| C10 | lost response after composite commit | idempotent re-send; no double commit | §12.2 |
+| C11 | conflicting request hashes (same exec_id) | reject | §14 |
+| C12 | execution-ID reuse across tokens | reject | §14 |
+| C13 | cached receipt presented as execution authority | reject; nonconformant | §13 |
+| C14 | release-artifact replay | one-shot; duplicate non-executable | §13 |
+| C15 | execute before durable consume | prohibited; nonconformant | §13.1 |
+| C16 | crash before durable consume | no execution authority | §13.2 |
+| C17 | crash after durable consume, before action | committed; no second execution | §13.2 |
+| C18 | crash during action | budget committed; execution recovery only | §13.2,§15 |
+| C19 | lost response after consume | duplicate result; no double execution | §13.2 |
+| C20 | evaluator crash before hold | no state, no leak, no freeze | §15 |
+| C21 | evaluator crash after hold, before terminal ALLOW | resolve per §12.3; no freeze | §15,§12.3 |
+| C22 | recovery release on ACTIVE token | held→available | §12.3 |
+| C23 | recovery/resolution on REVOKED token | held→revoked, never available | §12.3 |
+| C24 | recovery/resolution on EXPIRED token | held→expired, never available | §12.3 |
+| C25 | release racing revocation | resolved after revoke → revoked | §9.3 |
+| C26 | release racing expiry | resolved after expiry → expired | §9.3 |
+| C27 | retry of recovery resolution | idempotent | §15 |
+| C28 | request above quantity ceiling | REFUSE (no clamp) | §5.1 |
+| C29 | request above policy cap | REFUSE | §5.1 |
+| C30 | request at exact maximum | ALLOW; charge = exact | §5.1 |
+| C31 | charge arithmetic overflow | REFUSE | §5.1,§8 |
+| C32 | release-artifact quantity mismatch | reject | §13 |
+| C33 | stale pricing envelope | refuse | §5 |
+| C34 | pricing rollback (lower version) | refuse | §5 |
+| C35 | conflicting same-version price envelopes | fork; fail closed | §5 |
+| C36 | wrong environment/resource/region/currency envelope | refuse | §5 |
+| C37 | pricing-key revocation during in-flight authority | commit aborts / refuse | §5,§7 |
+| C38 | actor spoofing (copied user_id) | reject; not authenticated | §3 |
+| C39 | cross-tenant identity collision | distinct owner_actor_id; reject cross-tenant | §3 |
+| C40 | credential expired | reject new authority | §4 |
+| C41 | credential revoked/deprovisioned | reject new authority | §4 |
+| C42 | stale credential status | fail closed | §4 |
+| C43 | credential unavailable status | fail closed | §4 |
+| C44 | historical receipt verify with later-revoked credential | verifies historically; no new authority | §4 |
+| C45 | one principal holding multiple admin roles | counts as one; two-person unmet → reject | §6.1 |
+| C46 | two role labels backed by same credential | reject (same principal) | §6.1 |
+| C47 | two distinct principals authorize | accept | §6.1 |
+| C48 | duplicate approval replay | reject | §6.1 |
+| C49 | approval withdrawal/expiry mid-flow | reject | §6.1 |
+| C50 | compromised single administrator | cannot self-approve two slots | §6.1 |
+| C51 | admin correction preserving conservation | accept; Σ unchanged | §16 |
+| C52 | admin correction reducing committed | reject | §16,§0 |
+| C53 | admin correction increasing available w/o funding | reject | §16 |
+| C54 | admin correction reactivating revoked/expired | reject | §16 |
+| C55 | correction retry same id/different payload | reject; idempotent same payload | §16 |
+| C56 | frozen replacement-token prohibition (no linked replacement) | reject; independent funding only | §12.4,§16 |
+| C57 | independently funded replacement token | accept as new issuance; not "restore" | §16 |
+| C58 | worker/parent tuple substitution | authority re-verifies; no TOCTOU | §7 |
+| C59 | token issuance retry with conflicting payload | reject; idempotent same payload | SM-TOKEN |
+| C60 | cross-token identical token_event_sequence | not a duplicate; dedup by event_id | §20 |
+| C61 | outbox duplicate delivery | dedup by event_id | §20 |
+| C62 | outbox out-of-order / publication gap | detected; retried; per-token order preserved | §20 |
+| C63 | outbox replay after crash | idempotent re-delivery | §20 |
+| C64 | receipt available before proof publication | receipt valid; proof pending | §19 |
+| C65 | later proof binds correct event | accept | §19 |
+| C66 | wrong proof/event pairing | reject | §19 |
+| C67 | checkpoint reordering / stale checkpoint | reject stale | §21 |
+| C68 | Merkle fork (two roots, same checkpoint seq) | fork; fail closed | §21 |
+| C69 | rollback inside checkpoint lag | may be undetectable; documented; startup continuity else fail closed | §11.1 |
+| C70 | missing trusted checkpoint at startup | fail closed | §11.1 |
+| C71 | DB rollback beyond last trusted checkpoint | detected; fail closed | §11.1 |
+| C72 | disk full mid-transaction | atomic refuse; no partial apply | §11 |
+| C73 | DB/WAL/SHM corruption or missing at startup | fail closed | §11 |
+| C74 | symlinked DB/WAL/SHM path | reject; fail closed | §11 |
+| C75 | silent DB recreation attempt | refused; requires provisioning | §11 |
+| C76 | network filesystem (NFS/SMB) startup | fail closed | §1,§11 |
+| C77 | unsupported multi-host startup | fail closed | §1 |
+| C78 | disconnected writable replica | not runtime-detectable; deployment-prohibited (documented) | §1 |
+| C79 | migration balance genesis (authenticated history) | derived balance; genesis event | §23 |
+| C80 | migration reissue from independent funding | accept; owned token | §23 |
+| C81 | partial migration failure | transactional rollback; prior state | §23 |
+| C82 | migration downgrade/rollback attempt | refuse | §23,§11 |
+| C83 | legacy bearer token presented | reject | §3,§23 |
+| C84 | canonical-signature/canonicalization mismatch | reject | §17 |
+| C85 | unknown/duplicate field in signed payload | reject | §17.1 |
+| C86 | event-taxonomy completeness (every SM event enumerated) | pass | §18 |
+| C87 | integer overflow in any accounting op | refuse | §8 |
+| C88 | counter approaching 2^63 | fail closed (no wraparound) | §8 |
 
 ## 25. PR dependency & metadata — D21
 
-- **PR #5 MUST remain dormant until PR #4 is resolved.** PR #5 (this spec) depends
-  on PR #4 (`fix/budget-token-hold-finalization`), which establishes the
-  hold/commit/release foundation.
-- **After PR #4 lands**, the maintainer **MUST**: rebase PR #5 onto the resulting
-  `main`, re-read the resulting document, re-run all consistency checks (§26), and
-  verify no foundation language became stale.
-- The PR #5 description **MUST** state: D0–D4 (and the D5–D21 rulings herein) are
-  ratified; the decision log exists; implementation remains blocked; PR #4 remains
-  a dependency; no runtime implementation has started.
+- **PR #5 MUST remain dormant until PR #4 is resolved.**
+- **After PR #4 lands**, the maintainer **MUST** rebase PR #5, re-read the document,
+  re-run consistency checks (§29), and verify no foundation language became stale.
+- The PR #5 description **MUST** state: D0–D38 ratified; the decision log exists;
+  implementation remains blocked; PR #4 remains a dependency; no runtime
+  implementation has started.
 
-## 26. Editing & validation rules applied
+## 26. Non-goals & implementation boundary
 
-- Preserved useful existing material (calculus, D0–D4 rulings, decision log,
-  receipt-chain); expanded rather than rewritten from scratch.
-- Removed stale/contradictory language: prepaid `PARTIAL`; "released ALLOW remains
-  frozen awaiting settlement"; `ℝ^k` vs cents; "correct across all executors";
-  "offline, eternal"; "without the operator's word" (absolute); unqualified
-  "append-only".
-- Normative MUST / MUST NOT / SHOULD / MAY used consistently.
-- Ratified v1 behavior separated from deferred future work (§23).
-- No deferred feature is presented as a current guarantee.
-- Dated decision-log entries added for every newly ratified choice (below).
+- No runtime code/tests/schemas/packages/generated files changed on this branch.
+- Does not re-open PR #4.
+- **This document does not authorize implementation.** Implementation is gated on
+  §27 and PR #4 (§25).
+- The existing 65 runtime tests are **not** evidence that this normative matrix
+  (§24) is implemented; §24 tests are unimplemented requirements.
+
+## 27. Implementation-readiness checklist & documentation gate
+
+**Documentation completeness** — all normative sections present:
+Deployment (§1), D0 (§2), principal (§3), credential liveness (§4), pricing +
+no-clamp (§5), admin + principal-SoD (§6), parent/worker (§7), numeric (§8),
+generation/expiry/race (§9), serialization (§10), SQLite + scoped rollback (§11),
+storage + composite + hold-resolution (§12), executor consume protocol (§13),
+replay/identity (§14), execution recovery decoupled (§15), admin correction (§16),
+canonical envelope + payloads (§17), taxonomy (§18), receipt/proof split (§19),
+outbox identity/ordering (§20), verification v1/deferred (§21), backing +
+delegation deferred (§22), migration genesis (§23), conformance (§24). — **present.**
+
+**Documentation gate:** **FAIL — remediation in progress.** (This value is set to
+PASS by §29 only after the final consistency pass verifies every gate criterion
+below. It is left FAIL until then.)
+
+Gate criteria (all must hold for PASS): zero Critical findings; zero High
+contradictions; conservation mechanically coherent (§12.5); composite transition
+implementable (§12.2); release-consumption ordering explicit (§13.1); recovery
+cannot duplicate/resurrect authority (§12.3,§15,§16); expiry/revocation races have
+one outcome (§9.3); receipts and proofs separated (§19); rollback claims match the
+mechanism (§11.1,§21); every MUST-level invariant maps to a hostile test (§24); all
+internal references and metadata correct.
+
+**Release gates (external — implementation BLOCKED):** PR #4 merged; architectural
+sign-off; implementation + §24 tests + audit — **not started.**
+
+**Overall implementation-readiness verdict:** **BLOCKED.** Documentation gate is
+resolved in §29 after the consistency pass.
 
 ---
 
-## Decision status
+## 28. Decision status & log
 
-| # | Decision | Status | Ruling |
+| # | Decision | Status | Ruling (section) |
 |---|---|---|---|
-| D0 | Authenticated cost basis | **RATIFIED** | authenticate actor and price; authenticated usage required before metered settlement |
-| D1 | Prepaid vs metered | **RATIFIED** | prepaid now (full hold committed in terminal-ALLOW tx, no PARTIAL); metered deferred |
-| D2 | Strict reservation vs overbooking | **RATIFIED** | strict, fully backed; overbooking prohibited (§19) |
-| D3 | Revocation semantics | **RATIFIED** | stop future holds; preserve committed; freeze uncertain (§8, §16.1) |
-| D4 | Atomic shared `hold()` | **RATIFIED** | parent-owned shared SQLite authority; hold is the atomic boundary |
-| D5 | Executor one-shot release protocol | **RATIFIED** | signed single-use release artifact; receipts are not authority (§12) |
-| D6 | Pricing authority envelope | **RATIFIED** | signed pricing schedule; caller price untrusted; anti-rollback (§4) |
-| D7 | Authenticated principal model | **RATIFIED** | principal tuple; owner_actor_id derivation; tenant isolation; no bearer (§3) |
-| D8 | Administrative authority & SoD | **RATIFIED** | authenticated admin roles; SoD; spend ≠ admin (§5) |
-| D9 | Parent/worker boundary | **RATIFIED** | authority re-verifies canonical tuple; no TOCTOU (§6) |
-| D10 | Token generation & anti-rollback | **RATIFIED** | monotonic generation; revocation linearization; enforced expiry (§8) |
-| D11 | Per-token serialization | **RATIFIED** | authoritative row; optimistic (generation, sequence); anti-fork (§9) |
-| D12 | Crash recovery | **RATIFIED** | authenticated evidence only; exclusive lease; permanent-uncertainty freeze (§15) |
-| D13 | Verification & proof claims | **RATIFIED** | claims narrowed; checkpoint machinery; transparency-log deferred (§17) |
-| D14 | Deployment scope | **RATIFIED** | one host, one SQLite, local FS; no multi-host/NFS/SMB (§1) |
-| D15 | Replay & execution identity | **RATIFIED** | one authoritative execution record; cached-response coupled to request_hash (§13) |
-| D16 | Ledger & transactional outbox | **RATIFIED** | SQLite authoritative; outbox for publication; proof never blocks ALLOW (§16) |
-| D17 | Numeric model | **RATIFIED** | single monetary dimension, checked integer minor units (§7) |
-| D18 | Migration | **RATIFIED** | no bearer→owned via caller identity; authenticated, audited, downgrade-blocked (§20) |
-| D19 | SQLite security profile | **RATIFIED** | permissions, symlink, WAL, fail-closed startup, no silent recreate (§10) |
-| D20 | Event & receipt taxonomy | **RATIFIED** | enumerated events; per-token ordering; immutable receipts (§18) |
-| D21 | PR dependency & metadata | **RATIFIED** | PR #5 dormant until PR #4; rebase/recheck after (§25) |
-| P | Owned-token provisioning mechanism | Implementation design | provisioning and enforcement must ship together (§3, §5) |
-| R | Replay-hash comparison | Deferred prerequisite | land atomically with cached-response retry semantics (§13) |
+| D0 | Authenticated cost basis | RATIFIED | §2 |
+| D1 | Prepaid settlement (full commit; no freeze in v1) | RATIFIED | §12 |
+| D2 | Strict backing; overbooking prohibited | RATIFIED | §22 |
+| D3 | Revocation semantics | RATIFIED | §9 |
+| D4 | Parent-owned atomic hold | RATIFIED | §7,§10,§12 |
+| D5 | Executor one-shot release + durable consume | RATIFIED | §13 |
+| D6 | Pricing authority envelope | RATIFIED | §5 |
+| D7 | Authenticated principal model | RATIFIED | §3 |
+| D8 | Administrative authority | RATIFIED | §6 |
+| D9 | Parent/worker boundary; no TOCTOU | RATIFIED | §7 |
+| D10 | Token generation & anti-rollback | RATIFIED | §9 |
+| D11 | Per-token serialization | RATIFIED | §10 |
+| D12 | Execution-outcome recovery (budget-decoupled) | RATIFIED | §15 |
+| D13 | Verification claims (v1 vs deferred) | RATIFIED | §21 |
+| D14 | Deployment scope | RATIFIED | §1 |
+| D15 | Replay & execution identity | RATIFIED | §14 |
+| D16 | Ledger & transactional outbox | RATIFIED | §20 |
+| D17 | Numeric model | RATIFIED | §8 |
+| D18 | Migration | RATIFIED | §23 |
+| D19 | SQLite security profile | RATIFIED | §11 |
+| D20 | Event & receipt taxonomy | RATIFIED | §18 |
+| D21 | PR dependency & metadata | RATIFIED | §25 |
+| D22 | Oversized request ⇒ REFUSE (no clamp) | RATIFIED | §5.1 |
+| D23 | No linked replacement token; independent funding only | RATIFIED | §12.4,§16 |
+| D24 | Expiry linearization + grandfathering | RATIFIED | §9.1 |
+| D25 | Status-scoped hold resolution; no budget freeze | RATIFIED | §12.3,§12.4 |
+| D26 | Durable release-consume before execution | RATIFIED | §13.1 |
+| D27 | Composite TERMINAL_ALLOW_COMMIT | RATIFIED | §12.2 |
+| D28 | Budget delegation deferred | RATIFIED | §22 |
+| D29 | Administrative-correction state machine | RATIFIED | §16 |
+| D30 | Principal-level SoD (MUST, two-person) | RATIFIED | §6.1 |
+| D31 | Rollback detection scoped to external checkpoint | RATIFIED | §11.1 |
+| D32 | v1 vs deferred checkpoint regimes; not "witnessed" | RATIFIED | §21 |
+| D33 | Outbox event_id identity/ordering | RATIFIED | §20 |
+| D34 | Receipt vs later proof separation (no signed π) | RATIFIED | §19 |
+| D35 | Credential liveness | RATIFIED | §4 |
+| D36 | Migration balance genesis | RATIFIED | §23 |
+| D37 | Weakened writable-replica detection | RATIFIED | §1 |
+| D38 | Canonical event envelope + payload schemas | RATIFIED | §17 |
+| R | Replay-hash comparison (cached-response) | Deferred prerequisite | §14 |
 
 ### Decision log
 
 | Date | Decision | Ruling | Rationale |
 |---|---|---|---|
-| 2026-07-26 | D0 — Authenticated cost basis | Ratified | An unauthenticated price or usage claim lets the spender choose its own charge. |
-| 2026-07-26 | D1 — Settlement | Ratified: prepaid now, no PARTIAL; metered later | Prepaid enforceable with authenticated pricing; metered needs authenticated usage. |
-| 2026-07-26 | D2 — Reservation | Ratified: strict, fully backed | A conserved security limit cannot rely on overbooking. |
-| 2026-07-26 | D3 — Revocation/uncertainty | Ratified: freeze uncertain holds | Capacity that may be consumed cannot return to circulation. |
-| 2026-07-26 | D4 — Durable ownership | Ratified: parent-owned shared SQLite | Atomic holds prevent cross-worker overspend and split state. |
-| 2026-07-26 | D5 — Executor release protocol | Ratified: one-shot signed artifact | A receipt is evidence, not execution authority; prevents replay/bypass. |
-| 2026-07-26 | D6 — Pricing authority | Ratified: signed envelope, anti-rollback | Caller-chosen price defeats the cap; price must be authenticated. |
-| 2026-07-26 | D7 — Principal model | Ratified: authenticated tuple, no bearer | A copied user_id is not authentication; tenants must isolate. |
-| 2026-07-26 | D8 — Admin authority | Ratified: roles + SoD | Spending must never confer administrative power. |
-| 2026-07-26 | D9 — Parent/worker boundary | Ratified: authority re-verifies tuple | Worker output is untrusted; close the TOCTOU gap. |
-| 2026-07-26 | D10 — Generation/anti-rollback | Ratified: monotonic generation | Revocation/expiry must be enforced, ordered, and rollback-proof. |
-| 2026-07-26 | D11 — Per-token serialization | Ratified: optimistic concurrency | One linear history per token; no forks. |
-| 2026-07-26 | D12 — Crash recovery | Ratified: authenticated evidence only | Never release uncertain capacity on unauthenticated logs. |
-| 2026-07-26 | D13 — Verification claims | Ratified: narrowed + checkpoints; TL deferred | Claim only what the mechanism supports. |
-| 2026-07-26 | D14 — Deployment scope | Ratified: single host/DB, local FS | Correctness is scoped to one authoritative database. |
-| 2026-07-26 | D15 — Execution identity | Ratified: one authoritative record | Prevent replay and cross-token execution reuse. |
-| 2026-07-26 | D16 — Ledger/outbox | Ratified: outbox; proof async | FS/external writes cannot join a SQLite transaction. |
-| 2026-07-26 | D17 — Numeric model | Ratified: cents-only checked integers | Remove float/`ℝ^k` contradiction; overflow fails closed. |
-| 2026-07-26 | D18 — Migration | Ratified: authenticated, no bearer uplift | Legacy tokens must not gain ownership from caller identity. |
-| 2026-07-26 | D19 — SQLite security | Ratified: fail-closed profile | Local, permissioned, corruption/rollback-detecting store. |
-| 2026-07-26 | D20 — Event taxonomy | Ratified: enumerated, ordered, immutable | Deterministic per-token event order and immutable receipts. |
-| 2026-07-26 | D21 — PR metadata | Ratified: dormant until PR #4 | Keep the fix and the design reviewable independently. |
+| 2026-07-26 | D0–D21 | Ratified (prior remediation) | see §28 rows |
+| 2026-07-26 | D22 — Quantity ceiling | Ratified: REFUSE, never clamp | Silent clamping undercharges an unchanged executable request. |
+| 2026-07-26 | D23 — Replacement token | Ratified: no linked replacement; independent funding only | Linked replacement can make one amount spendable twice. |
+| 2026-07-26 | D24 — Expiry linearization | Ratified: linearize at tx commit; pre-ALLOW grandfathering only | One deterministic expiry-vs-commit outcome; committed prepaid preserved. |
+| 2026-07-26 | D25 — Hold resolution | Ratified: destination by token status; no budget freeze | Recovery must never restore spendable capacity on revoked/expired tokens. |
+| 2026-07-26 | D26 — Release consume | Ratified: durable consume before action | Prevents split-brain double execution. |
+| 2026-07-26 | D27 — Composite ALLOW | Ratified: single atomic transition | Removes circular SM2/SM3 precondition. |
+| 2026-07-26 | D28 — Delegation | Ratified: deferred | Prior model double-counted child authority; remove rather than expand. |
+| 2026-07-26 | D29 — Admin correction | Ratified: append-only, conservation-preserving SM | Correction must never bypass conservation or rewrite history. |
+| 2026-07-26 | D30 — SoD | Ratified: principal-level MUST, two-person | Role labels alone do not prevent a single admin self-approving. |
+| 2026-07-26 | D31 — Rollback | Ratified: scoped to external checkpoint; else fail closed | Async operator checkpoints cannot detect all rollback. |
+| 2026-07-26 | D32 — Checkpoint regimes | Ratified: v1 operator-signed, not witnessed; independent verification deferred | Do not claim non-equivocation without an independent witness. |
+| 2026-07-26 | D33 — Outbox identity | Ratified: dedup by global event_id | Per-token sequence collides across tokens. |
+| 2026-07-26 | D34 — Receipt/proof split | Ratified: no signed future π | A receipt cannot sign a proof that does not yet exist. |
+| 2026-07-26 | D35 — Credential liveness | Ratified: status freshness, fail closed | Well-formed ≠ live; revoked credentials must not grant new authority. |
+| 2026-07-26 | D36 — Migration genesis | Ratified: authenticated history or funded reissue; fresh-install-only allowed | Ownership must not derive from caller identity. |
+| 2026-07-26 | D37 — Replica detection | Ratified: deployment control, not runtime claim | SQLite cannot detect disconnected writable copies. |
+| 2026-07-26 | D38 — Canonical envelope | Ratified: defined envelope + payload schemas | "Canonical" must be a defined format, not an adjective. |
+
+## 29. Editing, validation & final gate
+
+Applied: preserved good material; removed the frozen/RECOVERY_REQUIRED budget model
+(replaced by deterministic status-scoped resolution, §12.3–12.4); replaced circular
+terminal-ALLOW with the composite transition (§12.2); deferred delegation (§22);
+added credential liveness (§4), admin-correction SM (§16), canonical envelope +
+payloads (§17), receipt/proof split (§19), outbox identity (§20), scoped rollback
+(§11.1) and checkpoint regimes (§21); corrected all internal references and the
+D0–D38 metadata; expanded conformance to C01–C88. This revision does **not** claim
+implementation, does **not** modify PR #4, and does **not** weaken any fail-closed
+rule.
+
+**Final documentation-gate resolution:** set by the post-edit consistency pass
+recorded in the PR #5 review notes. Until that pass is complete and every §27 gate
+criterion verifies, the gate reads **FAIL — remediation in progress** (§27).
