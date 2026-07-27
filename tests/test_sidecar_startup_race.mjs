@@ -32,15 +32,19 @@ async function productionEnv(dir) {
   // Custody signing + production profile.
   const custRoot = { keyId: "prod-root", ...generateAuthorityKeyPair() };
   const custReceipt = { keyId: "prod-receipt-1", ...generateAuthorityKeyPair() };
+  const custLedger = { keyId: "prod-ledger-1", ...generateAuthorityKeyPair() };
   const custodyBundle = await buildAuthorityBundle({
     authorityId: "race-prod", issuedAt: "2026-06-14T00:00:00.000Z", notAfter: "2099-01-01T00:00:00.000Z",
     root: custRoot,
-    receiptKeys: [{ keyId: custReceipt.keyId, publicPem: custReceipt.publicPem, validFrom: "2020-01-01T00:00:00.000Z", validUntil: "2099-01-01T00:00:00.000Z" }]
+    receiptKeys: [{ keyId: custReceipt.keyId, publicPem: custReceipt.publicPem, validFrom: "2020-01-01T00:00:00.000Z", validUntil: "2099-01-01T00:00:00.000Z" }],
+    ledgerKeys: [{ keyId: custLedger.keyId, publicPem: custLedger.publicPem, validFrom: "2020-01-01T00:00:00.000Z", validUntil: "2099-01-01T00:00:00.000Z" }]
   });
   const custodyBundlePath = join(dir, "authority.bundle.json");
   const custodyKeyPath = join(dir, "receipt.key.pem");
+  const custodyLedgerKeyPath = join(dir, "ledger.key.pem");
   writeFileSync(custodyBundlePath, JSON.stringify(custodyBundle));
   writeFileSync(custodyKeyPath, custReceipt.privatePem);
+  writeFileSync(custodyLedgerKeyPath, custLedger.privatePem);
 
   // Enforced signed policy bundle + bearer caller auth for production posture.
   const peRoot = { keyId: "pe-root-1", ...generateAuthorityKeyPair() };
@@ -69,6 +73,8 @@ async function productionEnv(dir) {
     MNDE_AUTHORITY_BUNDLE: custodyBundlePath,
     MNDE_RECEIPT_SIGNING_KEY: custodyKeyPath,
     MNDE_RECEIPT_KEY_ID: custReceipt.keyId,
+    MNDE_LEDGER_SIGNING_KEY: custodyLedgerKeyPath,
+    MNDE_LEDGER_KEY_ID: custLedger.keyId,
     MNDE_SIDECAR_AUTH: "bearer",
     MNDE_SIDECAR_AUTH_TOKENS: JSON.stringify({ "race-token": "race-caller" }),
     MNDE_DECISION_ENGINE: "policy-engine",

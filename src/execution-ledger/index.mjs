@@ -15,8 +15,21 @@
 import { canonicalizeJson } from "../../shared/json.ts";
 import { sha256Hex } from "../../shared/receipt-replay.mjs";
 
+// v1 = legacy keyless hash-chain entry (frozen; readable only in legacy mode).
+// v2 = hash-chain entry PLUS a custody ledger-key signature over the entry_hash.
+// The signature is what makes excision-and-rebuild infeasible: recomputing a
+// forged chain also requires re-signing every entry, which an attacker without
+// the ledger signing key cannot do.
 export const LEDGER_ENTRY_SCHEMA = "mnde.execution_ledger.entry.v1";
+export const LEDGER_ENTRY_SCHEMA_V2 = "mnde.execution_ledger.entry.v2";
+export const LEDGER_ENTRY_SCHEMAS = Object.freeze([LEDGER_ENTRY_SCHEMA, LEDGER_ENTRY_SCHEMA_V2]);
 export const LEDGER_VERIFY_RESULT_SCHEMA = "mnde.execution_ledger.verify_result.v1";
+
+// The custody role and algorithm the ledger signature uses. "ledger" keys are
+// already published in mnde.authority.bundle.v1 and exercised by custody
+// rotation/revocation — this wires that existing key into the chain.
+export const LEDGER_SIGNING_ROLE = "ledger";
+export const LEDGER_SIGNATURE_ALGORITHM = "ED25519";
 
 // Stable, documented error codes. These are part of the ledger's contract.
 export const LEDGER_ERRORS = Object.freeze({
@@ -32,7 +45,14 @@ export const LEDGER_ERRORS = Object.freeze({
   DUPLICATE_ENTRY_HASH: "ERR_LEDGER_DUPLICATE_ENTRY_HASH",
   APPEND_FAILED: "ERR_LEDGER_APPEND_FAILED",
   LOCK_FAILED: "ERR_LEDGER_LOCK_FAILED",
-  DISABLED_IN_PRODUCTION: "ERR_LEDGER_DISABLED_IN_PRODUCTION"
+  DISABLED_IN_PRODUCTION: "ERR_LEDGER_DISABLED_IN_PRODUCTION",
+  // v2 signature contract.
+  SIGNER_REQUIRED: "ERR_LEDGER_SIGNER_REQUIRED",
+  SIGNATURE_MISSING: "ERR_LEDGER_SIGNATURE_MISSING",
+  SIGNATURE_INVALID: "ERR_LEDGER_SIGNATURE_INVALID",
+  SIGNATURE_KEY_UNTRUSTED: "ERR_LEDGER_SIGNATURE_KEY_UNTRUSTED",
+  NO_TRUST_BUNDLE: "ERR_LEDGER_NO_TRUST_BUNDLE",
+  LEGACY_ENTRY_REJECTED: "ERR_LEDGER_LEGACY_ENTRY_REJECTED"
 });
 
 // sha256:<hex> of canonical bytes. The "sha256:" prefix names the algorithm in
@@ -50,14 +70,27 @@ export function canonicalReceiptHash(receipt) {
 }
 
 // The body a ledger entry's entry_hash commits to: every field EXCEPT entry_hash
-// itself. canonicalizeJson sorts keys, so object construction order is irrelevant.
+// and signature. canonicalizeJson sorts keys, so object construction order is
+// irrelevant. Excluding signature keeps entry_hash a pure function of the entry's
+// content, so the signature can be taken over entry_hash without a circular
+// dependency.
 export function ledgerEntryBody(entry) {
-  const { entry_hash: _omit, ...body } = entry;
+  const { entry_hash: _h, signature: _s, ...body } = entry;
   return body;
 }
 
 export function computeEntryHash(entryWithoutHash) {
   return sha256Prefixed(canonicalizeJson(ledgerEntryBody(entryWithoutHash)));
+}
+
+// The exact canonical bytes the ledger signature is taken over: the full entry
+// INCLUDING its committed entry_hash, minus the signature envelope itself. Signing
+// this binds the signature to entry_hash — hence to previous_entry_hash and
+// receipt_hash, i.e. the entry's whole chain position. Reproduced byte-for-byte at
+// verify time, so a re-signed excision is impossible without the ledger key.
+export function ledgerSignablePayload(entryWithHash) {
+  const { signature: _omit, ...rest } = entryWithHash;
+  return canonicalizeJson(rest);
 }
 
 export { resolveLedgerPath, isLedgerDisabled, isProductionProfile, ledgerStartupGate, DEFAULT_LEDGER_PATH } from "./paths.mjs";

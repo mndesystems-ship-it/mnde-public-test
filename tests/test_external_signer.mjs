@@ -32,21 +32,27 @@ async function test(name, fn) {
 async function fixture(dir, { revoke = false } = {}) {
   const root = { keyId: "prod-root", ...generateAuthorityKeyPair() };
   const receipt = { keyId: "receipt-1", ...generateAuthorityKeyPair() };
+  const ledger = { keyId: "ledger-1", ...generateAuthorityKeyPair() };
   const bundle = await buildAuthorityBundle({
     authorityId: "acme-prod",
     issuedAt: NOW,
     notAfter: "2099-01-01T00:00:00.000Z",
     root,
     receiptKeys: [{ keyId: receipt.keyId, publicPem: receipt.publicPem, validFrom: "2020-01-01T00:00:00.000Z", validUntil: "2099-01-01T00:00:00.000Z" }],
+    ledgerKeys: [{ keyId: ledger.keyId, publicPem: ledger.publicPem, validFrom: "2020-01-01T00:00:00.000Z", validUntil: "2099-01-01T00:00:00.000Z" }],
     revocation: revoke ? [receipt.keyId] : []
   });
   const bundlePath = join(dir, "authority.bundle.json");
   const privPath = join(dir, "receipt.key.pem");
   const pubPath = join(dir, "receipt.pub.pem");
+  const ledgerPrivPath = join(dir, "ledger.key.pem");
+  const ledgerPubPath = join(dir, "ledger.pub.pem");
   writeFileSync(bundlePath, JSON.stringify(bundle));
   writeFileSync(privPath, receipt.privatePem);
   writeFileSync(pubPath, receipt.publicPem);
-  return { bundlePath, privPath, pubPath, bundle, receipt };
+  writeFileSync(ledgerPrivPath, ledger.privatePem);
+  writeFileSync(ledgerPubPath, ledger.publicPem);
+  return { bundlePath, privPath, pubPath, ledgerPrivPath, ledgerPubPath, bundle, receipt, ledger };
 }
 
 // Build the env an operator would set, plus the mock-signer control env.
@@ -58,6 +64,9 @@ function env(fx, { mode = "ok", keyId = "receipt-1", pubPath, signerKey, timeout
     MNDE_EXTERNAL_SIGNER_PUBLIC_KEY: pubPath ?? fx.pubPath,
     MNDE_EXTERNAL_SIGNER_KEY_ID: keyId,
     MNDE_EXTERNAL_SIGNER_CMD: cmd ?? JSON.stringify(["node", SIGNER]),
+    MNDE_EXTERNAL_LEDGER_SIGNER_PUBLIC_KEY: fx.ledgerPubPath,
+    MNDE_EXTERNAL_LEDGER_SIGNER_KEY_ID: fx.ledger.keyId,
+    MNDE_EXTERNAL_LEDGER_SIGNER_CMD: JSON.stringify(["node", SIGNER, fx.ledgerPrivPath]),
     ...(timeout ? { MNDE_EXTERNAL_SIGNER_TIMEOUT_MS: String(timeout) } : {}),
     // mock-signer controls (inherited by spawnSync):
     MOCK_SIGNER_MODE: mode,
@@ -179,6 +188,14 @@ async function main() {
       const trust = await withSigner(e, () => assertTrustRoot(e, { repoRoot }));
       assert.equal(trust.ok, true, trust.detail);
       assert.equal(trust.profile, "production");
+    });
+
+    await test("external-signer configuration without a ledger signer fails closed", async () => {
+      const e = env(fx);
+      delete e.MNDE_EXTERNAL_LEDGER_SIGNER_CMD;
+      const cfg = await loadSigningConfig(e);
+      assert.equal(cfg.ok, false);
+      assert.equal(cfg.reason_code, "ERR_CUSTODY_SIGNER_UNAVAILABLE");
     });
 
     await test("production pre-flight FAILS the self-test when the signer is broken", async () => {

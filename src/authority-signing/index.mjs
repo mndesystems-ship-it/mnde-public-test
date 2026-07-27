@@ -52,8 +52,8 @@ function custodyConfigCode(reason) {
   if (/revoked|KEY_REVOKED/.test(text)) return "ERR_CUSTODY_KEY_REVOKED";
   if (/KEY_EXPIRED|not usable/.test(text)) return "ERR_CUSTODY_KEY_EXPIRED";
   if (/fingerprint mismatch|does not match the bundle key/.test(text)) return "ERR_CUSTODY_KEY_MISMATCH";
-  if (/EXTERNAL_SIGNER_CMD|external signer/.test(text)) return "ERR_CUSTODY_SIGNER_UNAVAILABLE";
-  if (/SIGNING_KEY|EXTERNAL_SIGNER_PUBLIC_KEY|no published .* key|not configured|not a valid public key/.test(text)) return "ERR_CUSTODY_KEY_MISSING";
+  if (/EXTERNAL_.*SIGNER_CMD|external .*signer/.test(text)) return "ERR_CUSTODY_SIGNER_UNAVAILABLE";
+  if (/SIGNING_KEY|EXTERNAL_.*SIGNER_PUBLIC_KEY|no published .* key|not configured|not a valid public key/.test(text)) return "ERR_CUSTODY_KEY_MISSING";
   if (/unknown MNDE_KEY_CUSTODY/.test(text)) return "ERR_CUSTODY_MISCONFIGURED";
   return "ERR_CUSTODY_MISCONFIGURED";
 }

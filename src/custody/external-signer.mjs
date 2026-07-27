@@ -26,33 +26,33 @@ const ED25519_SIG_HEX = /^[0-9a-f]{128}$/i; // 64 bytes => 128 hex chars
 
 // Parse MNDE_EXTERNAL_SIGNER_CMD into argv WITHOUT a shell. A JSON array is the
 // safe form for arguments with spaces; a bare string is whitespace-split.
-function parseArgv(cmd) {
+function parseArgv(cmd, envName) {
   if (typeof cmd !== "string" || cmd.trim().length === 0) {
-    throw new Error("custody: MNDE_EXTERNAL_SIGNER_CMD not configured");
+    throw new Error(`custody: ${envName} not configured`);
   }
   const text = cmd.trim();
   if (text.startsWith("[")) {
     let arr;
-    try { arr = JSON.parse(text); } catch { throw new Error("custody: MNDE_EXTERNAL_SIGNER_CMD is not a valid JSON array"); }
+    try { arr = JSON.parse(text); } catch { throw new Error(`custody: ${envName} is not a valid JSON array`); }
     if (!Array.isArray(arr) || arr.length === 0 || !arr.every((x) => typeof x === "string" && x.length > 0)) {
-      throw new Error("custody: MNDE_EXTERNAL_SIGNER_CMD must be a non-empty array of strings");
+      throw new Error(`custody: ${envName} must be a non-empty array of strings`);
     }
     return arr;
   }
   return text.split(/\s+/);
 }
 
-function loadPublicKeyPem(value) {
+function loadPublicKeyPem(value, envName) {
   if (typeof value !== "string" || value.length === 0) {
-    throw new Error("custody: MNDE_EXTERNAL_SIGNER_PUBLIC_KEY not configured");
+    throw new Error(`custody: ${envName} not configured`);
   }
   let pem;
   if (value.includes("BEGIN PUBLIC KEY")) {
     pem = value;
   } else {
-    try { pem = readFileSync(value, "utf8"); } catch { throw new Error(`custody: cannot read MNDE_EXTERNAL_SIGNER_PUBLIC_KEY at ${value}`); }
+    try { pem = readFileSync(value, "utf8"); } catch { throw new Error(`custody: cannot read ${envName} at ${value}`); }
   }
-  try { fingerprintOf(pem); } catch { throw new Error("custody: MNDE_EXTERNAL_SIGNER_PUBLIC_KEY is not a valid public key"); }
+  try { fingerprintOf(pem); } catch { throw new Error(`custody: ${envName} is not a valid public key`); }
   return pem;
 }
 
@@ -67,47 +67,57 @@ export function createExternalSignerCustody(env = process.env, options = {}) {
     throw new Error("custody: MNDE_AUTHORITY_BUNDLE is not an mnde.authority.bundle.v1");
   }
 
-  const argv = parseArgv(env.MNDE_EXTERNAL_SIGNER_CMD);
-  const publicPem = loadPublicKeyPem(env.MNDE_EXTERNAL_SIGNER_PUBLIC_KEY);
-  const publicFingerprint = fingerprintOf(publicPem);
-
-  const receiptKeys = Array.isArray(bundle.keys?.receipt) ? bundle.keys.receipt : [];
-  const keyId = env.MNDE_EXTERNAL_SIGNER_KEY_ID ?? receiptKeys[0]?.key_id;
-  const entry = receiptKeys.find((k) => k.key_id === keyId);
-  if (!entry) throw new Error(`custody: no published receipt key '${keyId ?? "?"}' in bundle`);
-
-  // Configured public key must be the bundle's key.
-  if (entry.fingerprint !== publicFingerprint) {
-    throw new Error("custody: MNDE_EXTERNAL_SIGNER_PUBLIC_KEY does not match the bundle key (fingerprint mismatch)");
-  }
-  // Key must be active and not revoked right now.
   const now = options.now ?? new Date().toISOString();
-  const usable = findBundleKey(bundle, "receipt", keyId, now);
-  if (!usable.ok) throw new Error(`custody: receipt key '${keyId}' is not usable (${usable.reason})`);
+  function configureRole({ role, cmdEnv, publicKeyEnv, keyIdEnv, timeoutEnv }) {
+    const argv = parseArgv(env[cmdEnv], cmdEnv);
+    const publicPem = loadPublicKeyPem(env[publicKeyEnv], publicKeyEnv);
+    const publicFingerprint = fingerprintOf(publicPem);
+    const keys = Array.isArray(bundle.keys?.[role]) ? bundle.keys[role] : [];
+    const keyId = env[keyIdEnv] ?? keys[0]?.key_id;
+    const entry = keys.find((k) => k.key_id === keyId);
+    if (!entry) throw new Error(`custody: no published ${role} key '${keyId ?? "?"}' in bundle`);
+    if (entry.fingerprint !== publicFingerprint) {
+      throw new Error(`custody: ${publicKeyEnv} does not match the bundle key (fingerprint mismatch)`);
+    }
+    const usable = findBundleKey(bundle, role, keyId, now);
+    if (!usable.ok) throw new Error(`custody: ${role} key '${keyId}' is not usable (${usable.reason})`);
+    const rawTimeout = Number(env[timeoutEnv] ?? env.MNDE_EXTERNAL_SIGNER_TIMEOUT_MS);
+    const timeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : DEFAULT_TIMEOUT_MS;
 
-  const rawTimeout = Number(env.MNDE_EXTERNAL_SIGNER_TIMEOUT_MS);
-  const timeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : DEFAULT_TIMEOUT_MS;
-
-  async function signReceipt(payload) {
-    const bytes = Buffer.from(payload, "utf8");
-    const result = spawnSync(argv[0], argv.slice(1), { input: bytes, timeout: timeoutMs, maxBuffer: 1024 * 1024 });
-    // Timeout, ENOENT, and other spawn failures land here. Never include key material.
-    if (result.error) {
-      throw new Error(`custody: external signer failed (${result.error.code ?? result.error.message ?? "spawn error"})`);
-    }
-    if (result.status !== 0) {
-      throw new Error(`custody: external signer exited ${result.status === null ? `via signal ${result.signal}` : `with code ${result.status}`}`);
-    }
-    const sigHex = (result.stdout ? result.stdout.toString("utf8") : "").trim();
-    if (!ED25519_SIG_HEX.test(sigHex)) {
-      throw new Error("custody: external signer did not return a 64-byte Ed25519 signature as hex");
-    }
-    // Verify the signature against the configured public key BEFORE accepting it.
-    if (!(await verifyCanonical(payload, sigHex, publicPem))) {
-      throw new Error("custody: external signer signature did not verify against the configured public key");
-    }
-    return { key_id: keyId, value: sigHex.toLowerCase(), fingerprint: entry.fingerprint };
+    return async function sign(payload) {
+      const bytes = Buffer.from(payload, "utf8");
+      const result = spawnSync(argv[0], argv.slice(1), { input: bytes, timeout: timeoutMs, maxBuffer: 1024 * 1024 });
+      if (result.error) {
+        throw new Error(`custody: external ${role} signer failed (${result.error.code ?? result.error.message ?? "spawn error"})`);
+      }
+      if (result.status !== 0) {
+        throw new Error(`custody: external ${role} signer exited ${result.status === null ? `via signal ${result.signal}` : `with code ${result.status}`}`);
+      }
+      const sigHex = (result.stdout ? result.stdout.toString("utf8") : "").trim();
+      if (!ED25519_SIG_HEX.test(sigHex)) {
+        throw new Error(`custody: external ${role} signer did not return a 64-byte Ed25519 signature as hex`);
+      }
+      if (!(await verifyCanonical(payload, sigHex, publicPem))) {
+        throw new Error(`custody: external ${role} signer signature did not verify against the configured public key`);
+      }
+      return { key_id: keyId, value: sigHex.toLowerCase(), fingerprint: entry.fingerprint };
+    };
   }
+
+  const signReceipt = configureRole({
+    role: "receipt",
+    cmdEnv: "MNDE_EXTERNAL_SIGNER_CMD",
+    publicKeyEnv: "MNDE_EXTERNAL_SIGNER_PUBLIC_KEY",
+    keyIdEnv: "MNDE_EXTERNAL_SIGNER_KEY_ID",
+    timeoutEnv: "MNDE_EXTERNAL_SIGNER_TIMEOUT_MS"
+  });
+  const signLedger = configureRole({
+    role: "ledger",
+    cmdEnv: "MNDE_EXTERNAL_LEDGER_SIGNER_CMD",
+    publicKeyEnv: "MNDE_EXTERNAL_LEDGER_SIGNER_PUBLIC_KEY",
+    keyIdEnv: "MNDE_EXTERNAL_LEDGER_SIGNER_KEY_ID",
+    timeoutEnv: "MNDE_EXTERNAL_LEDGER_SIGNER_TIMEOUT_MS"
+  });
 
   const notConfigured = (role) => () => { throw new Error(`custody: external signer is configured for receipts, not ${role}`); };
 
@@ -115,8 +125,8 @@ export function createExternalSignerCustody(env = process.env, options = {}) {
     mode: "external-signer",
     production: true,
     trustedRootFingerprint: bundle.root_key?.fingerprint ?? null,
-    keyId,
     signReceipt,
+    signLedger,
     signPolicy: notConfigured("policy"),
     signApproval: notConfigured("approval"),
     getPublicBundle: () => structuredClone(bundle),

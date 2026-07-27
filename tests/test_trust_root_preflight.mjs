@@ -36,25 +36,31 @@ async function test(name, fn) {
 async function writeProductionCustody(dir) {
   const root = { keyId: "prod-root", ...generateAuthorityKeyPair() };
   const receipt = { keyId: "prod-receipt-1", ...generateAuthorityKeyPair() };
+  const ledger = { keyId: "prod-ledger-1", ...generateAuthorityKeyPair() };
   const bundle = await buildAuthorityBundle({
     authorityId: "acme-prod",
     issuedAt: "2026-06-14T00:00:00.000Z",
     notAfter: "2099-01-01T00:00:00.000Z",
     root,
     receiptKeys: [{ keyId: receipt.keyId, publicPem: receipt.publicPem, validFrom: "2020-01-01T00:00:00.000Z", validUntil: "2099-01-01T00:00:00.000Z" }],
+    ledgerKeys: [{ keyId: ledger.keyId, publicPem: ledger.publicPem, validFrom: "2020-01-01T00:00:00.000Z", validUntil: "2099-01-01T00:00:00.000Z" }],
     revocation: []
   });
   const bundlePath = join(dir, "authority.bundle.json");
   const keyPath = join(dir, "receipt.key.pem");
+  const ledgerKeyPath = join(dir, "ledger.key.pem");
   writeFileSync(bundlePath, JSON.stringify(bundle), "utf8");
   writeFileSync(keyPath, receipt.privatePem, "utf8");
+  writeFileSync(ledgerKeyPath, ledger.privatePem, "utf8");
   return {
     MNDE_PROFILE: "production",
     MNDE_RECEIPT_SIGNING_MODE: "custody",
     MNDE_KEY_CUSTODY: "file-backed-production",
     MNDE_AUTHORITY_BUNDLE: bundlePath,
     MNDE_RECEIPT_SIGNING_KEY: keyPath,
-    MNDE_RECEIPT_KEY_ID: receipt.keyId
+    MNDE_RECEIPT_KEY_ID: receipt.keyId,
+    MNDE_LEDGER_SIGNING_KEY: ledgerKeyPath,
+    MNDE_LEDGER_KEY_ID: ledger.keyId
   };
 }
 
@@ -168,6 +174,19 @@ async function main() {
       assert.equal(r.ok, true, r.detail ?? "");
       assert.equal(r.profile, "production");
       assert.equal(r.authority_id, "acme-prod");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  await test("production mode without a ledger signing key fails startup preflight", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "mnde-tr-"));
+    try {
+      const env = await writeProductionCustody(dir);
+      delete env.MNDE_LEDGER_SIGNING_KEY;
+      delete env.MNDE_LEDGER_KEY_ID;
+      const r = await assertTrustRoot(env, { repoRoot });
+      assert.equal(r.ok, false);
+      assert.equal(r.reason_code, "ERR_TRUST_ROOT_LEDGER_SIGNER");
+      assert.match(r.detail, /ledger signer self-test failed/);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 

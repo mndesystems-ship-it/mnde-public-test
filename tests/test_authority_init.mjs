@@ -48,12 +48,16 @@ async function main() {
       const provider = createFileBackedProductionCustody({
         MNDE_AUTHORITY_BUNDLE: res.paths.bundle,
         MNDE_RECEIPT_SIGNING_KEY: res.paths.receiptPrivate,
-        MNDE_RECEIPT_KEY_ID: res.receiptKeyId
+        MNDE_RECEIPT_KEY_ID: res.receiptKeyId,
+        MNDE_LEDGER_SIGNING_KEY: res.paths.ledgerPrivate,
+        MNDE_LEDGER_KEY_ID: res.ledgerKeyId
       });
       const payload = canonicalizeJson({ decision: "ALLOW" });
       const sig = await provider.signReceipt(payload);
       const bundle = provider.getPublicBundle();
       assert.equal((await verifyAgainstBundle(payload, sig.value, "receipt", sig.key_id, NOW, bundle)).ok, true);
+      const ledgerSig = await provider.signLedger(payload);
+      assert.equal((await verifyAgainstBundle(payload, ledgerSig.value, "ledger", ledgerSig.key_id, NOW, bundle)).ok, true);
     });
 
     await test("passes the production trust-root pre-flight", async () => {
@@ -63,8 +67,10 @@ async function main() {
         MNDE_KEY_CUSTODY: "file-backed-production",
         MNDE_AUTHORITY_BUNDLE: res.paths.bundle,
         MNDE_RECEIPT_SIGNING_KEY: res.paths.receiptPrivate,
-        MNDE_RECEIPT_KEY_ID: res.receiptKeyId
-      }, { repoRoot });
+        MNDE_RECEIPT_KEY_ID: res.receiptKeyId,
+        MNDE_LEDGER_SIGNING_KEY: res.paths.ledgerPrivate,
+        MNDE_LEDGER_KEY_ID: res.ledgerKeyId
+      }, { repoRoot, now: NOW });
       assert.equal(trust.ok, true, trust.detail || trust.reason_code);
       assert.equal(trust.profile, "production");
     });

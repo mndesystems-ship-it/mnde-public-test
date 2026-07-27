@@ -8,11 +8,31 @@
 // the live ledger for the current receipt-log configuration. Overrides:
 //   --ledger=<path>        explicit ledger file
 //   --receipt-root=<dir>   root that receipt_ref paths resolve inside
-// or the environment: MNDE_EXECUTION_LEDGER_PATH, MNDE_RECEIPT_LOG.
+//   --bundle=<path>        trusted authority bundle (public) that signs v2 entries
+//   --legacy               accept unsigned v1 entries (audit/migration reads)
+// or the environment: MNDE_EXECUTION_LEDGER_PATH, MNDE_RECEIPT_LOG,
+// MNDE_AUTHORITY_BUNDLE (default trusted bundle path).
+//
+// Verifying a signed (v2) ledger requires the bundle whose "ledger" keys signed
+// it. A ledger written by an ephemeral local-demo key (no published bundle) can
+// only be read with --legacy; a production ledger verifies against its published
+// MNDE_AUTHORITY_BUNDLE.
 
+import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 import { resolveLedgerRuntime, ledgerHeadResponse, ledgerVerifyResponse, ledgerExportResponse } from "../src/execution-ledger/sidecar.mjs";
+
+function loadTrustedBundle(flags) {
+  const path = flags.bundle ? resolve(flags.bundle) : (process.env.MNDE_AUTHORITY_BUNDLE ?? null);
+  if (!path) return null;
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    console.error(`could not read trusted bundle at ${path}: ${error.message}`);
+    process.exit(2);
+  }
+}
 
 function parseArgs(argv) {
   const positional = [];
@@ -20,6 +40,7 @@ function parseArgs(argv) {
   for (const arg of argv) {
     const match = /^--([^=]+)=(.*)$/.exec(arg);
     if (match) flags[match[1]] = match[2];
+    else if (/^--[^=]+$/.test(arg)) flags[arg.slice(2)] = true;
     else positional.push(arg);
   }
   return { mode: positional[0] ?? "verify", flags };
@@ -34,8 +55,11 @@ if (flags["receipt-root"]) runtime.receiptRoot = resolve(flags["receipt-root"]);
 else if (flags.ledger && !process.env.MNDE_RECEIPT_LOG) runtime.receiptRoot = dirname(resolve(flags.ledger));
 runtime.enabled = true;
 
+const trustedBundle = loadTrustedBundle(flags);
+const strict = !("legacy" in flags);
+
 if (mode === "head") {
-  console.log(JSON.stringify(ledgerHeadResponse(runtime), null, 2));
+  console.log(JSON.stringify(await ledgerHeadResponse(runtime, trustedBundle, strict), null, 2));
   process.exit(0);
 }
 
@@ -45,7 +69,7 @@ if (mode === "export") {
 }
 
 if (mode === "verify") {
-  const result = ledgerVerifyResponse(runtime);
+  const result = await ledgerVerifyResponse(runtime, trustedBundle, strict);
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) {
     console.error(`\nFAIL execution-ledger verification (${result.entries_checked} checked) — ${result.errors[0]?.code}: ${result.errors[0]?.message}`);

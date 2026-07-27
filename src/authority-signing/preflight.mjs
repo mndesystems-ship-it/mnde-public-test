@@ -46,9 +46,11 @@ export function detectDevKeyPath(env = process.env, repoRoot) {
   const candidates = [
     env.MNDE_AUTHORITY_BUNDLE,
     env.MNDE_RECEIPT_SIGNING_KEY,
+    env.MNDE_LEDGER_SIGNING_KEY,
     env.MNDE_POLICY_SIGNING_KEY,
     env.MNDE_APPROVAL_SIGNING_KEY,
-    env.MNDE_EXTERNAL_SIGNER_PUBLIC_KEY
+    env.MNDE_EXTERNAL_SIGNER_PUBLIC_KEY,
+    env.MNDE_EXTERNAL_LEDGER_SIGNER_PUBLIC_KEY
   ].filter((p) => typeof p === "string" && p.length > 0);
 
   const devDirs = repoRoot
@@ -154,7 +156,35 @@ export async function assertTrustRoot(env = process.env, options = {}) {
     );
   }
 
-  // 6) Activation authority (mnde.activation.v1). The active authority
+  // 6) The production ledger is always enabled. Prove that its signer works and
+  //    that the resulting signature verifies against the published ledger key.
+  const ledgerProbe = '{"mnde.ledger_signer.selftest":true}';
+  let ledgerSignature;
+  try {
+    ledgerSignature = await signing.provider.signLedger(ledgerProbe);
+  } catch (error) {
+    return fail(
+      "ERR_TRUST_ROOT_LEDGER_SIGNER",
+      `MNDE_PROFILE=production ledger signer self-test failed: ${error instanceof Error ? error.message : String(error)}.`
+    );
+  }
+  const { verifyAgainstBundle } = await import("../custody/index.mjs");
+  const ledgerCheck = await verifyAgainstBundle(
+    ledgerProbe,
+    ledgerSignature?.value,
+    "ledger",
+    ledgerSignature?.key_id,
+    options.now ?? new Date().toISOString(),
+    bundle
+  );
+  if (!ledgerCheck.ok) {
+    return fail(
+      "ERR_TRUST_ROOT_LEDGER_SIGNER",
+      `MNDE_PROFILE=production ledger signer self-test did not verify against the published ledger key (${ledgerCheck.reason ?? "unknown"}).`
+    );
+  }
+
+  // 7) Activation authority (mnde.activation.v1). The active authority
   //    transition must be verified before any execution decision is served:
   //    the record verifies offline against the SAME bundle custody signs with
   //    (signature by an `activation` role key, validity, revocation, recomputed
