@@ -25,6 +25,21 @@ export const LEDGER_ENTRY_SCHEMA_V2 = "mnde.execution_ledger.entry.v2";
 export const LEDGER_ENTRY_SCHEMAS = Object.freeze([LEDGER_ENTRY_SCHEMA, LEDGER_ENTRY_SCHEMA_V2]);
 export const LEDGER_VERIFY_RESULT_SCHEMA = "mnde.execution_ledger.verify_result.v1";
 
+// Anchoring (Phase 1): a CT-style Merkle transparency layer over the entry
+// sequence. A checkpoint is a signed tree head; an inclusion proof lets a
+// counterparty verify ONE receipt offline against a checkpoint.
+export const LEDGER_CHECKPOINT_SCHEMA = "mnde.execution_ledger.checkpoint.v1";
+export const LEDGER_INCLUSION_PROOF_SCHEMA = "mnde.execution_ledger.inclusion_proof.v1";
+export const LEDGER_CHECKPOINT_VERSION = 1;
+// Assurance a proof reports. Phase 1 = operator-signed inclusion: the receipt is
+// provably included in a history the ledger key committed to — it does NOT prove
+// the history is rewrite-resistant (an operator holding the key could re-anchor a
+// rewritten history). WITNESSED (Phase 2) is the rewrite-resistant level.
+export const LEDGER_ASSURANCE = Object.freeze({
+  OPERATOR_SIGNED_INCLUSION: "operator-signed-inclusion",
+  WITNESSED: "witnessed"
+});
+
 // The custody role and algorithm the ledger signature uses. "ledger" keys are
 // already published in mnde.authority.bundle.v1 and exercised by custody
 // rotation/revocation — this wires that existing key into the chain.
@@ -52,7 +67,22 @@ export const LEDGER_ERRORS = Object.freeze({
   SIGNATURE_INVALID: "ERR_LEDGER_SIGNATURE_INVALID",
   SIGNATURE_KEY_UNTRUSTED: "ERR_LEDGER_SIGNATURE_KEY_UNTRUSTED",
   NO_TRUST_BUNDLE: "ERR_LEDGER_NO_TRUST_BUNDLE",
-  LEGACY_ENTRY_REJECTED: "ERR_LEDGER_LEGACY_ENTRY_REJECTED"
+  LEGACY_ENTRY_REJECTED: "ERR_LEDGER_LEGACY_ENTRY_REJECTED",
+  // Anchoring / inclusion-proof contract (Phase 1).
+  ANCHOR_FAILED: "ERR_LEDGER_ANCHOR_FAILED",
+  ANCHOR_KEY_UNRESOLVED: "ERR_LEDGER_ANCHOR_KEY_UNRESOLVED",
+  CHECKPOINT_MALFORMED: "ERR_LEDGER_CHECKPOINT_MALFORMED",
+  CHECKPOINT_SIGNATURE_INVALID: "ERR_LEDGER_CHECKPOINT_SIGNATURE_INVALID",
+  CHECKPOINT_KEY_UNTRUSTED: "ERR_LEDGER_CHECKPOINT_KEY_UNTRUSTED",
+  CHECKPOINT_LOG_ID_MISMATCH: "ERR_LEDGER_CHECKPOINT_LOG_ID_MISMATCH",
+  CHECKPOINT_KEY_EPOCH_MISMATCH: "ERR_LEDGER_CHECKPOINT_KEY_EPOCH_MISMATCH",
+  CHECKPOINT_ROLLBACK: "ERR_LEDGER_CHECKPOINT_ROLLBACK",
+  CHECKPOINT_EQUIVOCATION: "ERR_LEDGER_CHECKPOINT_EQUIVOCATION",
+  RECEIPT_INVALID: "ERR_LEDGER_RECEIPT_INVALID",
+  RECEIPT_BINDING: "ERR_LEDGER_RECEIPT_BINDING",
+  INCLUSION_INVALID: "ERR_LEDGER_INCLUSION_INVALID",
+  NOT_ANCHORED: "ERR_LEDGER_NOT_ANCHORED",
+  PROOF_MALFORMED: "ERR_LEDGER_PROOF_MALFORMED"
 });
 
 // sha256:<hex> of canonical bytes. The "sha256:" prefix names the algorithm in
@@ -93,6 +123,18 @@ export function ledgerSignablePayload(entryWithHash) {
   return canonicalizeJson(rest);
 }
 
+// The canonical bytes a checkpoint signature is taken over: the full checkpoint
+// minus its signature envelope. This covers schema, version, log_id, tree_size,
+// root_hash, key_id, key_epoch, issued_at, and ledger_head — so tampering with any
+// of them breaks the signature. issued_at is included but is the operator's CLAIM
+// of signing time, not trusted proof of time (a verifier must not treat it as such).
+export function checkpointSignablePayload(checkpointWithoutSig) {
+  const { signature: _omit, ...rest } = checkpointWithoutSig;
+  return canonicalizeJson(rest);
+}
+
 export { resolveLedgerPath, isLedgerDisabled, isProductionProfile, ledgerStartupGate, DEFAULT_LEDGER_PATH } from "./paths.mjs";
 export { appendLedgerEntry, buildLedgerEntry } from "./append.mjs";
 export { verifyLedger } from "./verify.mjs";
+// merkle.mjs / anchor.mjs / proof.mjs import constants FROM this module and are
+// imported directly by consumers (kept out of here to avoid an import cycle).

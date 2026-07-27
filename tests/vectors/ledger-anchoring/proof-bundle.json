@@ -1,0 +1,79 @@
+{
+  "schema": "mnde.execution_ledger.inclusion_proof.v1",
+  "receipt": {
+    "custody_attestation": {
+      "authority_bundle_fingerprint": "9c296d4de051608c8ed31381fca43fcc4f414ca39877dc0815171f0a1f38fd9c",
+      "decision": "REFUSE",
+      "receipt_hash": "eb51abc975b85dc9e3c8a3c006b3ade331247408834db4302538f7cdaf50c6b6",
+      "receipt_type": "mnde.pe.receipt.v1",
+      "receipt_version": "v1",
+      "schema_version": "mnde.custody.attestation.v1",
+      "signature": {
+        "algorithm": "ED25519",
+        "value": "ac6cafae22a3ce037cfb21e3207a48882b6689b596f1c1e6d2a44b43b2a8f0132027e33bcef9d5f513fea96ed69781e9c1882620fa345e5867367de69ac0fc08"
+      },
+      "signed_at": "2026-06-29T00:00:00.000Z",
+      "signing_key_id": "local-demo-receipt"
+    },
+    "receipt": {
+      "amount_cents": 200,
+      "decision_output": {
+        "decision": "REFUSE",
+        "reason_code": "NO_MATCHING_RULE"
+      },
+      "receipt_id": "r2",
+      "schema_version": "mnde.pe.receipt.v1"
+    },
+    "schema_version": "mnde.signed-receipt.v1"
+  },
+  "entry": {
+    "created_at": "2026-06-29T00:00:00.000Z",
+    "engine": {
+      "name": "mnde-policy-engine",
+      "version": null
+    },
+    "entry_hash": "sha256:425b927f3c439f1132b2dbe405fef72d15a88d6e4c79277a6e6bc83d430e3387",
+    "previous_entry_hash": "sha256:26940ec1b8e004109be747589a6a1bda25b9ca56517f52753b683fcd8539939a",
+    "receipt_hash": "sha256:5e96afa9244b6b39124b27018ce652a3d75daafd36c307f668cee45768a3e365",
+    "receipt_ref": {
+      "path": "receipts.jsonl",
+      "receipt_id": null,
+      "storage": "local"
+    },
+    "schema": "mnde.execution_ledger.entry.v2",
+    "sequence": 2,
+    "signature": {
+      "algorithm": "ED25519",
+      "fingerprint": "c7a224148c9964998e761d2923e1f5c78b2a3130831b7da95097aa13abfbd1a9",
+      "key_id": "local-demo-ledger",
+      "value": "e8a124277afec1b8c2627fe943da1d6a633c0fd2cadb6ac355df62d8eb1bfc5e238eec854aa9c50528c9e64674be6ea52134a6719df7904a2babb8e42343090c"
+    }
+  },
+  "inclusion": {
+    "tree_size": 3,
+    "leaf_index": 1,
+    "audit_path": [
+      "sha256:b043c1c659285d44ddbc5125cee00addb65f747076cea6612ea276eae42a37bc",
+      "sha256:f7ccb12817802c7a9429e6aa344980f0645c4ef96e9e779371fbe7a8c4c1f831"
+    ]
+  },
+  "checkpoint": {
+    "schema": "mnde.execution_ledger.checkpoint.v1",
+    "version": 1,
+    "log_id": "9c296d4de051608c8ed31381fca43fcc4f414ca39877dc0815171f0a1f38fd9c",
+    "tree_size": 3,
+    "root_hash": "sha256:230ed79260f9b83b5f2441f655215f2a20502d4243fe25c4d647040e6def37e7",
+    "key_id": "local-demo-ledger",
+    "key_epoch": 0,
+    "issued_at": "2026-06-29T00:05:00.000Z",
+    "ledger_head": {
+      "sequence": 3,
+      "entry_hash": "sha256:02067d23ea154aaa0bf89eb6ee4c2d8f2c01e1227a87ff676ade7b9501da4d8c"
+    },
+    "signature": {
+      "algorithm": "ED25519",
+      "key_id": "local-demo-ledger",
+      "value": "720c2a668e06cabd454221ca2714892e4067b2c187c3559ca32116e4a3a4ab847d73603425ba661d5c021acb9be23e18649179f5ebc91bc5b97bf9a13a971704"
+    }
+  }
+}

@@ -14,6 +14,7 @@ import { basename, dirname, join } from "node:path";
 
 import { appendLedgerEntry } from "./append.mjs";
 import { verifyLedger } from "./verify.mjs";
+import { anchorLedger, readCheckpointHead, buildProofBundle } from "./anchor.mjs";
 import { isLedgerDisabled } from "./paths.mjs";
 import { LEDGER_ERRORS } from "./index.mjs";
 
@@ -21,6 +22,7 @@ export const LEDGER_HEAD_SCHEMA = "mnde.execution_ledger.head.v1";
 export const LEDGER_EXPORT_SCHEMA = "mnde.execution_ledger.export.v1";
 
 const DEFAULT_LEDGER_FILENAME = "mnde-execution-ledger.jsonl";
+const DEFAULT_CHECKPOINT_FILENAME = "mnde-execution-checkpoints.jsonl";
 
 // Build the per-worker ledger runtime from env + the worker's receipt store path.
 export function resolveLedgerRuntime(env, receiptStorePath) {
@@ -28,9 +30,11 @@ export function resolveLedgerRuntime(env, receiptStorePath) {
   const override = typeof env.MNDE_EXECUTION_LEDGER_PATH === "string" && env.MNDE_EXECUTION_LEDGER_PATH.trim() !== ""
     ? env.MNDE_EXECUTION_LEDGER_PATH
     : null;
+  const ledgerPath = override ?? join(receiptRoot, DEFAULT_LEDGER_FILENAME);
   return {
     enabled: !isLedgerDisabled(env),
-    ledgerPath: override ?? join(receiptRoot, DEFAULT_LEDGER_FILENAME),
+    ledgerPath,
+    checkpointPath: join(dirname(ledgerPath), DEFAULT_CHECKPOINT_FILENAME),
     receiptRoot,
     receiptStorePath
   };
@@ -133,4 +137,45 @@ export function ledgerExportResponse(runtime) {
     }
   });
   return { schema: LEDGER_EXPORT_SCHEMA, ledger_path: runtime.ledgerPath, entry_count: entries.length, entries };
+}
+
+// ── Anchoring (Phase 1): checkpoint / on-demand anchor / inclusion proof ───────
+// All of these run OFF the ledger append lock — anchoring takes its own lock only.
+
+// Compute + write a new checkpoint. signLedger/bundle come from the caller's
+// custody. issuedAt defaults to now (operator-asserted; not trusted proof of time).
+export async function anchorNow(runtime, { signLedger, bundle, issuedAt } = {}) {
+  if (!runtime?.enabled) return { enabled: false };
+  const checkpoint = await anchorLedger(runtime.ledgerPath, runtime.checkpointPath, { signLedger, bundle, issuedAt });
+  return { enabled: true, anchored: true, checkpoint };
+}
+
+// Current checkpoint head (or null if never anchored).
+export function checkpointHeadResponse(runtime) {
+  try {
+    const head = runtime?.enabled ? readCheckpointHead(runtime.checkpointPath) : null;
+    return { ok: true, checkpoint: head ?? null };
+  } catch (error) {
+    return {
+      ok: false,
+      checkpoint: null,
+      code: LEDGER_ERRORS.CHECKPOINT_MALFORMED,
+      message: error?.message ?? String(error)
+    };
+  }
+}
+
+// Build an inclusion proof for a receipt against the current head checkpoint.
+// selector: { receipt_id } or { receipt_hash }. trustedBundle drives the built-in
+// self-verify (fail closed if ledger/merkle/checkpoint/bundle disagree).
+export async function proofResponse(runtime, selector, { trustedBundle } = {}) {
+  if (!runtime?.enabled) return { ok: false, code: "ERR_LEDGER_DISABLED" };
+  try {
+    const checkpoint = readCheckpointHead(runtime.checkpointPath);
+    if (!checkpoint) return { ok: false, code: LEDGER_ERRORS.NOT_ANCHORED, message: "no checkpoint yet" };
+    const bundle = await buildProofBundle(runtime.ledgerPath, checkpoint, selector, { receiptStorePath: runtime.receiptStorePath, trustedBundle });
+    return { ok: true, proof: bundle };
+  } catch (error) {
+    return { ok: false, code: error?.code ?? LEDGER_ERRORS.ANCHOR_FAILED, message: error?.message ?? String(error) };
+  }
 }

@@ -1,0 +1,72 @@
+{
+  "schema_version": "mnde.authority.bundle.v1",
+  "authority_id": "mnde-local-demo",
+  "issued_at": "2026-07-27T00:29:54.563Z",
+  "not_after": "2999-01-01T00:00:00.000Z",
+  "root_key": {
+    "key_id": "local-demo-root",
+    "public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA6KqAohu1vDbOvKS8J/jP/KWzh4ru5awdoLBQEFe20EE=\n-----END PUBLIC KEY-----\n",
+    "fingerprint": "9c296d4de051608c8ed31381fca43fcc4f414ca39877dc0815171f0a1f38fd9c"
+  },
+  "keys": {
+    "receipt": [
+      {
+        "key_id": "local-demo-receipt",
+        "public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAxdt2EiQ2sMC6w4m1JKmQJqy8nWUiT55MAWGpJSo9NP0=\n-----END PUBLIC KEY-----\n",
+        "fingerprint": "0f6747a44283258975719a0cfa3a722cacc4cb9014517ad6e8d75f4c353d5d6e",
+        "valid_from": "1970-01-01T00:00:00.000Z",
+        "valid_until": "2999-01-01T00:00:00.000Z"
+      }
+    ],
+    "policy": [
+      {
+        "key_id": "local-demo-policy",
+        "public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAMx8dmVECkcqhOfi9k5frmTVlaxsG3oHqYpprUCQX41Y=\n-----END PUBLIC KEY-----\n",
+        "fingerprint": "8b7ee5ca6d914ba047ccc7483ca3edfe1e44825d68a3f446e8ee4299b9577720",
+        "valid_from": "1970-01-01T00:00:00.000Z",
+        "valid_until": "2999-01-01T00:00:00.000Z"
+      }
+    ],
+    "approval": [
+      {
+        "key_id": "local-demo-approval",
+        "public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAyDs5Q8LkAGEM3FpaI1JqD+4U66zIQ0nl8Cp4zT9Y+ds=\n-----END PUBLIC KEY-----\n",
+        "fingerprint": "a50a50eee11c0c206e4b1f4519ba301fde3aea15144705bb54db37e2c7ee9ca5",
+        "valid_from": "1970-01-01T00:00:00.000Z",
+        "valid_until": "2999-01-01T00:00:00.000Z"
+      }
+    ],
+    "result": [
+      {
+        "key_id": "local-demo-result",
+        "public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAedSdb1A0qfRPsUDHgJ/BYp2P6JgajzX6GSJSY+b/pgE=\n-----END PUBLIC KEY-----\n",
+        "fingerprint": "a9a9589f257e0c323351bc0df769458cb199835923b82e7871e2c8ce6fef8a7b",
+        "valid_from": "1970-01-01T00:00:00.000Z",
+        "valid_until": "2999-01-01T00:00:00.000Z"
+      }
+    ],
+    "ledger": [
+      {
+        "key_id": "local-demo-ledger",
+        "public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAEKiVg0L4WNDz0Og2S7fPDjIpbMaL2gkBSeGYYkS234k=\n-----END PUBLIC KEY-----\n",
+        "fingerprint": "c7a224148c9964998e761d2923e1f5c78b2a3130831b7da95097aa13abfbd1a9",
+        "valid_from": "1970-01-01T00:00:00.000Z",
+        "valid_until": "2999-01-01T00:00:00.000Z"
+      }
+    ],
+    "activation": [
+      {
+        "key_id": "local-demo-activation",
+        "public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEArx1sVmyL7GtyfWI8HeHd9dJRDLfNzCUZ4GDWHh+7E/k=\n-----END PUBLIC KEY-----\n",
+        "fingerprint": "967e9273e90730fce8e46e6cc4edccab902623aa09ac585f53e04c3237457983",
+        "valid_from": "1970-01-01T00:00:00.000Z",
+        "valid_until": "2999-01-01T00:00:00.000Z"
+      }
+    ]
+  },
+  "revocation": [],
+  "signature": {
+    "algorithm": "ED25519",
+    "value": "2666794463a252c138eaae16fbc992dc1b7852504be36bef5f56144c0c1685f434fd76a8f3d435ec9446e0ed563b579a33bd37ceea8a385c7440b27b6a2be401"
+  }
+}

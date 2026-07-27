@@ -28,6 +28,8 @@
   "test:fresh-setup",
   "test:historical-policy-bundle",
   "test:identity-assertion",
+  "test:ledger-anchor",
+  "test:ledger-merkle",
   "test:live-verification",
   "test:mcp",
   "test:mcp-proxy",
