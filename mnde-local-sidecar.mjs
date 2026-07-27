@@ -17,7 +17,7 @@ import { boundaryReplayEndpointResponse } from "./shared/receipt-replay.mjs";
 import { parseRuntimeProfile } from "./shared/runtime-profile.mjs";
 import { resolveDecisionEngine } from "./shared/decision-engine.mjs";
 import { ledgerStartupGate, isLedgerDisabled } from "./src/execution-ledger/paths.mjs";
-import { resolveLedgerRuntime, recordReceiptInLedger, ledgerResponseMeta, ledgerHeadResponse, ledgerVerifyResponse, ledgerExportResponse } from "./src/execution-ledger/sidecar.mjs";
+import { resolveLedgerRuntime, recordReceiptInLedger, ledgerResponseMeta, ledgerHeadResponse, ledgerVerifyResponse, ledgerExportResponse, anchorNow, checkpointHeadResponse, proofResponse } from "./src/execution-ledger/sidecar.mjs";
 import { createLocalDemoCustody } from "./src/custody/index.mjs";
 import {
   DeterministicWorkerPool,
@@ -449,6 +449,37 @@ if (SIGNING_MODE === "custody" && signingConfig.ok && signingConfig.provider) {
   LEDGER_SIGN = demoLedgerCustody.signLedger;
   LEDGER_BUNDLE = demoLedgerCustody.getPublicBundle();
   process.stdout.write(`MNDe execution ledger: signed (ephemeral local-demo ledger key; non-production)\n`);
+}
+
+// Anchoring scheduler (Phase 1): produce a signed checkpoint every N entries OR
+// every T ms, whichever comes first — plus the on-demand POST /ledger/anchor
+// endpoint below. This runs on a background timer, wholly OFF the request/append
+// path: it takes only the checkpoint lock, NEVER the ledger append lock.
+const ANCHOR_EVERY_ENTRIES = Math.max(1, Number(process.env.MNDE_LEDGER_ANCHOR_EVERY ?? 100));
+const ANCHOR_INTERVAL_MS = Math.max(1000, Number(process.env.MNDE_LEDGER_ANCHOR_INTERVAL_MS ?? 60000));
+const ANCHOR_TICK_MS = Math.max(1000, Number(process.env.MNDE_LEDGER_ANCHOR_TICK_MS ?? 5000));
+function countLedgerEntries() {
+  try {
+    if (!existsSync(LEDGER_RUNTIME.ledgerPath)) return 0;
+    return readFileSync(LEDGER_RUNTIME.ledgerPath, "utf8").split("\n").filter((l) => l.trim() !== "").length;
+  } catch { return 0; }
+}
+async function anchorTick() {
+  try {
+    const head = checkpointHeadResponse(LEDGER_RUNTIME).checkpoint;
+    const count = countLedgerEntries();
+    const lastSize = head?.tree_size ?? 0;
+    if (count <= lastSize) return; // nothing new to anchor
+    const dueByCount = (count - lastSize) >= ANCHOR_EVERY_ENTRIES;
+    const dueByTime = !head || (Date.now() - Date.parse(head.issued_at) >= ANCHOR_INTERVAL_MS);
+    if (dueByCount || dueByTime) await anchorNow(LEDGER_RUNTIME, { signLedger: LEDGER_SIGN, bundle: LEDGER_BUNDLE });
+  } catch (error) {
+    process.stderr.write(`${JSON.stringify({ ts: new Date().toISOString(), event: "mnde.execution_ledger.anchor_tick_failed", message: error?.message ?? String(error) })}\n`);
+  }
+}
+if (LEDGER_RUNTIME.enabled) {
+  const anchorTimer = setInterval(() => { void anchorTick(); }, ANCHOR_TICK_MS);
+  if (typeof anchorTimer.unref === "function") anchorTimer.unref(); // never keep the process alive
 }
 
 // Sign a built receipt for delivery. Legacy mode is a pass-through; custody mode
@@ -1423,6 +1454,40 @@ const server = http.createServer(async (req, res) => {
     const result = ledgerExportResponse(LEDGER_RUNTIME);
     auditAuthority(pathname, authz, "ALLOW", `entries:${result.entry_count}`, null, null);
     response(res, 200, result);
+    return;
+  }
+  // Anchoring: checkpoint head (read), on-demand anchor (authority-gated), and a
+  // single-receipt inclusion proof (authority-gated). Anchoring never touches the
+  // append lock — the on-demand path just triggers the same off-lock anchor step.
+  if (req.method === "GET" && pathname === "/ledger/checkpoint") {
+    if (!authorizeProductionRead(req, res, pathname, "ledger.checkpoint")) return;
+    response(res, 200, checkpointHeadResponse(LEDGER_RUNTIME));
+    return;
+  }
+  if (req.method === "POST" && pathname === "/ledger/anchor") {
+    const authz = authorizeRequest(req, pathname);
+    if (!authz.ok) { response(res, 403, refusalBody(authz.reason, authz.actor, "ledger.anchor")); return; }
+    try {
+      const out = await anchorNow(LEDGER_RUNTIME, { signLedger: LEDGER_SIGN, bundle: LEDGER_BUNDLE });
+      auditAuthority(pathname, authz, "ALLOW", out.checkpoint ? `tree_size:${out.checkpoint.tree_size}` : "disabled", null, null);
+      response(res, 200, out);
+    } catch (error) {
+      auditAuthority(pathname, authz, "REFUSE", "anchor", null, error?.code ?? "ERR_LEDGER_ANCHOR_FAILED");
+      response(res, 200, { enabled: true, anchored: false, code: error?.code ?? "ERR_LEDGER_ANCHOR_FAILED", message: error?.message ?? String(error) });
+    }
+    return;
+  }
+  if (req.method === "GET" && pathname === "/ledger/proof") {
+    const authz = authorizeRequest(req, pathname);
+    if (!authz.ok) { response(res, 403, refusalBody(authz.reason, authz.actor, "ledger.proof")); return; }
+    const params = new URL(req.url, "http://127.0.0.1").searchParams;
+    const rid = params.get("receipt_id");
+    const rh = params.get("receipt_hash");
+    const selector = rid ? { receipt_id: rid } : (rh ? { receipt_hash: rh } : null);
+    if (!selector) { response(res, 400, { ok: false, code: "ERR_LEDGER_PROOF_SELECTOR", message: "receipt_id or receipt_hash query param required" }); return; }
+    const out = await proofResponse(LEDGER_RUNTIME, selector, { trustedBundle: LEDGER_BUNDLE });
+    auditAuthority(pathname, authz, out.ok ? "ALLOW" : "REFUSE", out.ok ? `seq:${out.proof.entry.sequence}` : "proof", null, out.ok ? null : out.code);
+    response(res, out.ok ? 200 : 404, out);
     return;
   }
   await fail(res, "ERR_NOT_FOUND", 404);
