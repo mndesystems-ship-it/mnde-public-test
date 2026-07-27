@@ -21,7 +21,7 @@ process.stdin.on("end", () => {
   if (mode === "badhex") { process.stdout.write("not-valid-hex!!\n"); process.exit(0); }
   if (mode === "short") { process.stdout.write("abcd\n"); process.exit(0); }
   try {
-    const priv = createPrivateKey(readFileSync(process.env.MOCK_SIGNER_KEY, "utf8"));
+    const priv = createPrivateKey(readFileSync(process.argv[2] ?? process.env.MOCK_SIGNER_KEY, "utf8"));
     process.stdout.write(sign(null, bytes, priv).toString("hex") + "\n");
     process.exit(0);
   } catch (error) {

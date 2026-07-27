@@ -22,7 +22,10 @@ A custody provider publishes a single, signed, public artifact. It contains **on
   "keys": {
     "receipt":  [ { "key_id": "...", "public_key": "...", "fingerprint": "...", "valid_from": "...", "valid_until": "..." } ],
     "policy":   [ ... ],
-    "approval": [ ... ]
+    "approval": [ ... ],
+    "result":   [ ... ],
+    "ledger":   [ ... ],
+    "activation": [ ... ]
   },
   "revocation": [ "key_id-that-is-no-longer-trusted" ],
   "signature": { "algorithm": "ED25519", "value": "<root signature over the canonical bundle>" }
@@ -30,7 +33,7 @@ A custody provider publishes a single, signed, public artifact. It contains **on
 ```
 
 - The **root key** signs the rest of the bundle. A verifier trusts the root by its **fingerprint**, supplied out of band — never from the bundle, a request, or a receipt.
-- **Signing keys** are grouped by role (`receipt`, `policy`, `approval`), each with a key id and a validity window.
+- **Signing keys** are grouped by role (`receipt`, `policy`, `approval`, `result`, `ledger`, `activation`), each with a key id and a validity window.
 - **Revocation** lists key ids that must be rejected even inside their validity window.
 - Private keys are **never** present.
 
@@ -73,6 +76,7 @@ Loads a published bundle plus role private keys from the filesystem — keys liv
 | `MNDE_AUTHORITY_BUNDLE` | Path to the published `mnde.authority.bundle.v1` |
 | `MNDE_RECEIPT_SIGNING_KEY` | Path to the receipt private key (PEM) |
 | `MNDE_RECEIPT_KEY_ID` | Receipt key id in the bundle (defaults to first) |
+| `MNDE_LEDGER_SIGNING_KEY` / `MNDE_LEDGER_KEY_ID` | Ledger signing key; required in production because the execution ledger is always enabled |
 | `MNDE_POLICY_SIGNING_KEY` / `MNDE_POLICY_KEY_ID` | Optional policy signing key |
 | `MNDE_APPROVAL_SIGNING_KEY` / `MNDE_APPROVAL_KEY_ID` | Optional approval signing key |
 
@@ -90,8 +94,12 @@ MNDE_AUTHORITY_BUNDLE=/etc/mnde/authority.bundle.json
 MNDE_EXTERNAL_SIGNER_CMD='["/usr/bin/your-signer","--slot","0"]'   # JSON array = no shell, no injection
 MNDE_EXTERNAL_SIGNER_KEY_ID=receipt-1                              # must exist in the bundle
 MNDE_EXTERNAL_SIGNER_PUBLIC_KEY=/etc/mnde/receipt.pub.pem          # must match the bundle key
+MNDE_EXTERNAL_LEDGER_SIGNER_CMD='["/usr/bin/your-signer","--slot","1"]'
+MNDE_EXTERNAL_LEDGER_SIGNER_KEY_ID=ledger-1
+MNDE_EXTERNAL_LEDGER_SIGNER_PUBLIC_KEY=/etc/mnde/ledger.pub.pem
 # optional:
 MNDE_EXTERNAL_SIGNER_TIMEOUT_MS=5000                              # default 5000
+MNDE_EXTERNAL_LEDGER_SIGNER_TIMEOUT_MS=5000                       # defaults to receipt timeout
 ```
 
 **Signer contract** — your command:
@@ -108,7 +116,7 @@ The command is the integration point for any HSM — examples, none hardcoded:
 - **SoftHSM**: the same wrapper against a software token, for testing the path without hardware.
 - **Any custom signer** that meets the contract above.
 
-In `MNDE_PROFILE=production`, external-signer is accepted only after the pre-flight confirms the signer command runs, the key id is present, active, and not revoked in the bundle, the configured public key matches the bundle key, and a **live self-test signature verifies**.
+In `MNDE_PROFILE=production`, external-signer is accepted only after the pre-flight confirms both receipt and ledger signer commands run, their key ids are present, active, and not revoked in the bundle, each configured public key matches its bundle key, and **live self-test signatures verify**.
 
 ## Production trust-root pre-flight (`MNDE_PROFILE`)
 
@@ -127,6 +135,7 @@ In `production` the pre-flight fails closed — with a human-readable, actionabl
 | `ERR_TRUST_ROOT_DEMO_CUSTODY` | with `MNDE_RECEIPT_SIGNING_MODE=custody`, `MNDE_KEY_CUSTODY` is not `file-backed-production` (e.g. `local-demo`) |
 | `ERR_TRUST_ROOT_DEV_KEY` | a configured key/bundle path points at repo dev material (`shared/receipt_keys/`, `.mnde-test/`, `authority/`, `*receipt_signing_private.pem`, `demo`/`local-demo` paths), or the bundle is a demo bundle (`mnde-local-*` authority) |
 | `ERR_TRUST_ROOT_SIGNER_SELFTEST` | with `MNDE_RECEIPT_SIGNING_MODE=external-signer`, the live self-test signature did not verify |
+| `ERR_TRUST_ROOT_LEDGER_SIGNER` | the required ledger signer is missing, failed, or produced a signature that did not verify against the published ledger key |
 | `ERR_CUSTODY_*` | the configured custody provider does not load/verify (missing/malformed/stale bundle, missing/expired/revoked key, key/public-key mismatch, signer unavailable) — see table above |
 
 There is **no automatic downgrade**: if production is selected and custody is unusable, MNDe exits non-zero rather than signing with fallback keys.
@@ -140,13 +149,15 @@ MNDE_KEY_CUSTODY=file-backed-production
 MNDE_AUTHORITY_BUNDLE=/etc/mnde/authority.bundle.json   # published, signed, NOT in the repo
 MNDE_RECEIPT_SIGNING_KEY=/etc/mnde/receipt-signing.key.pem
 MNDE_RECEIPT_KEY_ID=<receipt key id present in the bundle>   # optional; defaults to first
+MNDE_LEDGER_SIGNING_KEY=/etc/mnde/ledger-signing.key.pem
+MNDE_LEDGER_KEY_ID=<ledger key id present in the bundle>     # optional; defaults to first
 ```
 
 Verified by `npm run test:trust-root` (production-without-custody refuses; production-with-demo refuses; dev-key path refuses; demo bundle refuses; valid custody starts and serves; local mode unchanged).
 
 ### Hardware / KMS signing
 
-Use **external-signer custody** (above) to keep the private key in an HSM or PKCS#11 device — that is the supported, vendor-neutral path today, and it does not require a vendor SDK in MNDe. Dedicated in-process providers (`aws-kms`, `azure-key-vault`, `gcp-kms`) remain possible behind the same four-method interface (`signReceipt`, `signPolicy`, `signApproval`, `getPublicBundle`), but note most cloud KMS do not sign Ed25519; the external-signer command is how you bridge to whatever holds your key.
+Use **external-signer custody** (above) to keep private keys in an HSM or PKCS#11 device — that is the supported, vendor-neutral path today, and it does not require a vendor SDK in MNDe. Dedicated in-process providers (`aws-kms`, `azure-key-vault`, `gcp-kms`) remain possible behind the same role-signing interface (`signReceipt`, `signLedger`, optional additional role signers, and `getPublicBundle`), but note most cloud KMS do not sign Ed25519; the external-signer command is how you bridge to whatever holds your key.
 
 ## Bootstrapping the trust root
 
@@ -156,10 +167,12 @@ To create a production trust root:
 npm run authority:init -- --out /secure/path/outside/the/repo --authority-id your-org-prod
 ```
 
-This generates the long-lived **root** key and the first **receipt signing** key, builds a root-signed `mnde.authority.bundle.v1`, verifies it, and writes four files (private keys `0600`). It refuses to write inside the repository, refuses to overwrite, and refuses a `demo`/`local` authority id.
+This generates the long-lived **root** key and the first **receipt**, **ledger**, and **activation** signing keys, builds a root-signed `mnde.authority.bundle.v1`, verifies it, and writes the public bundle/key plus private keys (`0600`). It refuses to write inside the repository, refuses to overwrite, and refuses a `demo`/`local` authority id.
 
 - `root.key.pem` — the root private key. It signs the bundle and key rotations only; it is **not** needed on the serving host. Move it offline / into an HSM or escrow.
-- `receipt-signing.key.pem` — the only secret the sidecar needs.
+- `receipt-signing.key.pem` — the receipt signing secret used by the sidecar.
+- `ledger-signing.key.pem` — the execution-ledger signing secret used by the sidecar.
+- `activation-signing.key.pem` — signs activation transitions; it is not needed by the serving sidecar.
 - `authority.bundle.json` — publish this; have verifiers pin its **root fingerprint** out of band.
 
 The command prints the root fingerprint and the exact `MNDE_PROFILE=production` environment to run the sidecar. Rotate and revoke afterward with `npm run authority -- rotate|revoke`.

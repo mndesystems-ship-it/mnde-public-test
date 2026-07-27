@@ -12,7 +12,8 @@
 // (and signature-verified) for real decisions and that the reads are authority-gated.
 
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,7 +26,7 @@ import {
   canonicalReceiptHash,
   computeEntryHash
 } from "../src/execution-ledger/index.mjs";
-import { appendLedgerEntry, buildLedgerEntry } from "../src/execution-ledger/append.mjs";
+import { appendLedgerEntry, buildLedgerEntry, LEGACY_LEDGER_ARCHIVE_SUFFIX } from "../src/execution-ledger/append.mjs";
 import { verifyLedger } from "../src/execution-ledger/verify.mjs";
 import { ledgerStartupGate } from "../src/execution-ledger/paths.mjs";
 import { resolveLedgerRuntime, recordReceiptInLedger } from "../src/execution-ledger/sidecar.mjs";
@@ -211,6 +212,60 @@ async function main() {
     assert.equal(legacyRead.ok, true, JSON.stringify(legacyRead.errors));
     assert.equal(legacyRead.entries_checked, 1);
     rmSync(root, { recursive: true, force: true });
+  });
+
+  await test("append rolls a legacy v1 ledger into an audit archive and starts a fresh v2 chain", async () => {
+    const root = tmpRoot();
+    const ledgerPath = join(root, ".data", "ledger.jsonl");
+    const receiptPath = join(root, "receipts.jsonl");
+    const r1 = { receipt_id: "r1", v: 1 };
+    const r2 = { receipt_id: "r2", v: 2 };
+    writeFileSync(receiptPath, `${canonicalizeJson(r1)}\n${canonicalizeJson(r2)}\n`);
+    mkdirSync(dirname(ledgerPath), { recursive: true });
+    const legacy = buildLegacyV1Entry({ sequence: 1, previousEntryHash: null, receipt: r1, receiptRef: { path: "receipts.jsonl", receipt_id: "r1" } });
+    writeFileSync(ledgerPath, `${canonicalizeJson(legacy)}\n`);
+
+    const out = await appendLedgerEntry({
+      ledgerPath,
+      receipt: r2,
+      receiptRef: { path: "receipts.jsonl", receipt_id: "r2" },
+      signLedger: SIGN_LEDGER
+    });
+    const archivePath = `${ledgerPath}${LEGACY_LEDGER_ARCHIVE_SUFFIX}`;
+    assert.equal(out.ok, true, out.message);
+    assert.equal(out.rolled_over_legacy, true);
+    assert.equal(out.legacy_ledger_path, archivePath);
+    assert.equal(existsSync(archivePath), true);
+    assert.equal(JSON.parse(ledgerLines(archivePath)[0]).schema, LEDGER_ENTRY_SCHEMA);
+    const active = JSON.parse(ledgerLines(ledgerPath)[0]);
+    assert.equal(active.schema, LEDGER_ENTRY_SCHEMA_V2);
+    assert.equal(active.sequence, 1);
+    assert.equal(active.previous_entry_hash, null);
+    const verified = await verifyLedger({ ledgerPath, receiptRoot: root, trustedBundle: TRUSTED_BUNDLE });
+    assert.equal(verified.ok, true, JSON.stringify(verified.errors));
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  await test("ledger CLI accepts documented bare --legacy boolean flag", () => {
+    const root = tmpRoot();
+    try {
+      const ledgerPath = join(root, "legacy.jsonl");
+      const r1 = { receipt_id: "r1", v: 1 };
+      writeFileSync(join(root, "receipts.jsonl"), `${canonicalizeJson(r1)}\n`);
+      const legacy = buildLegacyV1Entry({ sequence: 1, previousEntryHash: null, receipt: r1, receiptRef: { path: "receipts.jsonl", receipt_id: "r1" } });
+      writeFileSync(ledgerPath, `${canonicalizeJson(legacy)}\n`);
+      const cli = spawnSync(process.execPath, [
+        join(repoRoot, "scripts", "verify-ledger.mjs"),
+        "verify",
+        "--legacy",
+        `--ledger=${ledgerPath}`,
+        `--receipt-root=${root}`
+      ], { encoding: "utf8" });
+      assert.equal(cli.status, 0, cli.stderr || cli.stdout);
+      assert.match(cli.stdout, /PASS execution-ledger verification/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   await test("an unknown signing key_id is rejected (SIGNATURE_KEY_UNTRUSTED)", async () => {

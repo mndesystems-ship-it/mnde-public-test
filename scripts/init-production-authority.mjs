@@ -3,7 +3,7 @@
 //
 //   node scripts/init-production-authority.mjs --out /secure/path --authority-id acme-prod
 //
-// Generates the long-lived ROOT authority key and the first receipt signing key,
+// Generates the long-lived ROOT authority key plus receipt and ledger signing keys,
 // builds a root-signed mnde.authority.bundle.v1, and verifies it before writing
 // anything. Secrets are written outside the repository with 0600 permissions.
 //
@@ -50,6 +50,7 @@ export async function initProductionAuthority(options = {}) {
     validDays = 365,
     bundleDays = 90,
     receiptKeyId = "receipt-1",
+    ledgerKeyId = "ledger-1",
     activationKeyId = "activation-1",
     rootKeyId = "root-1",
     repoRoot = REPO_ROOT
@@ -69,6 +70,7 @@ export async function initProductionAuthority(options = {}) {
     rootPrivate: resolve(out, "root.key.pem"),
     rootPublic: resolve(out, "root.pub.pem"),
     receiptPrivate: resolve(out, "receipt-signing.key.pem"),
+    ledgerPrivate: resolve(out, "ledger-signing.key.pem"),
     activationPrivate: resolve(out, "activation-signing.key.pem"),
     bundle: resolve(out, "authority.bundle.json")
   };
@@ -78,6 +80,7 @@ export async function initProductionAuthority(options = {}) {
 
   const root_ = { keyId: rootKeyId, ...generateAuthorityKeyPair() };
   const receipt = { keyId: receiptKeyId, ...generateAuthorityKeyPair() };
+  const ledger = { keyId: ledgerKeyId, ...generateAuthorityKeyPair() };
   const activation = { keyId: activationKeyId, ...generateAuthorityKeyPair() };
 
   const bundle = await buildAuthorityBundle({
@@ -86,6 +89,7 @@ export async function initProductionAuthority(options = {}) {
     notAfter: addDaysIso(now, bundleDays),
     root: root_,
     receiptKeys: [{ keyId: receipt.keyId, publicPem: receipt.publicPem, validFrom: now, validUntil: addDaysIso(now, validDays) }],
+    ledgerKeys: [{ keyId: ledger.keyId, publicPem: ledger.publicPem, validFrom: now, validUntil: addDaysIso(now, validDays) }],
     activationKeys: [{ keyId: activation.keyId, publicPem: activation.publicPem, validFrom: now, validUntil: addDaysIso(now, validDays) }],
     revocation: []
   });
@@ -96,6 +100,9 @@ export async function initProductionAuthority(options = {}) {
   const probe = await signCanonical(canonicalizeJson({ probe: true }), receipt.privatePem);
   const keyCheck = findBundleKey(bundle, "receipt", receipt.keyId, now);
   if (!keyCheck.ok || probe.length === 0) return { ok: false, reason: "receipt key did not validate against the bundle" };
+  const ledgerProbe = await signCanonical(canonicalizeJson({ ledger_probe: true }), ledger.privatePem);
+  const ledgerKeyCheck = findBundleKey(bundle, "ledger", ledger.keyId, now);
+  if (!ledgerKeyCheck.ok || ledgerProbe.length === 0) return { ok: false, reason: "ledger key did not validate against the bundle" };
   const activationProbe = await signCanonical(canonicalizeJson({ probe: true }), activation.privatePem);
   const activationKeyCheck = findBundleKey(bundle, "activation", activation.keyId, now);
   if (!activationKeyCheck.ok || activationProbe.length === 0) return { ok: false, reason: "activation key did not validate against the bundle" };
@@ -104,6 +111,7 @@ export async function initProductionAuthority(options = {}) {
   writeFileSync(paths.rootPrivate, root_.privatePem, { mode: 0o600 });
   writeFileSync(paths.rootPublic, root_.publicPem, { mode: 0o644 });
   writeFileSync(paths.receiptPrivate, receipt.privatePem, { mode: 0o600 });
+  writeFileSync(paths.ledgerPrivate, ledger.privatePem, { mode: 0o600 });
   writeFileSync(paths.activationPrivate, activation.privatePem, { mode: 0o600 });
   writeFileSync(paths.bundle, `${JSON.stringify(bundle, null, 2)}\n`, { mode: 0o644 });
 
@@ -112,6 +120,7 @@ export async function initProductionAuthority(options = {}) {
     authorityId,
     rootFingerprint: bundle.root_key.fingerprint,
     receiptKeyId: receipt.keyId,
+    ledgerKeyId: ledger.keyId,
     activationKeyId: activation.keyId,
     bundleNotAfter: bundle.not_after,
     receiptKeyValidUntil: bundle.keys.receipt[0].valid_until,
@@ -128,7 +137,7 @@ async function main() {
   const outDir = arg("--out");
   const authorityId = arg("--authority-id");
   if (!outDir || !authorityId) {
-    process.stderr.write("usage: node scripts/init-production-authority.mjs --out <dir-outside-repo> --authority-id <id> [--valid-days 365] [--bundle-days 90] [--receipt-key-id receipt-1] [--root-key-id root-1]\n");
+    process.stderr.write("usage: node scripts/init-production-authority.mjs --out <dir-outside-repo> --authority-id <id> [--valid-days 365] [--bundle-days 90] [--receipt-key-id receipt-1] [--ledger-key-id ledger-1] [--root-key-id root-1]\n");
     process.exit(2);
   }
   const result = await initProductionAuthority({
@@ -137,6 +146,7 @@ async function main() {
     validDays: Number(arg("--valid-days", "365")),
     bundleDays: Number(arg("--bundle-days", "90")),
     receiptKeyId: arg("--receipt-key-id", "receipt-1"),
+    ledgerKeyId: arg("--ledger-key-id", "ledger-1"),
     rootKeyId: arg("--root-key-id", "root-1")
   });
   if (!result.ok) {
@@ -151,6 +161,7 @@ async function main() {
   process.stdout.write("Files written:\n");
   process.stdout.write(`  ${result.paths.bundle}        (public — publish this)\n`);
   process.stdout.write(`  ${result.paths.receiptPrivate}  (sidecar secret — keep on the serving host)\n`);
+  process.stdout.write(`  ${result.paths.ledgerPrivate}  (sidecar secret — signs execution-ledger entries)\n`);
   process.stdout.write(`  ${result.paths.activationPrivate}  (activation secret — signs install/upgrade/rollback transitions; not needed by the serving sidecar)\n`);
   process.stdout.write(`  ${result.paths.rootPrivate}             (CROWN JEWEL — move OFFLINE / to HSM/escrow; not needed on the host)\n`);
   process.stdout.write(`  ${result.paths.rootPublic}\n\n`);
@@ -161,6 +172,8 @@ async function main() {
   e("MNDE_AUTHORITY_BUNDLE", result.paths.bundle);
   e("MNDE_RECEIPT_SIGNING_KEY", result.paths.receiptPrivate);
   e("MNDE_RECEIPT_KEY_ID", result.receiptKeyId);
+  e("MNDE_LEDGER_SIGNING_KEY", result.paths.ledgerPrivate);
+  e("MNDE_LEDGER_KEY_ID", result.ledgerKeyId);
   process.stdout.write(`\nReceipt key valid until ${result.receiptKeyValidUntil}; bundle stale after ${result.bundleNotAfter}.\n`);
   process.stdout.write("Rotate with: npm run authority -- rotate ...   Revoke with: npm run authority -- revoke ...\n");
 }

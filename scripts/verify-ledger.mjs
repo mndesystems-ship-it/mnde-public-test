@@ -40,6 +40,7 @@ function parseArgs(argv) {
   for (const arg of argv) {
     const match = /^--([^=]+)=(.*)$/.exec(arg);
     if (match) flags[match[1]] = match[2];
+    else if (/^--[^=]+$/.test(arg)) flags[arg.slice(2)] = true;
     else positional.push(arg);
   }
   return { mode: positional[0] ?? "verify", flags };

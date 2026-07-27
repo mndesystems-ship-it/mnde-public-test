@@ -13,11 +13,12 @@
 // If the lock cannot be acquired within a bounded retry budget, the append fails
 // closed (ERR_LEDGER_LOCK_FAILED) — it never writes without the lock.
 
-import { openSync, writeSync, fsyncSync, closeSync, readFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { openSync, writeSync, fsyncSync, closeSync, readFileSync, existsSync, mkdirSync, unlinkSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { canonicalizeJson } from "../../shared/json.ts";
 import {
+  LEDGER_ENTRY_SCHEMA,
   LEDGER_ENTRY_SCHEMA_V2,
   LEDGER_SIGNATURE_ALGORITHM,
   LEDGER_ERRORS,
@@ -31,6 +32,7 @@ const LOCK_MAX_ATTEMPTS = 100;
 const LOCK_RETRY_MS = 5;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+export const LEGACY_LEDGER_ARCHIVE_SUFFIX = ".legacy-v1.jsonl";
 
 // Entry builder. Given the prior chain head, the receipt, and the ref, produce a
 // complete signed v2 entry: body → entry_hash → custody ledger signature over the
@@ -76,13 +78,32 @@ function readChainHead(ledgerPath) {
   const raw = readFileSync(ledgerPath, "utf8");
   const lines = raw.split("\n").filter((line) => line.trim() !== "");
   if (lines.length === 0) return null;
+  const entries = lines.map((line) => JSON.parse(line));
+  for (const entry of entries) {
+    if (entry.schema !== LEDGER_ENTRY_SCHEMA && entry.schema !== LEDGER_ENTRY_SCHEMA_V2) {
+      throw new Error(`ledger contains unsupported entry schema '${entry.schema ?? "missing"}'`);
+    }
+  }
   // Extend only a parseable chain. A corrupt/partial trailing line (e.g. a crash
   // mid-append) fails closed rather than silently chaining onto garbage.
-  const last = JSON.parse(lines[lines.length - 1]);
+  const last = entries[entries.length - 1];
   if (!Number.isSafeInteger(last.sequence) || typeof last.entry_hash !== "string") {
     throw new Error("ledger head is not a well-formed entry");
   }
-  return { sequence: last.sequence, entry_hash: last.entry_hash };
+  return {
+    sequence: last.sequence,
+    entry_hash: last.entry_hash,
+    requiresLegacyRollover: entries.some((entry) => entry.schema === LEDGER_ENTRY_SCHEMA)
+  };
+}
+
+function rolloverLegacyLedger(ledgerPath) {
+  const archivePath = `${ledgerPath}${LEGACY_LEDGER_ARCHIVE_SUFFIX}`;
+  if (existsSync(archivePath)) {
+    throw new Error(`legacy ledger archive already exists at ${archivePath}; refusing to overwrite`);
+  }
+  renameSync(ledgerPath, archivePath);
+  return archivePath;
 }
 
 async function acquireLock(lockPath) {
@@ -154,12 +175,23 @@ export async function appendLedgerEntry({ ledgerPath, receipt, receiptRef, engin
   }
 
   try {
-    const head = readChainHead(ledgerPath);
+    let head = readChainHead(ledgerPath);
+    let legacyLedgerPath = null;
+    if (head?.requiresLegacyRollover) {
+      legacyLedgerPath = rolloverLegacyLedger(ledgerPath);
+      head = null;
+    }
     const sequence = head ? head.sequence + 1 : 1;
     const previousEntryHash = head ? head.entry_hash : null;
     const entry = await buildLedgerEntry({ sequence, previousEntryHash, receipt, receiptRef, engine, createdAt, signLedger });
     appendDurable(ledgerPath, `${canonicalizeJson(entry)}\n`);
-    return { ok: true, sequence, entry_hash: entry.entry_hash, receipt_hash: entry.receipt_hash };
+    return {
+      ok: true,
+      sequence,
+      entry_hash: entry.entry_hash,
+      receipt_hash: entry.receipt_hash,
+      ...(legacyLedgerPath ? { rolled_over_legacy: true, legacy_ledger_path: legacyLedgerPath } : {})
+    };
   } catch (error) {
     return { ok: false, code: LEDGER_ERRORS.APPEND_FAILED, message: error.message };
   } finally {

@@ -65,10 +65,11 @@ function verificationBlock() {
   };
 }
 
-// Customer authority fixture with root + receipt + activation keys.
+// Customer authority fixture with root + receipt + ledger + activation keys.
 async function makeCustomerAuthority({ authorityId = "acme-prod", issuedAt = "2026-06-14T00:00:00.000Z", revocation = [] } = {}) {
   const root = { keyId: "root-1", ...generateAuthorityKeyPair() };
   const receipt = { keyId: "receipt-1", ...generateAuthorityKeyPair() };
+  const ledger = { keyId: "ledger-1", ...generateAuthorityKeyPair() };
   const activation = { keyId: "activation-1", ...generateAuthorityKeyPair() };
   const stranger = { keyId: "stranger-1", ...generateAuthorityKeyPair() };
   const bundle = await buildAuthorityBundle({
@@ -77,10 +78,11 @@ async function makeCustomerAuthority({ authorityId = "acme-prod", issuedAt = "20
     notAfter: "2027-06-14T00:00:00.000Z",
     root,
     receiptKeys: [{ keyId: receipt.keyId, publicPem: receipt.publicPem, validFrom: "2020-01-01T00:00:00.000Z", validUntil: "2027-06-14T00:00:00.000Z" }],
+    ledgerKeys: [{ keyId: ledger.keyId, publicPem: ledger.publicPem, validFrom: "2020-01-01T00:00:00.000Z", validUntil: "2027-06-14T00:00:00.000Z" }],
     activationKeys: [{ keyId: activation.keyId, publicPem: activation.publicPem, validFrom: "2020-01-01T00:00:00.000Z", validUntil: "2027-06-14T00:00:00.000Z" }],
     revocation
   });
-  return { root, receipt, activation, stranger, bundle };
+  return { root, receipt, ledger, activation, stranger, bundle };
 }
 
 async function makeGenesis(fx, overrides = {}) {
@@ -377,15 +379,19 @@ async function makeProductionEnv(dir, { record = null, revocation = [] } = {}) {
   const fx = await makeCustomerAuthority({ authorityId: "acme-prod", revocation });
   const bundlePath = join(dir, "authority.bundle.json");
   const keyPath = join(dir, "receipt.key.pem");
+  const ledgerKeyPath = join(dir, "ledger.key.pem");
   writeFileSync(bundlePath, JSON.stringify(fx.bundle, null, 2));
   writeFileSync(keyPath, fx.receipt.privatePem);
+  writeFileSync(ledgerKeyPath, fx.ledger.privatePem);
   const env = {
     MNDE_PROFILE: "production",
     MNDE_RECEIPT_SIGNING_MODE: "custody",
     MNDE_KEY_CUSTODY: "file-backed-production",
     MNDE_AUTHORITY_BUNDLE: bundlePath,
     MNDE_RECEIPT_SIGNING_KEY: keyPath,
-    MNDE_RECEIPT_KEY_ID: "receipt-1"
+    MNDE_RECEIPT_KEY_ID: "receipt-1",
+    MNDE_LEDGER_SIGNING_KEY: ledgerKeyPath,
+    MNDE_LEDGER_KEY_ID: "ledger-1"
   };
   if (record) {
     const recordPath = join(dir, "activation.json");
@@ -403,6 +409,7 @@ test("production: a verified activation record binds; the id reaches the trust r
     const bundlePath = join(dir, "authority.bundle.json");
     writeFileSync(bundlePath, JSON.stringify(fx.bundle, null, 2));
     writeFileSync(join(dir, "receipt.key.pem"), fx.receipt.privatePem);
+    writeFileSync(join(dir, "ledger.key.pem"), fx.ledger.privatePem);
     writeFileSync(join(dir, "activation.json"), JSON.stringify(record));
     const trust = await assertTrustRoot({
       MNDE_PROFILE: "production",
@@ -411,6 +418,8 @@ test("production: a verified activation record binds; the id reaches the trust r
       MNDE_AUTHORITY_BUNDLE: bundlePath,
       MNDE_RECEIPT_SIGNING_KEY: join(dir, "receipt.key.pem"),
       MNDE_RECEIPT_KEY_ID: "receipt-1",
+      MNDE_LEDGER_SIGNING_KEY: join(dir, "ledger.key.pem"),
+      MNDE_LEDGER_KEY_ID: "ledger-1",
       MNDE_ACTIVATION_RECORD: join(dir, "activation.json")
     }, { repoRoot: REPO_ROOT });
     assert.equal(trust.ok, true, trust.detail);
@@ -446,6 +455,7 @@ test("production: a tampered activation record refuses startup", async () => {
     const bundlePath = join(dir, "authority.bundle.json");
     writeFileSync(bundlePath, JSON.stringify(fx.bundle, null, 2));
     writeFileSync(join(dir, "receipt.key.pem"), fx.receipt.privatePem);
+    writeFileSync(join(dir, "ledger.key.pem"), fx.ledger.privatePem);
     writeFileSync(join(dir, "activation.json"), JSON.stringify(tampered));
     const trust = await assertTrustRoot({
       MNDE_PROFILE: "production",
@@ -454,6 +464,8 @@ test("production: a tampered activation record refuses startup", async () => {
       MNDE_AUTHORITY_BUNDLE: bundlePath,
       MNDE_RECEIPT_SIGNING_KEY: join(dir, "receipt.key.pem"),
       MNDE_RECEIPT_KEY_ID: "receipt-1",
+      MNDE_LEDGER_SIGNING_KEY: join(dir, "ledger.key.pem"),
+      MNDE_LEDGER_KEY_ID: "ledger-1",
       MNDE_ACTIVATION_RECORD: join(dir, "activation.json")
     }, { repoRoot: REPO_ROOT });
     assert.equal(trust.ok, false);
@@ -472,6 +484,7 @@ test("production: a record from a DIFFERENT authority refuses startup", async ()
     const bundlePath = join(dir, "authority.bundle.json");
     writeFileSync(bundlePath, JSON.stringify(fx.bundle, null, 2));
     writeFileSync(join(dir, "receipt.key.pem"), fx.receipt.privatePem);
+    writeFileSync(join(dir, "ledger.key.pem"), fx.ledger.privatePem);
     writeFileSync(join(dir, "activation.json"), JSON.stringify(foreign));
     const trust = await assertTrustRoot({
       MNDE_PROFILE: "production",
@@ -480,6 +493,8 @@ test("production: a record from a DIFFERENT authority refuses startup", async ()
       MNDE_AUTHORITY_BUNDLE: bundlePath,
       MNDE_RECEIPT_SIGNING_KEY: join(dir, "receipt.key.pem"),
       MNDE_RECEIPT_KEY_ID: "receipt-1",
+      MNDE_LEDGER_SIGNING_KEY: join(dir, "ledger.key.pem"),
+      MNDE_LEDGER_KEY_ID: "ledger-1",
       MNDE_ACTIVATION_RECORD: join(dir, "activation.json")
     }, { repoRoot: REPO_ROOT });
     assert.equal(trust.ok, false);
