@@ -59,6 +59,7 @@ import {
 import {
   appendAuthAuditEvent,
   authorizeAuthorityAction,
+  isSensitiveNamespacePath,
   nonceDirPath,
   parseAuthorityAssertion,
   refusalBody
@@ -756,6 +757,25 @@ function authorizeProductionRead(req, res, pathname, target) {
 
 function externalAuthRefusalBody(target = null) {
   return refusalBody("ERR_AUTH_REFUSED", null, target);
+}
+
+// Production-gated authority check for privileged ledger operations (anchor,
+// proof). Mirrors authorizeProductionRead's environment gating — in the local
+// profile this is a dev pass-through so the localhost round-trip works without an
+// authority assertion — but, unlike authorizeProductionRead, it does NOT emit the
+// ALLOW audit itself so the caller can record an operation-specific audit line
+// (e.g. tree_size). On refusal it writes the uniform 403 and returns {ok:false}.
+// In production the mapped capability is enforced fail-closed. The pathname passed
+// here is the SAME canonical value the router matched on, so guard and router can
+// never diverge.
+function gateLedgerOperation(req, res, pathname, target) {
+  if (RUNTIME_PROFILE !== "production") return { ok: true, actor: null };
+  const authz = authorizeRequest(req, pathname, target);
+  if (!authz.ok) {
+    response(res, 403, externalAuthRefusalBody(target));
+    return { ok: false };
+  }
+  return authz;
 }
 
 // Policy-engine decision path (opt-in). Fails closed on config errors or engine
@@ -1474,8 +1494,10 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (req.method === "POST" && pathname === "/ledger/anchor") {
-    const authz = authorizeRequest(req, pathname);
-    if (!authz.ok) { response(res, 403, refusalBody(authz.reason, authz.actor, "ledger.anchor")); return; }
+    // Authorization runs BEFORE anchorNow(), so an unauthorized caller triggers
+    // no Merkle work and no checkpoint mutation.
+    const authz = gateLedgerOperation(req, res, pathname, "ledger.anchor");
+    if (!authz.ok) return;
     try {
       const out = await anchorNow(LEDGER_RUNTIME, { signLedger: LEDGER_SIGN, bundle: LEDGER_BUNDLE });
       auditAuthority(pathname, authz, "ALLOW", out.checkpoint ? `tree_size:${out.checkpoint.tree_size}` : "disabled", null, null);
@@ -1487,8 +1509,10 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (req.method === "GET" && pathname === "/ledger/proof") {
-    const authz = authorizeRequest(req, pathname);
-    if (!authz.ok) { response(res, 403, refusalBody(authz.reason, authz.actor, "ledger.proof")); return; }
+    // Authorization runs BEFORE any selector parsing or proof-bundle load, so an
+    // unauthorized caller never causes a receipt/proof read.
+    const authz = gateLedgerOperation(req, res, pathname, "ledger.proof");
+    if (!authz.ok) return;
     const params = new URL(req.url, "http://127.0.0.1").searchParams;
     const rid = params.get("receipt_id");
     const rh = params.get("receipt_hash");
@@ -1497,6 +1521,16 @@ const server = http.createServer(async (req, res) => {
     const out = await proofResponse(LEDGER_RUNTIME, selector, { trustedBundle: LEDGER_BUNDLE });
     auditAuthority(pathname, authz, out.ok ? "ALLOW" : "REFUSE", out.ok ? `seq:${out.proof.entry.sequence}` : "proof", null, out.ok ? null : out.code);
     response(res, out.ok ? 200 : 404, out);
+    return;
+  }
+  // Fail-closed for sensitive namespaces: every KNOWN route above returns before
+  // reaching here. Anything left under a sensitive namespace (e.g. /ledger/*) is
+  // an unmapped route — in production it must be DENIED, never allowed to fall
+  // through to a bare 404 and thereby become implicitly reachable because a
+  // capability mapping was forgotten. Outside production the router's normal
+  // behavior is preserved. Non-sensitive unknown routes keep their existing 404.
+  if (RUNTIME_PROFILE === "production" && isSensitiveNamespacePath(pathname)) {
+    response(res, 403, externalAuthRefusalBody(null));
     return;
   }
   await fail(res, "ERR_NOT_FOUND", 404);

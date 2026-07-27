@@ -29,6 +29,7 @@
   "test:historical-policy-bundle",
   "test:identity-assertion",
   "test:ledger-anchor",
+  "test:ledger-auth",
   "test:ledger-merkle",
   "test:live-verification",
   "test:mcp",

@@ -24,8 +24,35 @@ const SENSITIVE_PATHS = new Map([
   ["/verify", "verify_receipts"],
   ["/ledger/head", "inspect_receipts"],
   ["/ledger/verify", "verify_receipts"],
-  ["/ledger/export", "export_audit"]
+  ["/ledger/export", "export_audit"],
+  // Anchoring routes (PR #7). Previously ABSENT here, so requiredCapabilityForPath
+  // returned null and authorizeAuthorityAction treated them as "no authority
+  // required" (fail-open) — an unauthenticated authorization bypass. Each is now
+  // mapped to an explicit, least-privilege capability drawn from the existing
+  // vocabulary, mirroring its closest sibling:
+  //   checkpoint = read the checkpoint head        → inspect_receipts (like /ledger/head)
+  //   proof      = read a single-receipt proof      → verify_receipts  (like /ledger/verify)
+  //   anchor     = MINT a signed checkpoint (state-changing) → manage_runtime (ADMIN-only;
+  //                strictly stronger than the read caps so a read-only authority can NEVER anchor)
+  ["/ledger/checkpoint", "inspect_receipts"],
+  ["/ledger/proof", "verify_receipts"],
+  ["/ledger/anchor", "manage_runtime"]
 ]);
+
+// Namespaces whose sub-routes are security-sensitive. An UNKNOWN path under one
+// of these must fail closed in production rather than silently 404 (i.e. become
+// unauthenticated-reachable) if a route is ever added without a capability
+// mapping. The trailing "/" makes the match segment-boundary-aware, so
+// "/ledgerfoo" does NOT match "/ledger/" while "/ledger/anything" does.
+const SENSITIVE_NAMESPACE_PREFIXES = ["/ledger/"];
+
+// True iff pathname falls under a sensitive namespace. The caller (request guard)
+// passes the SAME canonical pathname the router matches on, so the guard and the
+// router can never disagree about which path is being evaluated.
+export function isSensitiveNamespacePath(pathname) {
+  if (typeof pathname !== "string") return false;
+  return SENSITIVE_NAMESPACE_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+}
 
 const ASSERTION_ISSUER = "mnde-desktop";
 const ASSERTION_AUDIENCE = "mnde-sidecar";

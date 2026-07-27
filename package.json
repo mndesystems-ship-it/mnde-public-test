@@ -86,6 +86,7 @@
     "test:execution-ledger": "node ./tests/test_execution_ledger.mjs",
     "test:ledger-merkle": "node ./tests/test_ledger_merkle.mjs",
     "test:ledger-anchor": "node ./tests/test_ledger_anchor.mjs",
+    "test:ledger-auth": "node ./tests/test_ledger_auth.mjs",
     "test:execution-result": "node ./tests/test_execution_result.mjs",
     "test:signed-execution-result": "node ./tests/test_signed_execution_result.mjs",
     "test:signed-result-codes": "node ./tests/test_signed_result_codes.mjs",
