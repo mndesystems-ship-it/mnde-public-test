@@ -455,9 +455,16 @@ if (SIGNING_MODE === "custody" && signingConfig.ok && signingConfig.provider) {
 // every T ms, whichever comes first — plus the on-demand POST /ledger/anchor
 // endpoint below. This runs on a background timer, wholly OFF the request/append
 // path: it takes only the checkpoint lock, NEVER the ledger append lock.
-const ANCHOR_EVERY_ENTRIES = Math.max(1, Number(process.env.MNDE_LEDGER_ANCHOR_EVERY ?? 100));
-const ANCHOR_INTERVAL_MS = Math.max(1000, Number(process.env.MNDE_LEDGER_ANCHOR_INTERVAL_MS ?? 60000));
-const ANCHOR_TICK_MS = Math.max(1000, Number(process.env.MNDE_LEDGER_ANCHOR_TICK_MS ?? 5000));
+function positiveIntegerEnv(name, fallback, minimum = 1) {
+  const value = Number(process.env[name] ?? fallback);
+  if (!Number.isSafeInteger(value) || value < minimum) {
+    throw new Error(`${name} must be a safe integer >= ${minimum}`);
+  }
+  return value;
+}
+const ANCHOR_EVERY_ENTRIES = positiveIntegerEnv("MNDE_LEDGER_ANCHOR_EVERY", 100);
+const ANCHOR_INTERVAL_MS = positiveIntegerEnv("MNDE_LEDGER_ANCHOR_INTERVAL_MS", 60000, 1000);
+const ANCHOR_TICK_MS = positiveIntegerEnv("MNDE_LEDGER_ANCHOR_TICK_MS", 5000, 1000);
 function countLedgerEntries() {
   try {
     if (!existsSync(LEDGER_RUNTIME.ledgerPath)) return 0;
@@ -466,7 +473,9 @@ function countLedgerEntries() {
 }
 async function anchorTick() {
   try {
-    const head = checkpointHeadResponse(LEDGER_RUNTIME).checkpoint;
+    const headResponse = checkpointHeadResponse(LEDGER_RUNTIME);
+    if (!headResponse.ok) throw new Error(headResponse.message);
+    const head = headResponse.checkpoint;
     const count = countLedgerEntries();
     const lastSize = head?.tree_size ?? 0;
     if (count <= lastSize) return; // nothing new to anchor

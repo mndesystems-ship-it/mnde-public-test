@@ -15,14 +15,16 @@ import {
   LEDGER_CHECKPOINT_VERSION,
   LEDGER_INCLUSION_PROOF_SCHEMA,
   LEDGER_ENTRY_SCHEMA_V2,
+  LEDGER_SIGNING_ROLE,
   LEDGER_SIGNATURE_ALGORITHM,
   LEDGER_ERRORS,
   canonicalReceiptHash,
   computeEntryHash,
+  ledgerSignablePayload,
   checkpointSignablePayload
 } from "./index.mjs";
 import { leafHash, merkleRoot, inclusionProof } from "./merkle.mjs";
-import { findBundleKey } from "../custody/bundle.mjs";
+import { findBundleKey, verifyAgainstBundle, verifyAuthorityBundle } from "../custody/bundle.mjs";
 import { verifyProofBundle } from "./proof.mjs";
 
 const CKPT_LOCK_SUFFIX = ".ckpt.lock";
@@ -52,10 +54,11 @@ export function readLedgerEntries(ledgerPath) {
     } catch {
       throw fail(LEDGER_ERRORS.PARSE, `ledger line ${i + 1} is not valid JSON`);
     }
-    if (entry.schema !== LEDGER_ENTRY_SCHEMA_V2) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry) ||
+        entry.schema !== LEDGER_ENTRY_SCHEMA_V2) {
       throw fail(LEDGER_ERRORS.SCHEMA, `anchoring requires signed v2 entries; got '${entry.schema}' at line ${i + 1}`);
     }
-    if (entry.sequence !== i + 1) {
+    if (!Number.isSafeInteger(entry.sequence) || entry.sequence !== i + 1) {
       throw fail(LEDGER_ERRORS.SEQUENCE, `expected sequence ${i + 1}, got ${entry.sequence}`);
     }
     if ((entry.previous_entry_hash ?? null) !== prevHash) {
@@ -97,10 +100,39 @@ export async function computeCheckpoint(ledgerPath, { signLedger, bundle, issued
   if (typeof signLedger !== "function") throw fail(LEDGER_ERRORS.SIGNER_REQUIRED, "computeCheckpoint requires signLedger");
   if (!bundle?.root_key?.fingerprint) throw fail(LEDGER_ERRORS.ANCHOR_FAILED, "authority bundle with a root_key fingerprint is required");
   const at = issuedAt ?? new Date().toISOString();
+  if (Number.isNaN(Date.parse(at))) throw fail(LEDGER_ERRORS.ANCHOR_FAILED, "issuedAt must be a valid timestamp");
+  const authority = await verifyAuthorityBundle(bundle, {
+    trustedRootFingerprint: bundle.root_key.fingerprint,
+    now: at
+  });
+  if (!authority.ok) {
+    throw fail(LEDGER_ERRORS.ANCHOR_KEY_UNRESOLVED, `authority bundle rejected: ${authority.reason}`);
+  }
 
   const entries = readLedgerEntries(ledgerPath);
   const treeSize = entries.length;                 // entry COUNT, not last sequence
   if (treeSize === 0) throw fail(LEDGER_ERRORS.ANCHOR_FAILED, "nothing to anchor: empty ledger");
+  for (const entry of entries) {
+    const sig = entry.signature;
+    if (!sig || sig.algorithm !== LEDGER_SIGNATURE_ALGORITHM ||
+        typeof sig.key_id !== "string" || typeof sig.value !== "string") {
+      throw fail(LEDGER_ERRORS.SIGNATURE_MISSING, `entry ${entry.sequence} signature missing/malformed`);
+    }
+    const checked = await verifyAgainstBundle(
+      ledgerSignablePayload(entry),
+      sig.value,
+      LEDGER_SIGNING_ROLE,
+      sig.key_id,
+      entry.created_at,
+      bundle
+    );
+    if (!checked.ok) {
+      const code = checked.reason === "SIGNATURE_INVALID"
+        ? LEDGER_ERRORS.SIGNATURE_INVALID
+        : LEDGER_ERRORS.SIGNATURE_KEY_UNTRUSTED;
+      throw fail(code, `entry ${entry.sequence} signature rejected: ${checked.reason}`);
+    }
+  }
 
   const leaves = entries.map((e) => leafHash(e.entry_hash));
   const rootHash = merkleRoot(leaves);
@@ -160,6 +192,21 @@ export function readCheckpointHead(checkpointPath) {
 // the ledger append lock). Returns the checkpoint.
 export async function anchorLedger(ledgerPath, checkpointPath, opts) {
   return withCheckpointLock(checkpointPath, async () => {
+    const previous = readCheckpointHead(checkpointPath);
+    if (previous) {
+      const entries = readLedgerEntries(ledgerPath);
+      if (!Number.isSafeInteger(previous.tree_size) || previous.tree_size < 1 ||
+          entries.length < previous.tree_size) {
+        throw fail(LEDGER_ERRORS.CHECKPOINT_ROLLBACK, "ledger is shorter than the previous checkpoint");
+      }
+      const previousRoot = merkleRoot(
+        entries.slice(0, previous.tree_size).map((entry) => leafHash(entry.entry_hash))
+      );
+      if (previousRoot !== previous.root_hash) {
+        throw fail(LEDGER_ERRORS.CHECKPOINT_EQUIVOCATION, "ledger prefix disagrees with the previous checkpoint");
+      }
+      if (entries.length === previous.tree_size) return previous;
+    }
     const checkpoint = await computeCheckpoint(ledgerPath, opts);
     writeCheckpoint(checkpointPath, checkpoint);
     return checkpoint;

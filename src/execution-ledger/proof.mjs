@@ -19,7 +19,9 @@
 
 import {
   LEDGER_CHECKPOINT_SCHEMA,
+  LEDGER_CHECKPOINT_VERSION,
   LEDGER_INCLUSION_PROOF_SCHEMA,
+  LEDGER_SIGNATURE_ALGORITHM,
   LEDGER_SIGNING_ROLE,
   LEDGER_ASSURANCE,
   LEDGER_ERRORS,
@@ -29,7 +31,7 @@ import {
   checkpointSignablePayload
 } from "./index.mjs";
 import { leafHash, verifyInclusion } from "./merkle.mjs";
-import { verifyAgainstBundle } from "../custody/bundle.mjs";
+import { verifyAgainstBundle, verifyAuthorityBundle } from "../custody/bundle.mjs";
 import { verifyCustodyAttestation, SIGNED_RECEIPT_SCHEMA } from "../authority-signing/index.mjs";
 import { verifyPolicyReceipt } from "../policy-engine/receipt.mjs";
 
@@ -37,6 +39,7 @@ function bad(step, code, reason) {
   return { ok: false, step, reason: `${code}: ${reason}` };
 }
 function isObj(v) { return typeof v === "object" && v !== null && !Array.isArray(v); }
+const SHA256_HEX_RE = /^sha256:[0-9a-f]{64}$/;
 
 export async function verifyProofBundle(bundle, trustedBundle, options = {}) {
   // ── 0. Shape ────────────────────────────────────────────────────────────────
@@ -50,11 +53,32 @@ export async function verifyProofBundle(bundle, trustedBundle, options = {}) {
   if (checkpoint.schema !== LEDGER_CHECKPOINT_SCHEMA) {
     return bad("shape", LEDGER_ERRORS.CHECKPOINT_MALFORMED, "unexpected checkpoint schema");
   }
+  if (checkpoint.version !== LEDGER_CHECKPOINT_VERSION ||
+      !Number.isSafeInteger(checkpoint.tree_size) || checkpoint.tree_size < 1 ||
+      !SHA256_HEX_RE.test(checkpoint.root_hash) ||
+      typeof checkpoint.issued_at !== "string" || Number.isNaN(Date.parse(checkpoint.issued_at)) ||
+      !isObj(checkpoint.ledger_head) ||
+      checkpoint.ledger_head.sequence !== checkpoint.tree_size ||
+      !SHA256_HEX_RE.test(checkpoint.ledger_head.entry_hash)) {
+    return bad("shape", LEDGER_ERRORS.CHECKPOINT_MALFORMED, "checkpoint fields are malformed or internally inconsistent");
+  }
+  if (!Number.isSafeInteger(entry.sequence) || entry.sequence < 1 ||
+      !Number.isSafeInteger(inclusion.tree_size) || inclusion.tree_size < 1 ||
+      !Number.isSafeInteger(inclusion.leaf_index) || inclusion.leaf_index < 0 ||
+      !Array.isArray(inclusion.audit_path) ||
+      inclusion.audit_path.length > Math.ceil(Math.log2(inclusion.tree_size)) ||
+      inclusion.audit_path.some((hash) => !SHA256_HEX_RE.test(hash))) {
+    return bad("shape", LEDGER_ERRORS.PROOF_MALFORMED, "entry or inclusion fields are malformed");
+  }
   if (!isObj(trustedBundle) || !isObj(trustedBundle.root_key)) {
     return bad("trust", LEDGER_ERRORS.NO_TRUST_BUNDLE, "a trusted authority bundle is required");
   }
   const trustedRootFingerprint = options.trustedRootFingerprint ?? trustedBundle.root_key.fingerprint;
   const now = checkpoint.issued_at; // operator-asserted time; used ONLY for key validity
+  const authority = await verifyAuthorityBundle(trustedBundle, { trustedRootFingerprint, now });
+  if (!authority.ok) {
+    return bad("trust", LEDGER_ERRORS.NO_TRUST_BUNDLE, `authority bundle rejected: ${authority.reason}`);
+  }
 
   // ── 1. Receipt signature / integrity ─────────────────────────────────────────
   if (receipt.schema_version === SIGNED_RECEIPT_SCHEMA) {
@@ -75,7 +99,8 @@ export async function verifyProofBundle(bundle, trustedBundle, options = {}) {
     return bad("entry", LEDGER_ERRORS.ENTRY_HASH, "entry_hash does not match recomputed body");
   }
   const esig = entry.signature;
-  if (!isObj(esig) || typeof esig.value !== "string" || typeof esig.key_id !== "string") {
+  if (!isObj(esig) || esig.algorithm !== LEDGER_SIGNATURE_ALGORITHM ||
+      typeof esig.value !== "string" || typeof esig.key_id !== "string") {
     return bad("entry", LEDGER_ERRORS.SIGNATURE_MISSING, "entry signature missing/malformed");
   }
   const echeck = await verifyAgainstBundle(ledgerSignablePayload(entry), esig.value, LEDGER_SIGNING_ROLE, esig.key_id, entry.created_at, trustedBundle);
@@ -101,7 +126,8 @@ export async function verifyProofBundle(bundle, trustedBundle, options = {}) {
     return bad("checkpoint", LEDGER_ERRORS.CHECKPOINT_LOG_ID_MISMATCH, "checkpoint log_id != trusted root fingerprint");
   }
   const csig = checkpoint.signature;
-  if (!isObj(csig) || typeof csig.value !== "string" || typeof csig.key_id !== "string") {
+  if (!isObj(csig) || csig.algorithm !== LEDGER_SIGNATURE_ALGORITHM ||
+      typeof csig.value !== "string" || typeof csig.key_id !== "string") {
     return bad("checkpoint", LEDGER_ERRORS.CHECKPOINT_MALFORMED, "checkpoint signature missing/malformed");
   }
   // key_id must equal signature key_id AND the key recorded at key_epoch — a rotated
@@ -116,6 +142,9 @@ export async function verifyProofBundle(bundle, trustedBundle, options = {}) {
   if (!ccheck.ok) {
     const code = ccheck.reason === "SIGNATURE_INVALID" ? LEDGER_ERRORS.CHECKPOINT_SIGNATURE_INVALID : LEDGER_ERRORS.CHECKPOINT_KEY_UNTRUSTED;
     return bad("checkpoint", code, `checkpoint signature rejected: ${ccheck.reason}`);
+  }
+  if (entry.sequence === checkpoint.tree_size && checkpoint.ledger_head.entry_hash !== entry.entry_hash) {
+    return bad("checkpoint", LEDGER_ERRORS.CHECKPOINT_MALFORMED, "checkpoint ledger_head does not match the terminal proof entry");
   }
 
   // ── 6. Success ───────────────────────────────────────────────────────────────

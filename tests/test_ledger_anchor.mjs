@@ -167,7 +167,7 @@ async function main() {
     assert.match(res.reason, /CHECKPOINT_SIGNATURE_INVALID/);
   });
 
-  await test("excision + re-anchor with a non-ledger key is rejected; honest evidence stays durable; roots differ", async () => {
+  await test("excision + mixed-key re-anchor is rejected before checkpoint signing", async () => {
     const root = tmpRoot();
     const { ledgerPath, checkpointPath, storePath, envelopes } = await buildChain(root, 3);
     const honest = await anchorLedger(ledgerPath, checkpointPath, { signLedger: SIGN_LEDGER, bundle: BUNDLE, issuedAt: ISSUED_AT });
@@ -186,8 +186,16 @@ async function main() {
     const e2b = await buildLedgerEntry({ sequence: 2, previousEntryHash: e1.entry_hash, receipt: envelopes[2], receiptRef: { path: "receipts.jsonl", receipt_id: null }, signLedger: attacker.signLedger, createdAt: CREATED_AT });
     writeFileSync(eLedger, [lines[0], canonicalizeJson(e2b)].join("\n") + "\n");
     writeFileSync(join(eRoot, "receipts.jsonl"), [envelopes[0], envelopes[2]].map((e) => canonicalizeJson(e)).join("\n") + "\n");
-    const forged = await anchorLedger(eLedger, eCkpt, { signLedger: attacker.signLedger, bundle: attacker.getPublicBundle(), issuedAt: ISSUED_AT });
-    assert.notEqual(forged.root_hash, honest.root_hash, "rewrite must change the root (Phase-2 witnesses catch this)");
+    let threw = null;
+    try {
+      await anchorLedger(eLedger, eCkpt, { signLedger: attacker.signLedger, bundle: attacker.getPublicBundle(), issuedAt: ISSUED_AT });
+    } catch (error) {
+      threw = error;
+    }
+    assert.ok(threw && [
+      LEDGER_ERRORS.SIGNATURE_INVALID,
+      LEDGER_ERRORS.SIGNATURE_KEY_UNTRUSTED
+    ].includes(threw.code), `expected signature rejection, got ${threw?.code}`);
     rmSync(root, { recursive: true, force: true });
     rmSync(eRoot, { recursive: true, force: true });
   });
@@ -207,7 +215,7 @@ async function main() {
     rmSync(root, { recursive: true, force: true });
   });
 
-  await test("revoked ledger key: anchoring refuses per authority bundle policy (ANCHOR_KEY_UNRESOLVED)", async () => {
+  await test("revoked ledger key: anchoring rejects the revoked entry before signing a checkpoint", async () => {
     const { bundle, signLedger } = await revokedLedgerCustody();
     const root = tmpRoot();
     const ledgerPath = join(root, ".data", "ledger.jsonl");
@@ -217,7 +225,7 @@ async function main() {
     let threw = null;
     try { await computeCheckpoint(ledgerPath, { signLedger, bundle, issuedAt: ISSUED_AT }); }
     catch (e) { threw = e; }
-    assert.ok(threw && threw.code === LEDGER_ERRORS.ANCHOR_KEY_UNRESOLVED, `expected ANCHOR_KEY_UNRESOLVED, got ${threw?.code}`);
+    assert.ok(threw && threw.code === LEDGER_ERRORS.SIGNATURE_KEY_UNTRUSTED, `expected SIGNATURE_KEY_UNTRUSTED, got ${threw?.code}`);
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -242,6 +250,44 @@ async function main() {
     const res = await verifyProofBundle(structuredClone(successBundle), null, {});
     assert.equal(res.ok, false);
     assert.match(res.reason, /NO_TRUST_BUNDLE/);
+  });
+
+  await test("root-signed authority bundle is verified before any bundled key is trusted", async () => {
+    const altered = structuredClone(BUNDLE);
+    altered.authority_id = "attacker-modified-after-root-signing";
+    const res = await verifyProofBundle(structuredClone(successBundle), altered, {});
+    assert.equal(res.ok, false);
+    assert.match(res.reason, /authority bundle rejected: BUNDLE_SIGNATURE_INVALID/);
+  });
+
+  await test("malformed checkpoint and algorithm-confusion inputs fail closed", async () => {
+    const badSize = structuredClone(successBundle);
+    badSize.checkpoint.tree_size = Number.MAX_VALUE;
+    assert.match((await verifyProofBundle(badSize, BUNDLE, {})).reason, /CHECKPOINT_MALFORMED/);
+
+    const badEntryAlgorithm = structuredClone(successBundle);
+    badEntryAlgorithm.entry.signature.algorithm = "RSA";
+    assert.match((await verifyProofBundle(badEntryAlgorithm, BUNDLE, {})).reason, /SIGNATURE_MISSING/);
+
+    const badCheckpointAlgorithm = structuredClone(successBundle);
+    badCheckpointAlgorithm.checkpoint.signature.algorithm = "RSA";
+    assert.match((await verifyProofBundle(badCheckpointAlgorithm, BUNDLE, {})).reason, /CHECKPOINT_MALFORMED/);
+  });
+
+  await test("local checkpoint continuity rejects ledger rollback", async () => {
+    const root = tmpRoot();
+    const { ledgerPath, checkpointPath } = await buildChain(root, 2);
+    await anchorLedger(ledgerPath, checkpointPath, { signLedger: SIGN_LEDGER, bundle: BUNDLE, issuedAt: ISSUED_AT });
+    const first = readFileSync(ledgerPath, "utf8").split("\n").find((line) => line.trim() !== "");
+    writeFileSync(ledgerPath, `${first}\n`);
+    let threw = null;
+    try {
+      await anchorLedger(ledgerPath, checkpointPath, { signLedger: SIGN_LEDGER, bundle: BUNDLE, issuedAt: ISSUED_AT });
+    } catch (error) {
+      threw = error;
+    }
+    assert.equal(threw?.code, LEDGER_ERRORS.CHECKPOINT_ROLLBACK);
+    rmSync(root, { recursive: true, force: true });
   });
 
   // ── Live sidecar round-trip (endpoints) ───────────────────────────────────────

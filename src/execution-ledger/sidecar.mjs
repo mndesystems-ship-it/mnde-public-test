@@ -152,8 +152,17 @@ export async function anchorNow(runtime, { signLedger, bundle, issuedAt } = {}) 
 
 // Current checkpoint head (or null if never anchored).
 export function checkpointHeadResponse(runtime) {
-  const head = runtime?.enabled ? readCheckpointHead(runtime.checkpointPath) : null;
-  return { checkpoint: head ?? null };
+  try {
+    const head = runtime?.enabled ? readCheckpointHead(runtime.checkpointPath) : null;
+    return { ok: true, checkpoint: head ?? null };
+  } catch (error) {
+    return {
+      ok: false,
+      checkpoint: null,
+      code: LEDGER_ERRORS.CHECKPOINT_MALFORMED,
+      message: error?.message ?? String(error)
+    };
+  }
 }
 
 // Build an inclusion proof for a receipt against the current head checkpoint.
@@ -161,9 +170,9 @@ export function checkpointHeadResponse(runtime) {
 // self-verify (fail closed if ledger/merkle/checkpoint/bundle disagree).
 export async function proofResponse(runtime, selector, { trustedBundle } = {}) {
   if (!runtime?.enabled) return { ok: false, code: "ERR_LEDGER_DISABLED" };
-  const checkpoint = readCheckpointHead(runtime.checkpointPath);
-  if (!checkpoint) return { ok: false, code: LEDGER_ERRORS.NOT_ANCHORED, message: "no checkpoint yet" };
   try {
+    const checkpoint = readCheckpointHead(runtime.checkpointPath);
+    if (!checkpoint) return { ok: false, code: LEDGER_ERRORS.NOT_ANCHORED, message: "no checkpoint yet" };
     const bundle = await buildProofBundle(runtime.ledgerPath, checkpoint, selector, { receiptStorePath: runtime.receiptStorePath, trustedBundle });
     return { ok: true, proof: bundle };
   } catch (error) {
