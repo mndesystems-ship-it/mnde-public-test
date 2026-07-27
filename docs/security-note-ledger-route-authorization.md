@@ -60,16 +60,42 @@ for a request carrying no authority assertion.
    read-only authority (e.g. an AUDITOR holding `inspect_receipts` /
    `verify_receipts`) can **never** trigger anchoring.
 
-2. **Fail-closed for unknown sensitive routes.** A new
-   `isSensitiveNamespacePath()` marks `/ledger/*` as a sensitive namespace. In
-   production, any unmatched route under a sensitive namespace is **denied
-   (403)** instead of falling through to a bare `404` — so a future ledger route
-   added without a capability mapping cannot silently become public. Unknown
-   routes *outside* sensitive namespaces keep their existing `404`.
+2. **Fail closed at the authorization boundary (order-independent).**
+   `authorizeAuthorityAction()` evaluates `requiredCapabilityForPath()` first and,
+   when it is `null` **and** the normalized pathname is in a sensitive namespace
+   (`isSensitiveNamespacePath()` → `/ledger/*`), refuses with a stable
+   `{ ok: false, reason: "ERR_AUTH_CAPABILITY_UNMAPPED", status: 403, capability: null }`.
+   This holds regardless of the caller's credentials (absent, invalid, or a valid
+   admin) and regardless of where a handler sits relative to the post-dispatch
+   namespace guard. **A ledger handler registered without a `SENSITIVE_PATHS`
+   entry can therefore never receive an allow result — route ordering cannot
+   recreate the bypass.** Unmapped paths *outside* a sensitive namespace keep their
+   historical "no authority required" behavior.
 
-3. **Authorization before work.** Each guard runs before any anchoring, proof
+3. **Defense-in-depth namespace guard.** The production-only post-dispatch guard
+   for unmatched `/ledger/*` routes (403 instead of a bare `404`) is retained as a
+   second layer. It is **no longer the primary protection** — the boundary check in
+   (2) is — but it still catches truly-unrouted sensitive paths (no handler) with
+   the uniform `ERR_AUTH_REFUSED`.
+
+4. **Authorization before work.** Each guard runs before any anchoring, proof
    load, or checkpoint read, so an unauthorized caller causes no Merkle work and
    no ledger mutation.
+
+### The order-independence invariant
+
+* **Known ledger routes are explicitly mapped** in `SENSITIVE_PATHS`
+  (checkpoint → `inspect_receipts`, proof → `verify_receipts`, anchor →
+  `manage_runtime`).
+* **Registered-but-unmapped sensitive routes are rejected inside authorization**
+  (`ERR_AUTH_CAPABILITY_UNMAPPED`, 403), before the handler body executes.
+* **The guarantee does not depend on route ordering** — it lives at the shared
+  authorization boundary, not in the dispatcher.
+* **The final namespace guard is defense in depth**, kept as a backstop.
+
+This change does **not** alter the Merkle construction, trust roots, receipt
+formats, checkpoint formats, or the Phase 1 assurance level
+(`operator-signed-inclusion`).
 
 ### Environment behavior (unchanged posture)
 
@@ -100,9 +126,19 @@ Merkle state, or filesystem paths.
 
 ## Tests
 
-`tests/test_ledger_auth.mjs` (`npm run test:ledger-auth`) — 20 cases covering the
+`tests/test_ledger_auth.mjs` (`npm run test:ledger-auth`) — 22 cases covering the
 authorization-unit layer and the live production request path: unauthenticated
 denial, invalid/tampered/expired/wrong-capability denial, query-string and
 trailing-slash handling, hostile path normalization, unknown-namespace
 fail-closed, authorized success for each route, read-only-cannot-anchor, and
 no-mutation-on-unauthorized-anchor.
+
+Order-independence is proven two ways: (a) unit assertions that
+`authorizeAuthorityAction()` refuses an unmapped sensitive path with
+`ERR_AUTH_CAPABILITY_UNMAPPED` even for a valid admin assertion; and (b) a live
+test that wires a **registered-but-unmapped** `/ledger/__authz_probe` handler
+(behind the `MNDE_TEST_UNMAPPED_LEDGER_PROBE` flag, inert in real deployments)
+**before** the namespace guard, whose body appends to an observable file only on
+allow — the request returns `403 ERR_AUTH_CAPABILITY_UNMAPPED` and the file is
+never written, proving the refusal comes from authorization, not from the later
+unknown-route guard.

@@ -25,7 +25,7 @@
 
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -188,11 +188,46 @@ async function main() {
     }
   });
 
-  await test("similar-looking paths do NOT inherit access, and are caught by the sensitive namespace", () => {
+  await test("similar-looking sensitive paths fail closed at the authorization boundary (order-independent)", () => {
     for (const evil of ["/ledger/proofevil", "/ledger/anchor-old", "/ledger/checkpoint-public"]) {
       assert.equal(requiredCapabilityForPath(evil), null, `${evil} must not be an explicitly protected route`);
-      assert.equal(authorizeAuthorityAction(evil, null).ok, true, `${evil} has no mapped capability (router will 404 it)`);
-      assert.equal(isSensitiveNamespacePath(evil), true, `${evil} must fall under the sensitive /ledger/ namespace so production denies it`);
+      assert.equal(isSensitiveNamespacePath(evil), true, `${evil} must fall under the sensitive /ledger/ namespace`);
+      // An unmapped path inside a sensitive namespace is refused INSIDE
+      // authorizeAuthorityAction, before any handler or the post-dispatch
+      // namespace guard can run — so route ordering cannot recreate the bypass.
+      const authz = authorizeAuthorityAction(evil, null);
+      assert.equal(authz.ok, false, `${evil} must fail closed at the authorization boundary`);
+      assert.equal(authz.reason, "ERR_AUTH_CAPABILITY_UNMAPPED", `${evil} must refuse with the unmapped code`);
+      assert.equal(authz.status, 403);
+      assert.equal(authz.capability, null);
+    }
+  });
+
+  await test("unmapped SENSITIVE routes fail closed even with an otherwise-valid authority assertion", () => {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const publicDer = publicKey.export({ format: "der", type: "spki" });
+    const prevKey = process.env.MNDE_AUTH_ASSERTION_PUBLIC_KEY_B64;
+    const prevNonce = process.env.MNDE_AUTH_NONCE_CACHE;
+    const nonceDir = mkdtempSync(join(tmpdir(), "mnde-unmapped-nonce-"));
+    process.env.MNDE_AUTH_ASSERTION_PUBLIC_KEY_B64 = Buffer.from(publicDer).subarray(-32).toString("base64url");
+    process.env.MNDE_AUTH_NONCE_CACHE = join(nonceDir, "nonces.json");
+    try {
+      // A fully valid ADMIN assertion holding every capability still cannot reach
+      // an unmapped sensitive route: the boundary refuses before capability
+      // matching, so a forgotten mapping is never satisfiable by any credential.
+      const admin = authorityAssertion(privateKey, { roles: ["ADMIN"], capabilities: ["manage_runtime", "inspect_receipts", "verify_receipts"] });
+      const authz = authorizeAuthorityAction("/ledger/future-route", admin);
+      assert.equal(authz.ok, false, "unmapped sensitive route must fail closed for a valid admin too");
+      assert.equal(authz.reason, "ERR_AUTH_CAPABILITY_UNMAPPED");
+      assert.equal(authz.status, 403);
+      // Unmapped NON-sensitive paths keep their historical pass-through.
+      const nonSensitive = authorizeAuthorityAction("/definitely-not-a-route", null);
+      assert.equal(nonSensitive.ok, true, "unmapped non-sensitive path keeps existing behavior");
+      assert.equal(nonSensitive.capability, null);
+    } finally {
+      if (prevKey === undefined) delete process.env.MNDE_AUTH_ASSERTION_PUBLIC_KEY_B64; else process.env.MNDE_AUTH_ASSERTION_PUBLIC_KEY_B64 = prevKey;
+      if (prevNonce === undefined) delete process.env.MNDE_AUTH_NONCE_CACHE; else process.env.MNDE_AUTH_NONCE_CACHE = prevNonce;
+      rmSync(nonceDir, { recursive: true, force: true });
     }
   });
 
@@ -243,6 +278,10 @@ async function main() {
   const prodDir = mkdtempSync(join(tmpdir(), "mnde-ledger-auth-prod-"));
   let prod = null;
   const PORT = 8811;
+  // Observable side effect for the registered-but-unmapped probe route: its
+  // handler appends to this file ONLY on an allow result. The file must never
+  // appear, proving no handler body executed.
+  const probeMutationFile = join(prodDir, "unmapped-probe-mutation.log");
   try {
     const { publicKey, privateKey } = generateKeyPairSync("ed25519");
     const publicDer = publicKey.export({ format: "der", type: "spki" });
@@ -263,7 +302,12 @@ async function main() {
         MNDE_LEDGER_ANCHOR_TICK_MS: "3600000", // disable the background anchor timer; drive anchoring on-demand
         MNDE_AUTH_ASSERTION_PUBLIC_KEY_B64: Buffer.from(publicDer).subarray(-32).toString("base64url"),
         MNDE_AUTH_AUDIT_LOG: auditLog,
-        MNDE_AUTH_NONCE_CACHE: join(prodDir, "auth-nonces.json")
+        MNDE_AUTH_NONCE_CACHE: join(prodDir, "auth-nonces.json"),
+        // Register the deliberately-unmapped /ledger/__authz_probe handler so the
+        // live suite can prove the authorization boundary (not route ordering)
+        // rejects it. Inert in real deployments (flag unset).
+        MNDE_TEST_UNMAPPED_LEDGER_PROBE: "1",
+        MNDE_TEST_UNMAPPED_LEDGER_PROBE_FILE: probeMutationFile
       }
     });
     const url = prod.url;
@@ -324,6 +368,32 @@ async function main() {
       await assertUniformAuthRefusal(await fetch(`${url}/ledger/anchor2`, { method: "POST" }));
       const nonSensitive = await fetch(`${url}/definitely-not-a-route`);
       assert.equal(nonSensitive.status, 404, "unknown non-sensitive route must retain 404");
+    });
+
+    await test("REGISTERED-but-unmapped /ledger/* handler is refused by AUTHORIZATION, not by the namespace guard, and its body never runs", async () => {
+      // This route has a real handler wired BEFORE the post-dispatch namespace
+      // guard and is deliberately NOT in SENSITIVE_PATHS. If protection depended
+      // on route ordering, its body would execute (mutating the probe file). The
+      // authorization boundary must refuse it with the unmapped-capability code
+      // and no mutation may occur — even under a valid admin assertion.
+      assert.equal(existsSync(probeMutationFile), false, "probe file must not exist before the test");
+
+      const unauthed = await fetch(`${url}/ledger/__authz_probe`, { method: "POST" });
+      assert.equal(unauthed.status, 403, "unmapped registered route must be 403");
+      const body = await unauthed.json();
+      assert.equal(body.reason_code, "ERR_AUTH_CAPABILITY_UNMAPPED", `expected unmapped code, got ${JSON.stringify(body)}`);
+      assert.equal(body.reason, "ERR_AUTH_CAPABILITY_UNMAPPED");
+
+      // A fully valid ADMIN assertion (every capability) must also be refused —
+      // proving the refusal is the missing MAPPING, not a failed credential check.
+      const withAdmin = await fetch(`${url}/ledger/__authz_probe`, {
+        method: "POST",
+        headers: { "x-mnde-authority-assertion": authorityAssertion(privateKey, { roles: ["ADMIN"], capabilities: ["manage_runtime", "inspect_receipts", "verify_receipts"] }) }
+      });
+      assert.equal(withAdmin.status, 403, "valid admin must not satisfy an unmapped route");
+      assert.equal((await withAdmin.json()).reason_code, "ERR_AUTH_CAPABILITY_UNMAPPED");
+
+      assert.equal(existsSync(probeMutationFile), false, "unmapped handler body must NOT have executed (no mutation)");
     });
 
     // Seed the ledger so checkpoint/proof have real content.

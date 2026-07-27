@@ -1,6 +1,6 @@
 import http from "node:http";
 import cluster from "node:cluster";
-import { existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { dirname, join, parse as parsePath, resolve } from "node:path";
 import { PerformanceObserver, monitorEventLoopDelay, performance } from "node:perf_hooks";
@@ -748,7 +748,7 @@ function authorizeProductionRead(req, res, pathname, target) {
   if (RUNTIME_PROFILE !== "production") return true;
   const authz = authorizeRequest(req, pathname, target);
   if (!authz.ok) {
-    response(res, 403, externalAuthRefusalBody(target));
+    response(res, 403, authRefusalBody(authz, target));
     return false;
   }
   auditAuthority(pathname, authz, "ALLOW", target, null, null);
@@ -757,6 +757,18 @@ function authorizeProductionRead(req, res, pathname, target) {
 
 function externalAuthRefusalBody(target = null) {
   return refusalBody("ERR_AUTH_REFUSED", null, target);
+}
+
+// Choose the external refusal body for a failed authz result. Credential-class
+// failures (missing/expired/tampered/wrong-capability) collapse to the uniform
+// ERR_AUTH_REFUSED so no internal reason leaks. A capability-mapping gap
+// (ERR_AUTH_CAPABILITY_UNMAPPED) is a server-config signal, not a caller-secret,
+// so it is surfaced verbatim to make the fail-closed boundary observable.
+function authRefusalBody(authz, target = null) {
+  if (authz && authz.reason === "ERR_AUTH_CAPABILITY_UNMAPPED") {
+    return refusalBody("ERR_AUTH_CAPABILITY_UNMAPPED", null, target);
+  }
+  return externalAuthRefusalBody(target);
 }
 
 // Production-gated authority check for privileged ledger operations (anchor,
@@ -772,7 +784,7 @@ function gateLedgerOperation(req, res, pathname, target) {
   if (RUNTIME_PROFILE !== "production") return { ok: true, actor: null };
   const authz = authorizeRequest(req, pathname, target);
   if (!authz.ok) {
-    response(res, 403, externalAuthRefusalBody(target));
+    response(res, 403, authRefusalBody(authz, target));
     return { ok: false };
   }
   return authz;
@@ -1521,6 +1533,22 @@ const server = http.createServer(async (req, res) => {
     const out = await proofResponse(LEDGER_RUNTIME, selector, { trustedBundle: LEDGER_BUNDLE });
     auditAuthority(pathname, authz, out.ok ? "ALLOW" : "REFUSE", out.ok ? `seq:${out.proof.entry.sequence}` : "proof", null, out.ok ? null : out.code);
     response(res, out.ok ? 200 : 404, out);
+    return;
+  }
+  // Test-only seam (inert unless MNDE_TEST_UNMAPPED_LEDGER_PROBE is set): a
+  // REGISTERED /ledger/* handler that is deliberately absent from SENSITIVE_PATHS
+  // and sits BEFORE the post-dispatch namespace guard below. It exists so the
+  // regression suite can prove the authorization BOUNDARY — not route ordering —
+  // rejects an unmapped sensitive route. It calls the normal gate helper; the
+  // observable mutation (a file append) is reached ONLY on an allow result, which
+  // must never happen in production. Requires an explicit opt-in env flag so it is
+  // never registered in a real deployment.
+  if (process.env.MNDE_TEST_UNMAPPED_LEDGER_PROBE === "1" && req.method === "POST" && pathname === "/ledger/__authz_probe") {
+    const authz = gateLedgerOperation(req, res, pathname, "ledger.__authz_probe");
+    if (!authz.ok) return;
+    const probeFile = process.env.MNDE_TEST_UNMAPPED_LEDGER_PROBE_FILE;
+    if (probeFile) appendFileSync(probeFile, "MUTATED\n");
+    response(res, 200, { ok: true, mutated: true });
     return;
   }
   // Fail-closed for sensitive namespaces: every KNOWN route above returns before
