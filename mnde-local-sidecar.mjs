@@ -1,6 +1,6 @@
 import http from "node:http";
 import cluster from "node:cluster";
-import { existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { dirname, join, parse as parsePath, resolve } from "node:path";
 import { PerformanceObserver, monitorEventLoopDelay, performance } from "node:perf_hooks";
@@ -59,6 +59,7 @@ import {
 import {
   appendAuthAuditEvent,
   authorizeAuthorityAction,
+  isSensitiveNamespacePath,
   nonceDirPath,
   parseAuthorityAssertion,
   refusalBody
@@ -747,7 +748,7 @@ function authorizeProductionRead(req, res, pathname, target) {
   if (RUNTIME_PROFILE !== "production") return true;
   const authz = authorizeRequest(req, pathname, target);
   if (!authz.ok) {
-    response(res, 403, externalAuthRefusalBody(target));
+    response(res, 403, authRefusalBody(authz, target));
     return false;
   }
   auditAuthority(pathname, authz, "ALLOW", target, null, null);
@@ -756,6 +757,37 @@ function authorizeProductionRead(req, res, pathname, target) {
 
 function externalAuthRefusalBody(target = null) {
   return refusalBody("ERR_AUTH_REFUSED", null, target);
+}
+
+// Choose the external refusal body for a failed authz result. Credential-class
+// failures (missing/expired/tampered/wrong-capability) collapse to the uniform
+// ERR_AUTH_REFUSED so no internal reason leaks. A capability-mapping gap
+// (ERR_AUTH_CAPABILITY_UNMAPPED) is a server-config signal, not a caller-secret,
+// so it is surfaced verbatim to make the fail-closed boundary observable.
+function authRefusalBody(authz, target = null) {
+  if (authz && authz.reason === "ERR_AUTH_CAPABILITY_UNMAPPED") {
+    return refusalBody("ERR_AUTH_CAPABILITY_UNMAPPED", null, target);
+  }
+  return externalAuthRefusalBody(target);
+}
+
+// Production-gated authority check for privileged ledger operations (anchor,
+// proof). Mirrors authorizeProductionRead's environment gating — in the local
+// profile this is a dev pass-through so the localhost round-trip works without an
+// authority assertion — but, unlike authorizeProductionRead, it does NOT emit the
+// ALLOW audit itself so the caller can record an operation-specific audit line
+// (e.g. tree_size). On refusal it writes the uniform 403 and returns {ok:false}.
+// In production the mapped capability is enforced fail-closed. The pathname passed
+// here is the SAME canonical value the router matched on, so guard and router can
+// never diverge.
+function gateLedgerOperation(req, res, pathname, target) {
+  if (RUNTIME_PROFILE !== "production") return { ok: true, actor: null };
+  const authz = authorizeRequest(req, pathname, target);
+  if (!authz.ok) {
+    response(res, 403, authRefusalBody(authz, target));
+    return { ok: false };
+  }
+  return authz;
 }
 
 // Policy-engine decision path (opt-in). Fails closed on config errors or engine
@@ -1474,8 +1506,10 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (req.method === "POST" && pathname === "/ledger/anchor") {
-    const authz = authorizeRequest(req, pathname);
-    if (!authz.ok) { response(res, 403, refusalBody(authz.reason, authz.actor, "ledger.anchor")); return; }
+    // Authorization runs BEFORE anchorNow(), so an unauthorized caller triggers
+    // no Merkle work and no checkpoint mutation.
+    const authz = gateLedgerOperation(req, res, pathname, "ledger.anchor");
+    if (!authz.ok) return;
     try {
       const out = await anchorNow(LEDGER_RUNTIME, { signLedger: LEDGER_SIGN, bundle: LEDGER_BUNDLE });
       auditAuthority(pathname, authz, "ALLOW", out.checkpoint ? `tree_size:${out.checkpoint.tree_size}` : "disabled", null, null);
@@ -1487,8 +1521,10 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (req.method === "GET" && pathname === "/ledger/proof") {
-    const authz = authorizeRequest(req, pathname);
-    if (!authz.ok) { response(res, 403, refusalBody(authz.reason, authz.actor, "ledger.proof")); return; }
+    // Authorization runs BEFORE any selector parsing or proof-bundle load, so an
+    // unauthorized caller never causes a receipt/proof read.
+    const authz = gateLedgerOperation(req, res, pathname, "ledger.proof");
+    if (!authz.ok) return;
     const params = new URL(req.url, "http://127.0.0.1").searchParams;
     const rid = params.get("receipt_id");
     const rh = params.get("receipt_hash");
@@ -1497,6 +1533,32 @@ const server = http.createServer(async (req, res) => {
     const out = await proofResponse(LEDGER_RUNTIME, selector, { trustedBundle: LEDGER_BUNDLE });
     auditAuthority(pathname, authz, out.ok ? "ALLOW" : "REFUSE", out.ok ? `seq:${out.proof.entry.sequence}` : "proof", null, out.ok ? null : out.code);
     response(res, out.ok ? 200 : 404, out);
+    return;
+  }
+  // Test-only seam (inert unless MNDE_TEST_UNMAPPED_LEDGER_PROBE is set): a
+  // REGISTERED /ledger/* handler that is deliberately absent from SENSITIVE_PATHS
+  // and sits BEFORE the post-dispatch namespace guard below. It exists so the
+  // regression suite can prove the authorization BOUNDARY — not route ordering —
+  // rejects an unmapped sensitive route. It calls the normal gate helper; the
+  // observable mutation (a file append) is reached ONLY on an allow result, which
+  // must never happen in production. Requires an explicit opt-in env flag so it is
+  // never registered in a real deployment.
+  if (process.env.MNDE_TEST_UNMAPPED_LEDGER_PROBE === "1" && req.method === "POST" && pathname === "/ledger/__authz_probe") {
+    const authz = gateLedgerOperation(req, res, pathname, "ledger.__authz_probe");
+    if (!authz.ok) return;
+    const probeFile = process.env.MNDE_TEST_UNMAPPED_LEDGER_PROBE_FILE;
+    if (probeFile) appendFileSync(probeFile, "MUTATED\n");
+    response(res, 200, { ok: true, mutated: true });
+    return;
+  }
+  // Fail-closed for sensitive namespaces: every KNOWN route above returns before
+  // reaching here. Anything left under a sensitive namespace (e.g. /ledger/*) is
+  // an unmapped route — in production it must be DENIED, never allowed to fall
+  // through to a bare 404 and thereby become implicitly reachable because a
+  // capability mapping was forgotten. Outside production the router's normal
+  // behavior is preserved. Non-sensitive unknown routes keep their existing 404.
+  if (RUNTIME_PROFILE === "production" && isSensitiveNamespacePath(pathname)) {
+    response(res, 403, externalAuthRefusalBody(null));
     return;
   }
   await fail(res, "ERR_NOT_FOUND", 404);
