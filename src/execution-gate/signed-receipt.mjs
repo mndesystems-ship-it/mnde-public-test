@@ -37,7 +37,15 @@ function hashRequest(request) {
 //   decision               — "ALLOW" | "REFUSE"
 //   refusalReason          — string | undefined
 export async function buildSignedExecutionReceipt(request, decision, options) {
-  const { authorityBundle, signingKeyId, signingPrivateKeyPem, policyProvenance, refusalReason } = options;
+  const {
+    authorityBundle,
+    signingKeyId,
+    signingPrivateKeyPem,
+    policyProvenance,
+    refusalReason,
+    executor,
+    passportSubjectId
+  } = options;
 
   if (!authorityBundle || !signingKeyId || !signingPrivateKeyPem) {
     throw new Error("buildSignedExecutionReceipt: authorityBundle, signingKeyId, and signingPrivateKeyPem are required");
@@ -99,12 +107,44 @@ export async function buildSignedExecutionReceipt(request, decision, options) {
     signing_key_id: signingKeyId
   };
 
-  // Sign the canonical form of the body (verifiable_signature absent).
-  const canonical = canonicalPayloadWithoutSignature(body);
+  // Optional executor-identity layer + passport binding. Added to the SIGNED
+  // body so both signature layers cover them. When neither is present the body
+  // is byte-identical to the authority-only receipt (see characterization test).
+  const identityFields = {};
+  if (executor) {
+    if (!executor.executorId || !executor.keyId || !executor.credentialId || !executor.privatePem) {
+      throw new Error("buildSignedExecutionReceipt: executor requires executorId, keyId, credentialId, privatePem");
+    }
+    identityFields.executor_id = executor.executorId;
+    identityFields.executor_key_id = executor.keyId;
+    identityFields.executor_credential_id = executor.credentialId;
+  }
+  if (typeof passportSubjectId === "string" && passportSubjectId.length > 0) {
+    // Bind the passport subject only when present; it is covered by BOTH layers.
+    identityFields.passport_subject_id = passportSubjectId;
+  }
+  const bodyBeforeSignatures = { ...body, ...identityFields };
+
+  // Executor signs FIRST — over the security-relevant body with no signatures
+  // present yet. The executor's own key, never the authority's.
+  let signedBody = bodyBeforeSignatures;
+  if (executor) {
+    const executorPayload = canonicalizeJson(bodyBeforeSignatures);
+    const executorSignatureValue = await signCanonical(executorPayload, executor.privatePem);
+    signedBody = {
+      ...bodyBeforeSignatures,
+      executor_signature: { algorithm: "ED25519", signed_at: signedAt, value: executorSignatureValue }
+    };
+  }
+
+  // The custody receipt-role key COUNTERSIGNS the complete executor-signed
+  // receipt (canonical form with verifiable_signature excluded — which now
+  // includes executor_signature when present).
+  const canonical = canonicalPayloadWithoutSignature(signedBody);
   const signatureValue = await signCanonical(canonical, signingPrivateKeyPem);
 
   return {
-    ...body,
+    ...signedBody,
     verifiable_signature: {
       algorithm: "ED25519",
       authority_id: authorityBundle.authority_id,
