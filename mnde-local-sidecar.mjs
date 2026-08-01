@@ -290,6 +290,23 @@ let ACTIVATION_ID = null;
   }
 }
 
+// ── Executor-identity pre-flight (Phase 0 / Design A) ────────────────────────
+// Executor identity is OPT-IN. When MNDE_EXECUTOR_* is configured, the material
+// must be usable (credential verifies, unexpired, right environment, key matches)
+// or MNDe refuses to start — no silent downgrade to authority-only. When absent,
+// this is a no-op and authority-only signing is unchanged.
+{
+  const { assertExecutorIdentityReadiness } = await import("./src/custody/executor-readiness.mjs");
+  const executor = await assertExecutorIdentityReadiness(process.env);
+  if (!executor.ok) {
+    process.stderr.write(`\nMNDe refused to start — executor identity pre-flight failed.\n  reason_code: ${executor.reason_code}\n  ${executor.detail}\n\n`);
+    process.exit(1);
+  }
+  if (executor.configured) {
+    process.stdout.write(`MNDe executor identity: ${executor.executor_id} (key ${String(executor.executor_key_id).slice(0, 20)}…) ready\n`);
+  }
+}
+
 // ── Startup directory permission checks ──────────────────────────────────────
 // Verify security-critical directories are not world-writable before forking
 // workers or serving traffic. A world-writable directory lets any local user
