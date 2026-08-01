@@ -25,6 +25,7 @@
   "test:executor-credential",
   "test:executor-identity-signing",
   "test:executor-lifecycle",
+  "test:executor-readiness",
   "test:executor-signer-load",
   "test:external-signer",
   "test:feline",
