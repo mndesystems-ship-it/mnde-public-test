@@ -30,6 +30,7 @@
   "test:fresh-setup",
   "test:historical-policy-bundle",
   "test:identity-assertion",
+  "test:layered-receipt-verification",
   "test:ledger-anchor",
   "test:ledger-auth",
   "test:ledger-merkle",
