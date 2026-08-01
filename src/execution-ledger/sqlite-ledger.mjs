@@ -25,6 +25,11 @@ import { canonicalReceiptHash, sha256Prefixed } from "./index.mjs";
 export const SQLITE_LEDGER_SCHEMA = "mnde.execution_ledger.sqlite.v1";
 export const LEDGER_ENTRY_BODY_VERSION = "mnde.execution_ledger.entry_body.v1";
 
+// Entry type for entries imported from the legacy JSONL ledger. These preserve
+// their ORIGINAL entry_hash and are never re-hashed to the native model.
+export const LEGACY_JSONL_ENTRY_TYPE = "legacy_jsonl_receipt";
+export const LEGACY_TRUST_EPOCH = "legacy-shared-key";
+
 export const SQLITE_LEDGER_ERRORS = Object.freeze({
   UNAVAILABLE: "ERR_LEDGER_UNAVAILABLE",
   SCHEMA_INVALID: "ERR_LEDGER_SCHEMA_INVALID",
@@ -288,21 +293,26 @@ export function verifySqliteLedger(db) {
     if ((row.previous_entry_hash ?? null) !== expectedPrev) {
       return { ok: false, code: "ERR_LEDGER_CHAIN_BROKEN", detail: `sequence ${row.ledger_sequence} parent mismatch` };
     }
-    const recomputed = computeLedgerEntryBodyHash({
-      ledger_sequence: row.ledger_sequence,
-      entry_type: row.entry_type,
-      receipt_id: row.receipt_id,
-      receipt_hash: row.receipt_hash,
-      executor_id: row.executor_id,
-      executor_key_id: row.executor_key_id,
-      previous_entry_hash: row.previous_entry_hash,
-      trust_epoch: row.trust_epoch,
-      legacy_signature_status: row.legacy_signature_status,
-      executor_signature_status: row.executor_signature_status,
-      created_at: row.created_at
-    });
-    if (recomputed !== row.entry_body_hash) {
-      return { ok: false, code: "ERR_LEDGER_ENTRY_HASH", detail: `sequence ${row.ledger_sequence} body hash mismatch` };
+    // Legacy-imported entries preserve their ORIGINAL JSONL hash; their integrity
+    // was proven once at migration time (recorded in migration_state) and must
+    // not be rewritten to the native model. Native entries recompute here.
+    if (row.entry_type !== LEGACY_JSONL_ENTRY_TYPE) {
+      const recomputed = computeLedgerEntryBodyHash({
+        ledger_sequence: row.ledger_sequence,
+        entry_type: row.entry_type,
+        receipt_id: row.receipt_id,
+        receipt_hash: row.receipt_hash,
+        executor_id: row.executor_id,
+        executor_key_id: row.executor_key_id,
+        previous_entry_hash: row.previous_entry_hash,
+        trust_epoch: row.trust_epoch,
+        legacy_signature_status: row.legacy_signature_status,
+        executor_signature_status: row.executor_signature_status,
+        created_at: row.created_at
+      });
+      if (recomputed !== row.entry_body_hash) {
+        return { ok: false, code: "ERR_LEDGER_ENTRY_HASH", detail: `sequence ${row.ledger_sequence} body hash mismatch` };
+      }
     }
     previousHash = row.entry_body_hash;
     expectedSequence += 1;

@@ -32,6 +32,7 @@
   "test:historical-policy-bundle",
   "test:identity-assertion",
   "test:layered-receipt-verification",
+  "test:ledger-migration",
   "test:live-verification",
   "test:mcp",
   "test:mcp-proxy",
