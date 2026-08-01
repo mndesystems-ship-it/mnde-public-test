@@ -22,6 +22,7 @@
   "test:execution-ledger",
   "test:execution-result",
   "test:executor",
+  "test:executor-credential",
   "test:executor-lifecycle",
   "test:external-signer",
   "test:feline",
