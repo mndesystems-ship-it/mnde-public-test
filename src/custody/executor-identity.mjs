@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
 
 import { sign as providerSign, verify as providerVerify } from "../crypto/provider.mjs";
+import { verifyExecutorCredential } from "./executor-credential.mjs";
 
 // The capability an executor credential must grant to sign execution receipts.
 export const EXECUTOR_RECEIPT_CAPABILITY = "sign_execution_receipt";
@@ -58,8 +59,23 @@ function fail(code, detail) {
 //   privateKeyPath    path to the executor Ed25519 private key PEM (outside repo)
 //   credential        the authority-signed executor credential object
 //   repoRoot          repository root, to reject in-repo key paths
+//   authorityBundle        issuing custody bundle (to verify the credential)
+//   trustedRootFingerprint out-of-band root anchor
+//   environmentId          expected runtime environment
+//   now                    ISO-8601 verification time
+//
+// Error results carry only stable codes and paths/reasons — never key material.
 export async function loadExecutorSigner(options = {}) {
-  const { executorId, privateKeyPath, credential, repoRoot } = options;
+  const {
+    executorId,
+    privateKeyPath,
+    credential,
+    repoRoot,
+    authorityBundle,
+    trustedRootFingerprint,
+    environmentId,
+    now
+  } = options;
 
   if (typeof executorId !== "string" || executorId.length === 0) {
     return fail(EXECUTOR_IDENTITY_ERRORS.IDENTITY_MISMATCH, "executorId is required");
@@ -73,12 +89,19 @@ export async function loadExecutorSigner(options = {}) {
   if (credential === null || credential === undefined) {
     return fail(EXECUTOR_IDENTITY_ERRORS.CREDENTIAL_MISSING, "executor credential is required");
   }
-  if (credential.executor_id !== executorId) {
-    return fail(EXECUTOR_IDENTITY_ERRORS.IDENTITY_MISMATCH, "credential executor_id does not match configuration");
-  }
-  if (typeof credential.public_key !== "string" || credential.public_key.length === 0) {
-    return fail(EXECUTOR_IDENTITY_ERRORS.INVALID, "credential is missing a public key");
-  }
+
+  // Fully verify the credential against the authority BEFORE trusting the key:
+  // issuer signature, expiry, environment, executor identity, and capability.
+  // Fail closed with the credential's own stable error code (e.g. EXPIRED).
+  const credRes = await verifyExecutorCredential(credential, {
+    authorityBundle,
+    trustedRootFingerprint,
+    environmentId,
+    expectedExecutorId: executorId,
+    requiredCapability: EXECUTOR_RECEIPT_CAPABILITY,
+    now
+  });
+  if (!credRes.ok) return fail(credRes.code, credRes.detail);
 
   let privatePem;
   try {
@@ -89,14 +112,14 @@ export async function loadExecutorSigner(options = {}) {
 
   // Prove the loaded private key corresponds to the credential's public key with
   // a sign/verify round-trip through the provider seam (no direct node:crypto).
-  const probe = `mnde-executor-keycheck:${credential.credential_id ?? executorId}`;
+  const probe = `mnde-executor-keycheck:${credRes.credential_id}`;
   let signature;
   try {
     signature = await providerSign(probe, privatePem);
   } catch (error) {
     return fail(EXECUTOR_IDENTITY_ERRORS.INVALID, `executor private key invalid: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const matches = await providerVerify(probe, signature, credential.public_key);
+  const matches = await providerVerify(probe, signature, credRes.public_key);
   if (!matches) {
     return fail(EXECUTOR_IDENTITY_ERRORS.KEY_MISMATCH, "executor private key does not match credential public key");
   }
@@ -104,8 +127,8 @@ export async function loadExecutorSigner(options = {}) {
   return {
     ok: true,
     executorId,
-    keyId: credential.key_id,
-    credentialId: credential.credential_id,
+    keyId: credRes.key_id,
+    credentialId: credRes.credential_id,
     privatePem,
     credential
   };

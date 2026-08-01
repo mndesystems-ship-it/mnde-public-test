@@ -118,7 +118,8 @@
     "test:reviewer-kit": "node ./tests/test_cross_platform_reviewer.mjs",
     "test:audit-remediation": "node ./tests/test_audit_remediation.mjs",
     "test:passport-subject": "node ./tests/test_passport_subject.mjs",
-    "test:executor-lifecycle": "node ./tests/test_executor_lifecycle.mjs"
+    "test:executor-lifecycle": "node ./tests/test_executor_lifecycle.mjs",
+    "test:executor-signer-load": "node ./tests/test_executor_signer_load.mjs"
   },
   "devDependencies": {
     "typescript": "^5.9.3"
