@@ -90,6 +90,7 @@
     "test:signed-result-codes": "node ./tests/test_signed_result_codes.mjs",
     "test:executor": "node ./tests/test_executor.mjs",
     "test:executor-credential": "node ./tests/test_executor_credential.mjs",
+    "test:executor-identity-signing": "node ./tests/test_executor_identity_signing.mjs",
     "mcp-server": "node ./mcp/mnde-mcp-server.mjs",
     "mcp-demo": "node ./scripts/mcp-demo.mjs",
     "test:mcp": "node ./tests/test_mcp_server.mjs",
