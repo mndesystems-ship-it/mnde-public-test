@@ -25,6 +25,7 @@ export { extractPolicyAttributes } from "./policy-attributes.mjs";
 export { buildExecutionGateReceipt } from "./receipt.mjs";
 export { buildSignedExecutionReceipt, SIGNED_EXECUTION_RECEIPT_SCHEMA } from "./signed-receipt.mjs";
 export { verifySignedExecutionReceipt } from "./verify-signed-receipt.mjs";
+export { verifyLayeredReceipt, RECEIPT_VERIFICATION_STATES } from "./verify-layered-receipt.mjs";
 
 // Hard-coded decision gates. Returns { decision, refusalReason? }.
 function applyGates(req) {

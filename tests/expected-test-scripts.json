@@ -30,6 +30,7 @@
   "test:fresh-setup",
   "test:historical-policy-bundle",
   "test:identity-assertion",
+  "test:layered-receipt-verification",
   "test:live-verification",
   "test:mcp",
   "test:mcp-proxy",
