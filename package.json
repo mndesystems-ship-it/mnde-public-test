@@ -30,6 +30,7 @@
     "test:partial-keypair-recovery": "node ./tests/test_partial_keypair_recovery.mjs",
     "test:packaged-onboarding-proxy": "node ./tests/test_packaged_onboarding_proxy.mjs",
     "test:private-key-scan-hostile": "node ./tests/test_private_key_scan_hostile.mjs",
+    "test:receipt-signing-characterization": "node ./tests/test_receipt_signing_characterization.mjs",
     "test:receipt-signing-key-status": "node ./tests/test_receipt_signing_key_status.mjs",
     "test:replay": "node ./scripts/test-replay-verification.mjs",
     "mnde": "node ./bin/mnde.mjs",
