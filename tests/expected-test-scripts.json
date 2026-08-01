@@ -50,6 +50,7 @@
   "test:production-signing",
   "test:proxy-auth",
   "test:receipt-index",
+  "test:receipt-signing-characterization",
   "test:receipt-signing-key-status",
   "test:receipt-verifier",
   "test:replay",
