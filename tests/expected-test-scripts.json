@@ -66,6 +66,7 @@
   "test:signed-execution-result",
   "test:signed-policy-bundle",
   "test:signed-result-codes",
+  "test:sqlite-ledger",
   "test:startup-checks",
   "test:trust-anchor",
   "test:trust-root",

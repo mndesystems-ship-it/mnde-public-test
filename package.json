@@ -86,6 +86,7 @@
     "test:execution-gate": "node ./tests/test_execution_gate.mjs",
     "test:execution-gate-signing": "node ./tests/test_execution_gate_signing.mjs",
     "test:execution-ledger": "node ./tests/test_execution_ledger.mjs",
+    "test:sqlite-ledger": "node ./tests/test_sqlite_ledger.mjs",
     "test:execution-result": "node ./tests/test_execution_result.mjs",
     "test:signed-execution-result": "node ./tests/test_signed_execution_result.mjs",
     "test:signed-result-codes": "node ./tests/test_signed_result_codes.mjs",
