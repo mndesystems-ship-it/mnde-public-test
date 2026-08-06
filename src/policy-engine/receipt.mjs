@@ -115,6 +115,7 @@ export function buildPolicyReceipt(request, policy, options = {}) {
 
   const payload = {
     schema_version: receiptSchema,
+    ...(options.signingMode ? { signing_mode: options.signingMode } : {}),
     canonical_request: canonicalizeJson(request),
     canonical_policy: canonicalizeJson(policy),
     authorities,

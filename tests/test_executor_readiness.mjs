@@ -115,10 +115,10 @@ await test("wrong environment fails closed", async () => {
 });
 
 await test("in-repository private-key path fails closed", async () => {
-  const inRepo = join(repoRoot, "shared", "receipt_keys", "receipt_signing_private.pem");
+  const inRepo = join(repoRoot, "package.json");
   const r = await assertExecutorIdentityReadiness(fullEnv({ MNDE_EXECUTOR_PRIVATE_KEY: inRepo }), opts());
   assert.equal(r.ok, false);
-  assert.equal(r.reason_code, "ERR_EXECUTOR_KEY_PATH_UNSAFE");
+  assert.equal(r.reason_code, "ERR_EXECUTOR_KEY_REPOSITORY_CONTAINED");
 });
 
 await test("unreadable credential fails closed", async () => {

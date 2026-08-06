@@ -125,12 +125,12 @@ await test("passport subject substitution → ERR_PASSPORT_SUBJECT_MISMATCH", as
   assert.equal(res.reason, "ERR_PASSPORT_SUBJECT_MISMATCH");
 });
 
-await test("executor signature tamper → ERR_RECEIPT_SIGNATURE_INVALID (layer executor)", async () => {
+await test("executor signature tamper → ERR_EXECUTOR_SIGNATURE_INVALID (layer executor)", async () => {
   const r = await idReceipt(A, codex, "u2");
   r.executor_signature.value = flip(r.executor_signature.value);
   const res = await verifyLayeredReceipt(r, baseOpts(A, codex));
   assert.equal(res.state, S.FAILED);
-  assert.equal(res.reason, "ERR_RECEIPT_SIGNATURE_INVALID");
+  assert.equal(res.reason, "ERR_EXECUTOR_SIGNATURE_INVALID");
   assert.equal(res.layer, "executor");
 });
 
@@ -159,12 +159,12 @@ await test("valid authority must not hide tampered executor (one valid, one inva
   assert.equal(res.layer, "executor");
 });
 
-await test("post-sign mutation of a neutral signed field → ERR_RECEIPT_SIGNATURE_INVALID (executor)", async () => {
+await test("post-sign mutation of a neutral signed field → ERR_EXECUTOR_SIGNATURE_INVALID (executor)", async () => {
   const r = await idReceipt(A, codex, "u6");
   r.evidence.commit_sha = "tampered-after-signing"; // identity intact; signature must break
   const res = await verifyLayeredReceipt(r, baseOpts(A, codex));
   assert.equal(res.state, S.FAILED);
-  assert.equal(res.reason, "ERR_RECEIPT_SIGNATURE_INVALID");
+  assert.equal(res.reason, "ERR_EXECUTOR_SIGNATURE_INVALID");
   assert.equal(res.layer, "executor");
 });
 
@@ -290,7 +290,7 @@ await test("anchoring binds exact bytes: a mutated inner fails layered verify wh
   mutated.evidence.commit_sha = "tampered";
   const lr = await verifyLayeredReceipt(mutated, baseOpts(A, codex));
   assert.equal(lr.state, S.FAILED);
-  assert.equal(lr.reason, "ERR_RECEIPT_SIGNATURE_INVALID");
+  assert.equal(lr.reason, "ERR_EXECUTOR_SIGNATURE_INVALID");
   rmSync(ch.dir, { recursive: true, force: true });
 });
 

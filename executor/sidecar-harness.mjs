@@ -61,11 +61,15 @@ export async function startMndeSidecar({
   const child = spawn(process.execPath, ["mnde-local-sidecar.mjs"], {
     cwd: repoRoot,
     env,
-    stdio: ["ignore", "ignore", "pipe"],
+    stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true
   });
 
+  let stdout = "";
   let stderr = "";
+  child.stdout?.on("data", (chunk) => {
+    stdout += chunk.toString();
+  });
   child.stderr?.on("data", (chunk) => {
     stderr += chunk.toString();
   });
@@ -74,6 +78,9 @@ export async function startMndeSidecar({
 
   return {
     url,
+    getStdout() {
+      return stdout;
+    },
     getStderr() {
       return stderr;
     },

@@ -64,8 +64,8 @@ export async function assertExecutorIdentityReadiness(env = process.env, options
   let credential;
   try {
     credential = JSON.parse(readFileSync(credentialPath, "utf8"));
-  } catch (error) {
-    return fail(EXECUTOR_READINESS_ERRORS.CREDENTIAL_UNREADABLE, `cannot read/parse executor credential at ${credentialPath}: ${error instanceof Error ? error.message : String(error)}`);
+  } catch {
+    return fail(EXECUTOR_READINESS_ERRORS.CREDENTIAL_UNREADABLE, "executor credential cannot be read or parsed");
   }
 
   // Resolve the issuing bundle (injected for tests; else from custody).
@@ -100,6 +100,9 @@ export async function assertExecutorIdentityReadiness(env = process.env, options
     configured: true,
     executor_id: signer.executorId,
     executor_key_id: signer.keyId,
-    credential_id: signer.credentialId
+    credential_id: signer.credentialId,
+    environment_id: environmentId,
+    credential: signer.credential,
+    signer: signer.signer
   };
 }

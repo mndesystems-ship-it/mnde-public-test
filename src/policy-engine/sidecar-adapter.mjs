@@ -135,6 +135,7 @@ export function decidePolicyEngine(body, config, options = {}) {
     // forwarded so scope-bound (mnde.authority_grant.v1) grants can bind their
     // `principal` field against it — never against the request body directly.
     caller: options.caller,
+    signingMode: options.signingMode,
     now
   });
   return {

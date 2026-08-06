@@ -141,6 +141,7 @@ export function buildReceipt(input: {
   ramona: RamonaTrace;
   policy_version: string;
   timings?: TimingCollector;
+  signing_mode?: "authority_only";
 }): SignedReceipt {
   const config = signingConfig();
   const pipelineAllows = input.orbit.decision === "ALLOW" && input.arm.decision === "ALLOW" && input.ramona.decision === "ALLOW";
@@ -171,6 +172,7 @@ export function buildReceipt(input: {
 
   const payload: SignedReceiptPayload = {
     schema_version: "ecs.receipt.v2",
+    ...(input.signing_mode ? { signing_mode: input.signing_mode } : {}),
     canonical_request: input.canonical_request,
     request_hash: input.request_hash,
     decision_output: {

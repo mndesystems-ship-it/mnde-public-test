@@ -62,7 +62,8 @@ export function buildSidecarRefusalReceipt({
   timings = {},
   request_id = null,
   request_hash = null,
-  decision_hash = null
+  decision_hash = null,
+  signing_mode
 }) {
   const safeTimings = safeTimingSnapshot(timings);
   const canonicalRequest = canonicalizeJson({
@@ -75,6 +76,7 @@ export function buildSidecarRefusalReceipt({
   const resolvedDecisionHash = parseBoundaryDecisionHash(resolvedRequestHash, reason_code);
   const payload = {
     schema_version: "ecs.receipt.v2",
+    ...(signing_mode ? { signing_mode } : {}),
     canonical_request: canonicalRequest,
     request_hash: resolvedRequestHash,
     decision_output: {

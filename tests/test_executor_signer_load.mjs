@@ -93,7 +93,8 @@ await test("1. valid key + credential load successfully", async () => {
   assert.equal(r.executorId, CODEX_ID);
   assert.equal(r.keyId, codexCred.key_id);
   assert.equal(r.credentialId, codexCred.credential_id);
-  assert.ok(r.privatePem.includes("PRIVATE KEY"), "signer carries the loaded key for use");
+  assert.equal(typeof r.signer?.sign, "function", "signer exposes only the signing capability");
+  assert.ok(!("privatePem" in r), "loaded key bytes are not exposed on the result");
 });
 
 await test("2. private key / credential mismatch fails closed", async () => {
@@ -124,9 +125,9 @@ await test("5. missing / unreadable key file fails closed", async () => {
 });
 
 await test("6. in-repository private-key path fails closed", async () => {
-  const r = await loadExecutorSigner(baseOpts(authority, { privateKeyPath: join(repoRoot, "shared", "receipt_keys", "receipt_signing_private.pem"), credential: codexCred }));
+  const r = await loadExecutorSigner(baseOpts(authority, { privateKeyPath: join(repoRoot, "package.json"), credential: codexCred }));
   assert.equal(r.ok, false);
-  assert.equal(r.code, "ERR_EXECUTOR_KEY_PATH_UNSAFE");
+  assert.equal(r.code, "ERR_EXECUTOR_KEY_REPOSITORY_CONTAINED");
 });
 
 await test("7. no private material appears in failure results", async () => {
