@@ -307,6 +307,7 @@ These exist as architecture or concepts in the repository but are not claimed as
 ## More Docs
 
 - [First tester onboarding](docs/first-tester-onboarding.md)
+- [MNDe CLI v1 spec (first iteration)](docs/mnde-cli-v1-spec.md)
 - [Independent receipt verification](docs/independent-verification.md)
 - [Minimal agent integration](docs/integration-guide.md)
 - [MNDe Guard for OpenClaw spec](docs/openclaw-integration-spec.md)

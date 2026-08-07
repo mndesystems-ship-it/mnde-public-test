@@ -3,6 +3,7 @@
 Start here:
 
 - `first-tester-onboarding.md`
+- `mnde-cli-v1-spec.md` - unified `mnde` CLI, first iteration (git/docker-style command tree)
 - `execution-firewall-overview.md` - pre-execution authorization layer overview
 - `execution-receipt-spec-v1.md`
 - `mnde-policy-engine-production-spec-v1.md`
