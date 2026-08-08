@@ -191,7 +191,6 @@ export type DecisionOutput = {
 // ─────────────────────────────────────────────────────────────────────────────
 export type SignedReceiptPayload = {
   schema_version: "ecs.receipt.v2";
-  signing_mode?: "authority_only";
   canonical_request: string;
   request_hash: string;
   decision_output: DecisionOutput;

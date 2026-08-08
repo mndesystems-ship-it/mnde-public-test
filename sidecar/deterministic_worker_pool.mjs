@@ -64,7 +64,7 @@ export class DeterministicWorkerPool {
     this.#syncWorkerMetrics();
   }
 
-  submit(raw_input, options = {}) {
+  submit(raw_input) {
     if (this.#closed) return { ok: false, reason_code: WORKER_POOL_FAILED };
     this.start();
     if (this.#idle.length === 0 && this.#queue.length >= this.#config.max_queue_depth) {
@@ -79,7 +79,6 @@ export class DeterministicWorkerPool {
     const task = {
       id: this.#nextTaskId,
       raw_input,
-      signing_mode: options.signing_mode,
       enqueued_at_ms: performance.now(),
       resolve
     };
@@ -135,7 +134,7 @@ export class DeterministicWorkerPool {
       state.active_task = { ...task, started_at_ms: now, queue_wait_ms: queueWait, timeout };
       this.#metrics.queue_wait_ms_total += queueWait;
       this.#metrics.queue_wait_ms_max = Math.max(this.#metrics.queue_wait_ms_max, queueWait);
-      state.worker.postMessage({ task_id: task.id, raw_input: task.raw_input, signing_mode: task.signing_mode });
+      state.worker.postMessage({ task_id: task.id, raw_input: task.raw_input });
     }
     this.#syncDepthMetrics();
     this.#syncWorkerMetrics();

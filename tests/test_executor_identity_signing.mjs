@@ -5,7 +5,15 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -111,6 +119,19 @@ function executorPayload(receipt) {
   return canonicalizeJson(rest);
 }
 
+function runEnrollment(bundlePath, rootKeyPath, outDir) {
+  return spawnSync(process.execPath, [
+    join(repoRoot, "scripts", "trust-enroll-executor.mjs"),
+    "--executor-id", CODEX_ID,
+    "--environment", ENV_ID,
+    "--bundle", bundlePath,
+    "--root-key", rootKeyPath,
+    "--out-dir", outDir,
+    "--issued-at", "2026-06-01T00:00:00.000Z",
+    "--ttl-hours", "24"
+  ], { encoding: "utf8" });
+}
+
 console.log("Executor identity signing\n");
 
 const authority = await makeAuthority();
@@ -182,16 +203,7 @@ await test("enrollment tool writes key material OUTSIDE the repo and issues a ve
   writeFileSync(bundlePath, JSON.stringify(authority.bundle));
   writeFileSync(rootKeyPath, authority.root.privatePem);
 
-  const run = spawnSync(process.execPath, [
-    join(repoRoot, "scripts", "trust-enroll-executor.mjs"),
-    "--executor-id", CODEX_ID,
-    "--environment", ENV_ID,
-    "--bundle", bundlePath,
-    "--root-key", rootKeyPath,
-    "--out-dir", outDir,
-    "--issued-at", "2026-06-01T00:00:00.000Z",
-    "--ttl-hours", "24"
-  ], { encoding: "utf8" });
+  const run = runEnrollment(bundlePath, rootKeyPath, outDir);
 
   assert.equal(run.status, 0, `tool failed: ${run.stderr}`);
   const summary = JSON.parse(run.stdout);
@@ -221,6 +233,89 @@ await test("enrollment tool refuses an out-dir inside the repository (fails clos
   assert.notEqual(run.status, 0);
   assert.match(run.stderr, /OUTSIDE the repository/);
   assert.ok(!existsSync(badOut), "must not create key material inside the repo");
+});
+
+await test("enrollment rejects a symlinked --out-dir resolving inside the repository", async () => {
+  const work = mkdtempSync(join(tmpdir(), "mnde-enroll-out-symlink-"));
+  try {
+    const bundlePath = join(work, "bundle.json");
+    const rootKeyPath = join(work, "root_private.pem");
+    const outLink = join(work, "outside-link");
+    writeFileSync(bundlePath, JSON.stringify(authority.bundle));
+    writeFileSync(rootKeyPath, authority.root.privatePem, { mode: 0o600 });
+    try {
+      symlinkSync(join(repoRoot, "scripts"), outLink, "dir");
+    } catch (error) {
+      if (error?.code === "EPERM" || error?.code === "ENOTSUP") {
+        console.log("        platform does not permit directory symlinks; covered by junction test where supported");
+        return;
+      }
+      throw error;
+    }
+    const escapedKey = join(repoRoot, "scripts", "mnde_local_prod_executor_codex_01.key");
+    assert.equal(existsSync(escapedKey), false, "test precondition: escaped key must not exist");
+    const run = runEnrollment(bundlePath, rootKeyPath, outLink);
+    assert.notEqual(run.status, 0);
+    assert.match(run.stderr, /symbolic link|junction|reparse point/i);
+    assert.equal(existsSync(escapedKey), false, "must not write through the symlink");
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+await test("enrollment rejects a Windows junction --out-dir resolving inside the repository where supported", async () => {
+  if (process.platform !== "win32") return;
+  const work = mkdtempSync(join(tmpdir(), "mnde-enroll-out-junction-"));
+  try {
+    const bundlePath = join(work, "bundle.json");
+    const rootKeyPath = join(work, "root_private.pem");
+    const outJunction = join(work, "outside-junction");
+    writeFileSync(bundlePath, JSON.stringify(authority.bundle));
+    writeFileSync(rootKeyPath, authority.root.privatePem, { mode: 0o600 });
+    try {
+      symlinkSync(join(repoRoot, "scripts"), outJunction, "junction");
+    } catch (error) {
+      if (error?.code === "EPERM" || error?.code === "ENOTSUP") {
+        console.log("        platform does not permit junction creation");
+        return;
+      }
+      throw error;
+    }
+    const escapedKey = join(repoRoot, "scripts", "mnde_local_prod_executor_codex_01.key");
+    const run = runEnrollment(bundlePath, rootKeyPath, outJunction);
+    assert.notEqual(run.status, 0);
+    assert.match(run.stderr, /symbolic link|junction|reparse point/i);
+    assert.equal(existsSync(escapedKey), false, "must not write through the junction");
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+await test("enrollment rejects a symlinked --root-key before reading key material", async () => {
+  const work = mkdtempSync(join(tmpdir(), "mnde-enroll-root-symlink-"));
+  try {
+    const bundlePath = join(work, "bundle.json");
+    const realRootKeyPath = join(work, "root_private.pem");
+    const linkedRootKeyPath = join(work, "root-link.pem");
+    const outDir = join(work, "executors");
+    writeFileSync(bundlePath, JSON.stringify(authority.bundle));
+    writeFileSync(realRootKeyPath, authority.root.privatePem, { mode: 0o600 });
+    try {
+      symlinkSync(realRootKeyPath, linkedRootKeyPath, "file");
+    } catch (error) {
+      if (error?.code === "EPERM" || error?.code === "ENOTSUP") {
+        console.log("        platform does not permit file symlinks");
+        return;
+      }
+      throw error;
+    }
+    const run = runEnrollment(bundlePath, linkedRootKeyPath, outDir);
+    assert.notEqual(run.status, 0);
+    assert.match(run.stderr, /symbolic link|junction|reparse point/i);
+    assert.equal(existsSync(outDir) ? readdirSync(outDir).length : 0, 0, "must not write output when root-key validation fails");
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
 });
 
 console.log(`\n${failed === 0 ? "PASS" : "FAIL"} executor identity signing (${passed}/${passed + failed})`);

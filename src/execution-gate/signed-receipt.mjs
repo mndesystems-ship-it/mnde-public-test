@@ -66,7 +66,7 @@ export async function buildSignedExecutionReceipt(request, decision, options) {
   // Build the receipt body (without the signature field).
   const body = {
     schema_version: SIGNED_EXECUTION_RECEIPT_SCHEMA,
-    signing_mode: executor ? "executor_and_authority" : "authority_only",
+    ...(executor ? { signing_mode: "executor_and_authority" } : {}),
     execution_id: request.execution_id,
     request_schema_version: request.schema_version,
     request_hash: requestHash,

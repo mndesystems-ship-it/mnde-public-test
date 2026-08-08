@@ -10,8 +10,10 @@
 // that carries a production custody attestation. The inner receipt is never
 // mutated, so the existing verifier keeps its byte-for-byte guarantees.
 //
+//   mnde.signed-receipt.v1 = { schema_version, receipt: <inner, untouched>,
+//                              custody_attestation: { ... , signature } }
 //   mnde.signed-receipt.v2 = { schema_version, signing_mode,
-//                              receipt: <inner, untouched>, executor?,
+//                              receipt: <inner, untouched>, executor,
 //                              custody_attestation: { ... , signature } }
 //
 // Verification is fully offline against a published authority bundle: the inner
@@ -168,9 +170,6 @@ export async function signLiveReceipt(receipt, signingContext, options = {}) {
   }
   if (signingContext.mode === LIVE_RECEIPT_SIGNING_MODES.AUTHORITY_ONLY) {
     if (signingContext.authorityConfig.mode === "legacy") {
-      if (receipt?.signing_mode !== LIVE_RECEIPT_SIGNING_MODES.AUTHORITY_ONLY) {
-        return { ok: false, reason_code: receipt?.signing_mode === undefined ? "ERR_SIGNING_MODE_MISSING" : "ERR_SIGNING_MODE_INVALID" };
-      }
       return { ok: true, receipt };
     }
     return signReceiptForDelivery(receipt, signingContext.authorityConfig, {
@@ -193,8 +192,8 @@ export async function signLiveReceipt(receipt, signingContext, options = {}) {
 }
 
 // Sign a built receipt for delivery. Legacy mode is a pass-through. Custody mode
-// returns an mnde.signed-receipt.v2 envelope, or fails closed with a distinct
-// reason code. Never logs or returns key material.
+// preserves the exact v1 authority-only envelope unless executor identity is
+// present, in which case it returns v2. Never logs or returns key material.
 export async function signReceiptForDelivery(receipt, signingConfig, options = {}) {
   if (!signingConfig || signingConfig.mode !== "custody") return { ok: true, receipt };
   const provider = signingConfig.provider;
@@ -242,9 +241,10 @@ export async function signReceiptForDelivery(receipt, signingConfig, options = {
     }
   }
 
+  const executorBound = signingMode === LIVE_RECEIPT_SIGNING_MODES.EXECUTOR_AND_AUTHORITY;
   const attestationPayload = {
     schema_version: ATTESTATION_SCHEMA,
-    signing_mode: signingMode,
+    ...(executorBound ? { signing_mode: signingMode } : {}),
     receipt_type: receiptType,
     receipt_version: versionOf(receiptType),
     decision: decisionOf(receipt),
@@ -282,8 +282,8 @@ export async function signReceiptForDelivery(receipt, signingConfig, options = {
   return {
     ok: true,
     receipt: {
-      schema_version: SIGNED_RECEIPT_SCHEMA,
-      signing_mode: signingMode,
+      schema_version: executorBound ? SIGNED_RECEIPT_SCHEMA : LEGACY_SIGNED_RECEIPT_SCHEMA,
+      ...(executorBound ? { signing_mode: signingMode } : {}),
       receipt,
       ...(executorEnvelope ? { executor: executorEnvelope } : {}),
       custody_attestation: {

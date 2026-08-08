@@ -89,7 +89,14 @@ export async function authorizeAndSign(request, options = {}) {
 
   const { decision, refusalReason } = applyGates(request);
 
-  const { authorityBundle, signingKeyId, signingPrivateKeyPem, policyProvenance } = options;
+  const {
+    authorityBundle,
+    signingKeyId,
+    signingPrivateKeyPem,
+    policyProvenance,
+    executor,
+    passportSubjectId
+  } = options;
   const canSign = authorityBundle && signingKeyId && signingPrivateKeyPem;
 
   if (canSign) {
@@ -99,7 +106,9 @@ export async function authorizeAndSign(request, options = {}) {
         signingKeyId,
         signingPrivateKeyPem,
         policyProvenance,
-        refusalReason
+        refusalReason,
+        executor,
+        passportSubjectId
       });
       return { ok: true, receipt, signed: true };
     } catch (error) {

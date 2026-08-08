@@ -8,8 +8,8 @@ developer which format to produce and guarantees what stays verifiable.
 | Schema | Status | Role | Produced by |
 |---|---|---|---|
 | `mnde.pe.receipt.v1` | **Stable / canonical** | The v1 execution-authority receipt. New development targets this. | Policy engine (the default decision engine) |
-| `mnde.signed-receipt.v2` | **Stable / canonical** | Explicit authority-only or executor-and-authority custody envelope. | `file-backed-production` / external-signer custody |
-| `mnde.signed-receipt.v1` | **Stable / verify-only** | Historical authority-only custody envelope. | Earlier custody-signing releases |
+| `mnde.signed-receipt.v2` | **Stable / canonical** | Explicit executor-and-authority custody envelope. | Executor-configured `file-backed-production` / external-signer custody |
+| `mnde.signed-receipt.v1` | **Stable / canonical** | Byte-compatible authority-only custody envelope. | Custody signing without executor identity |
 | `ecs.receipt.v2` | **Legacy — verify-only, feature-frozen** | The legacy GPU/compute-cost pipeline receipt. No new fields/features. Kept verifiable for historical receipts. | Legacy pipeline, only under `MNDE_DECISION_ENGINE=legacy` |
 
 Definitions:

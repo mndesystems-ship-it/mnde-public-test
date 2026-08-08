@@ -81,8 +81,15 @@ export async function verifyLayeredReceipt(receipt, options = {}) {
   const failed = (reason, extra = {}) => ({ ok: false, state: S.FAILED, reason, ...extra });
 
   if (!isObject(receipt)) return failed("receipt is not an object");
-  if (receipt.signing_mode === undefined) return failed("ERR_SIGNING_MODE_MISSING");
-  if (receipt.signing_mode !== "authority_only" && receipt.signing_mode !== "executor_and_authority") {
+  const executorFieldPresent = [
+    "executor_signature",
+    "executor_id",
+    "executor_key_id",
+    "executor_credential_id"
+  ].some((field) => receipt[field] !== undefined);
+  const signingMode = receipt.signing_mode ?? (executorFieldPresent ? null : "authority_only");
+  if (signingMode === null) return failed("ERR_SIGNING_MODE_MISSING");
+  if (signingMode !== "authority_only" && signingMode !== "executor_and_authority") {
     return failed("ERR_SIGNING_MODE_INVALID");
   }
 
@@ -97,13 +104,13 @@ export async function verifyLayeredReceipt(receipt, options = {}) {
     isObject(receipt.verifiable_signature) && isNonEmptyString(receipt.verifiable_signature.value);
 
   const passportPresent = isNonEmptyString(receipt.passport_subject_id);
-  if (receipt.signing_mode === "executor_and_authority" && !hasExecutorLayer) {
+  if (signingMode === "executor_and_authority" && !hasExecutorLayer) {
     return failed("ERR_EXECUTOR_ENVELOPE_MISSING");
   }
-  if (receipt.signing_mode === "authority_only" && hasExecutorLayer) {
+  if (signingMode === "authority_only" && hasExecutorLayer) {
     return failed("ERR_SIGNING_MODE_INVALID");
   }
-  if (receipt.signing_mode === "authority_only" && options.requireExecutor) {
+  if (signingMode === "authority_only" && options.requireExecutor) {
     return failed("ERR_EXECUTOR_REQUIRED");
   }
 

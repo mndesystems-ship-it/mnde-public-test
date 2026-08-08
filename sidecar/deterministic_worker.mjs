@@ -18,7 +18,7 @@ parentPort.on("message", (message) => {
   const started = performance.now();
   const timings = {};
   try {
-    const result = executeDeterministicPipeline(message.raw_input, { timings, signingMode: message.signing_mode });
+    const result = executeDeterministicPipeline(message.raw_input, { timings });
     parentPort.postMessage({
       ok: true,
       task_id: message.task_id,

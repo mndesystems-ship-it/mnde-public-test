@@ -501,7 +501,6 @@ if (SIGNING_MODE === "custody") {
     executorIdentity: null
   });
 }
-const INNER_SIGNING_MODE = SIGNING_MODE === "legacy" ? "authority_only" : undefined;
 process.stdout.write(`MNDe live receipt signing_mode=${liveSigningContext.mode}\n`);
 if (EXECUTOR_READINESS.signer?.destroy) {
   process.once("exit", () => EXECUTOR_READINESS.signer.destroy());
@@ -571,11 +570,7 @@ if (LEDGER_RUNTIME.enabled) {
 // returns a signed envelope or fails closed with a distinct reason code. No
 // automatic downgrade to legacy when custody is selected.
 async function signForDelivery(receipt) {
-  if (SIGNING_MODE !== "custody") {
-    return receipt?.signing_mode === "authority_only"
-      ? { ok: true, receipt }
-      : { ok: false, reason_code: receipt?.signing_mode === undefined ? "ERR_SIGNING_MODE_MISSING" : "ERR_SIGNING_MODE_INVALID" };
-  }
+  if (SIGNING_MODE !== "custody") return { ok: true, receipt };
   if (signingConfigError) return { ok: false, reason_code: signingConfigError };
   return signReceiptAdapter(receipt, liveSigningContext, { now: new Date().toISOString() });
 }
@@ -666,8 +661,7 @@ async function persistRefusal(reason_code, extra = {}, timings = {}) {
     timings,
     request_id: extra.request_id ?? null,
     request_hash: extra.request_hash ?? null,
-    decision_hash: extra.decision_hash ?? null,
-    signing_mode: INNER_SIGNING_MODE
+    decision_hash: extra.decision_hash ?? null
   });
   const signed = await signForDelivery(builtReceipt);
   if (!signed.ok) return { ok: false, reason_code: signed.reason_code, receipt: null };
@@ -884,7 +878,7 @@ async function respondPolicyEngine(res, request, timings, totalStarted, caller) 
   }
   let outcome;
   try {
-    outcome = policyEngine.decide(request, { now: new Date().toISOString(), caller, signingMode: INNER_SIGNING_MODE });
+    outcome = policyEngine.decide(request, { now: new Date().toISOString(), caller });
   } catch (error) {
     timings.total_server_ms = Math.max(0, Math.round(performance.now() - totalStarted));
     recordTimings(timings);
@@ -1087,7 +1081,7 @@ async function handleDecide(req, res) {
     }
     const runtimeInput = createRuntimeInput(request, policy);
     timings.execution_start_ms = ms();
-    const submitted = workerPool.submit(canonicalizeJson(runtimeInput), { signing_mode: INNER_SIGNING_MODE });
+    const submitted = workerPool.submit(canonicalizeJson(runtimeInput));
     if (!submitted.ok) {
       recordAdmissionRefusal(submitted.reason_code);
       timings.total_server_ms = Math.max(0, Math.round(performance.now() - totalStarted));

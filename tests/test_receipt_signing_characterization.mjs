@@ -14,7 +14,15 @@
 import assert from "node:assert/strict";
 
 import { canonicalizeJson } from "../shared/json.ts";
-import { buildAuthorityBundle, generateAuthorityKeyPair } from "../src/custody/index.mjs";
+import { sha256 } from "../src/crypto/provider.mjs";
+import {
+  buildAuthorityBundle,
+  fingerprintOf,
+  findBundleKey,
+  generateAuthorityKeyPair,
+  signCanonical
+} from "../src/custody/index.mjs";
+import { signReceiptForDelivery } from "../src/authority-signing/index.mjs";
 import {
   buildSignedExecutionReceipt,
   verifySignedExecutionReceipt
@@ -76,6 +84,76 @@ async function buildCurrentReceipt() {
   return { receipt, bundle, trustedRootFingerprint, receiptKey };
 }
 
+// Frozen origin/main authority-only builder. This is intentionally kept local
+// to the regression test so the comparison cannot accidentally reuse the PR's
+// implementation under test.
+async function buildOriginMainAuthorityOnlyReceipt(request, decision, options) {
+  const { authorityBundle, signingKeyId, signingPrivateKeyPem, policyProvenance, refusalReason } = options;
+  const requestHash = sha256(canonicalizeJson(request));
+  const signedAt = request.requested_at;
+  const keyResult = findBundleKey(authorityBundle, "receipt", signingKeyId, signedAt);
+  assert.equal(keyResult.ok, true, keyResult.reason ?? "origin/main reference key unusable");
+  const body = {
+    schema_version: "mnde.execution_gate.receipt.v1",
+    execution_id: request.execution_id,
+    request_schema_version: request.schema_version,
+    request_hash: requestHash,
+    decided_at: request.requested_at,
+    decision,
+    ...(refusalReason !== undefined ? { refusal_reason: refusalReason } : {}),
+    principal: { id: request.principal.id, type: request.principal.type, verified: request.principal.verified },
+    action: { type: request.action.type, name: request.action.name, dry_run: request.action.dry_run },
+    resource: { kind: request.resource.kind, id: request.resource.id, name: request.resource.name },
+    environment: { name: request.environment.name },
+    risk: {
+      level: request.risk.level,
+      destructive: request.risk.destructive,
+      reversible: request.risk.reversible,
+      blast_radius: request.risk.blast_radius
+    },
+    evidence: { repo: request.evidence.repo, commit_sha: request.evidence.commit_sha, branch: request.evidence.branch },
+    ...(policyProvenance !== undefined ? { policy_provenance: policyProvenance } : {}),
+    authority_id: authorityBundle.authority_id,
+    signing_key_id: signingKeyId
+  };
+  const value = await signCanonical(canonicalizeJson(body), signingPrivateKeyPem);
+  return {
+    ...body,
+    verifiable_signature: {
+      algorithm: "ED25519",
+      authority_id: authorityBundle.authority_id,
+      key_id: signingKeyId,
+      signed_at: signedAt,
+      public_key_fingerprint: fingerprintOf(keyResult.publicKey),
+      value
+    }
+  };
+}
+
+async function buildOriginMainAuthorityOnlyEnvelope(inner, provider, at) {
+  const receiptType = inner.schema_version;
+  const match = receiptType.match(/v(\d+)$/);
+  const attestationPayload = {
+    schema_version: "mnde.custody.attestation.v1",
+    receipt_type: receiptType,
+    receipt_version: match ? `v${match[1]}` : "v1",
+    decision: inner.decision_output?.decision ?? inner.decision ?? "UNKNOWN",
+    receipt_hash: sha256(canonicalizeJson(inner)),
+    authority_bundle_fingerprint: provider.trustedRootFingerprint,
+    signed_at: at
+  };
+  const signed = await provider.signReceipt(canonicalizeJson(attestationPayload));
+  return {
+    schema_version: "mnde.signed-receipt.v1",
+    receipt: inner,
+    custody_attestation: {
+      ...attestationPayload,
+      signing_key_id: signed.key_id,
+      signature: { algorithm: "ED25519", value: signed.value }
+    }
+  };
+}
+
 console.log("Characterization — current execution-gate receipt signing\n");
 
 await test("current receipt verifies authority-only", async () => {
@@ -131,6 +209,46 @@ await test("canonical payload excludes only verifiable_signature", async () => {
   // Reproducing the exact exclusion the signer/verifier use must round-trip.
   assert.equal(typeof canonicalizeJson(body), "string");
   assert.ok(!canonicalizeJson(body).includes("verifiable_signature"));
+});
+
+await test("authority-only execution receipt bytes are identical to origin/main", async () => {
+  const { receiptKey, bundle } = await makeBundle();
+  const request = minimalRequest();
+  const options = {
+    authorityBundle: bundle,
+    signingKeyId: receiptKey.keyId,
+    signingPrivateKeyPem: receiptKey.privatePem
+  };
+  const baseline = await buildOriginMainAuthorityOnlyReceipt(request, "ALLOW", options);
+  const current = await buildSignedExecutionReceipt(request, "ALLOW", options);
+  assert.equal(current.signing_mode, undefined);
+  assert.equal(canonicalizeJson(current), canonicalizeJson(baseline));
+});
+
+await test("authority-only custody envelope and attestation bytes are identical to origin/main", async () => {
+  const { receiptKey, bundle } = await makeBundle();
+  const request = minimalRequest();
+  const inner = await buildOriginMainAuthorityOnlyReceipt(request, "ALLOW", {
+    authorityBundle: bundle,
+    signingKeyId: receiptKey.keyId,
+    signingPrivateKeyPem: receiptKey.privatePem
+  });
+  const provider = {
+    trustedRootFingerprint: bundle.root_key.fingerprint,
+    getPublicBundle: () => structuredClone(bundle),
+    signReceipt: async (payload) => ({
+      key_id: receiptKey.keyId,
+      value: await signCanonical(payload, receiptKey.privatePem)
+    })
+  };
+  const at = request.requested_at;
+  const baseline = await buildOriginMainAuthorityOnlyEnvelope(inner, provider, at);
+  const currentResult = await signReceiptForDelivery(inner, { mode: "custody", provider }, { now: at });
+  assert.equal(currentResult.ok, true, currentResult.reason_code ?? "");
+  assert.equal(currentResult.receipt.schema_version, "mnde.signed-receipt.v1");
+  assert.equal(currentResult.receipt.signing_mode, undefined);
+  assert.equal(currentResult.receipt.custody_attestation.signing_mode, undefined);
+  assert.equal(canonicalizeJson(currentResult.receipt), canonicalizeJson(baseline));
 });
 
 console.log(`\n${failed === 0 ? "PASS" : "FAIL"} receipt signing characterization (${passed}/${passed + failed})`);

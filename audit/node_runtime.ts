@@ -33,7 +33,7 @@ export type PipelineTimingKey =
   | "signing_ms";
 
 export type PipelineTimings = Partial<Record<PipelineTimingKey, number>>;
-type PipelineOptions = { timings?: PipelineTimings; enforceExecutionId?: boolean; signingMode?: "authority_only" };
+type PipelineOptions = { timings?: PipelineTimings; enforceExecutionId?: boolean };
 
 function measure<T>(timings: PipelineTimings | undefined, key: PipelineTimingKey, fn: () => T): T {
   const started = performance.now();
@@ -81,8 +81,7 @@ export function executeDeterministicPipeline(rawInput: string, options: Pipeline
       policy_hash: preflight.policy_hash,
       policy_version: preflight.parsed_input.policy_document.policy_version,
       timings,
-      request_id: arm.execution_id,
-      signing_mode: options.signingMode
+      request_id: arm.execution_id
     }) as SignedReceipt;
     return {
       receipt,
@@ -101,8 +100,7 @@ export function executeDeterministicPipeline(rawInput: string, options: Pipeline
       arm,
       ramona,
       policy_version: preflight.parsed_input.policy_document.policy_version,
-      timings,
-      signing_mode: options.signingMode
+      timings
     }));
   } catch (error) {
     // A hold was placed iff ARM returned ALLOW carrying a budget_token. If Ramona

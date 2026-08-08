@@ -234,7 +234,7 @@ try {
     assert.equal(result.receipt, undefined);
   });
 
-  await test("authority-only compatibility remains explicit and verifies", async () => {
+  await test("authority-only compatibility remains byte-compatible and verifies", async () => {
     const authorityPort = await freePort();
     const authorityLog = join(dir, "authority-only-receipts.jsonl");
     const authoritySidecar = await startMndeSidecar({
@@ -248,7 +248,9 @@ try {
         body: JSON.stringify(decisionRequest("authority-live-1"))
       });
       const body = await response.json();
-      assert.equal(body.receipt.signing_mode, "authority_only");
+      assert.equal(body.receipt.schema_version, "mnde.signed-receipt.v1");
+      assert.equal(body.receipt.signing_mode, undefined);
+      assert.equal(body.receipt.custody_attestation.signing_mode, undefined);
       assert.equal(body.receipt.executor, undefined);
       const path = join(dir, "authority-only-receipt.json");
       writeFileSync(path, JSON.stringify(body.receipt));

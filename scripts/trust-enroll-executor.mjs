@@ -19,13 +19,18 @@
 //
 // Outputs (in --out-dir): <id>.key (0600), <id>.pub.pem, <id>.credential.json.
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { platform } from "node:os";
+import { dirname, join, parse, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { generateAuthorityKeyPair } from "../src/custody/bundle.mjs";
 import { issueExecutorCredential, executorKeyId } from "../src/custody/executor-credential.mjs";
-import { isRepoContainedPath, EXECUTOR_RECEIPT_CAPABILITY } from "../src/custody/executor-identity.mjs";
+import {
+  isRepoContainedPath,
+  readSecureExecutorPrivateKey,
+  EXECUTOR_RECEIPT_CAPABILITY
+} from "../src/custody/executor-identity.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -51,6 +56,80 @@ function sanitizeFileStem(executorId) {
   return executorId.replace(/[^A-Za-z0-9._-]/g, "_");
 }
 
+function comparisonPath(value) {
+  const normalized = resolve(value);
+  return platform() === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function pathComponents(absolutePath) {
+  const root = parse(absolutePath).root;
+  const tail = absolutePath.slice(root.length).split(/[\\/]+/u).filter(Boolean);
+  const components = [];
+  let current = root;
+  for (const part of tail) {
+    current = join(current, part);
+    components.push(current);
+  }
+  return components;
+}
+
+function inspectPathComponents(absolutePath, { allowMissing = false, finalType }) {
+  const components = pathComponents(absolutePath);
+  for (let index = 0; index < components.length; index += 1) {
+    let stats;
+    try {
+      stats = lstatSync(components[index]);
+    } catch (error) {
+      if (allowMissing && (error?.code === "ENOENT" || error?.code === "ENOTDIR")) return;
+      throw new Error(`cannot inspect ${components[index]}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (stats.isSymbolicLink()) {
+      throw new Error(`path contains a symbolic link, junction, or reparse point: ${components[index]}`);
+    }
+    const isLast = index === components.length - 1;
+    if (!isLast && !stats.isDirectory()) throw new Error(`path parent is not a directory: ${components[index]}`);
+    if (isLast && finalType === "directory" && !stats.isDirectory()) throw new Error(`path is not a directory: ${components[index]}`);
+    if (isLast && finalType === "file" && !stats.isFile()) throw new Error(`path is not a regular file: ${components[index]}`);
+  }
+}
+
+function canonicalExternalPath(absolutePath, label) {
+  let canonical;
+  let canonicalRepoRoot;
+  try {
+    canonical = realpathSync(absolutePath);
+    canonicalRepoRoot = realpathSync(repoRoot);
+  } catch (error) {
+    throw new Error(`${label} cannot be canonicalized: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (comparisonPath(canonical) !== comparisonPath(absolutePath)) {
+    throw new Error(`${label} resolves through a symbolic link, junction, or reparse point`);
+  }
+  if (isRepoContainedPath(canonical, canonicalRepoRoot)) {
+    throw new Error(`${label} resolves inside the repository`);
+  }
+  return canonical;
+}
+
+function prepareExternalOutputDirectory(outDir) {
+  const absolute = resolve(outDir);
+  if (isRepoContainedPath(absolute, repoRoot)) throw new Error("--out-dir must be OUTSIDE the repository; refusing to write key material into the tree");
+  inspectPathComponents(absolute, { allowMissing: true, finalType: "directory" });
+  mkdirSync(absolute, { recursive: true, mode: 0o700 });
+  inspectPathComponents(absolute, { finalType: "directory" });
+  return canonicalExternalPath(absolute, "--out-dir");
+}
+
+async function readExternalRootKey(rootKeyPath) {
+  const absolute = resolve(rootKeyPath);
+  if (isRepoContainedPath(absolute, repoRoot)) throw new Error("--root-key must be OUTSIDE the repository (production root material never lives in the tree)");
+  inspectPathComponents(absolute, { finalType: "file" });
+  canonicalExternalPath(absolute, "--root-key");
+  const result = await readSecureExecutorPrivateKey(absolute, repoRoot);
+  if (!result.ok) throw new Error(`--root-key rejected (${result.code}): ${result.detail}`);
+  return result.privatePem;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const executorId = args["executor-id"];
@@ -68,10 +147,6 @@ async function main() {
   if (!outDir) die("--out-dir is required");
   if (!Number.isFinite(ttlHours) || ttlHours <= 0) die("--ttl-hours must be a positive number");
 
-  // Fail closed: executor private keys and the root key must live OUTSIDE the repo.
-  if (isRepoContainedPath(outDir, repoRoot)) die("--out-dir must be OUTSIDE the repository; refusing to write key material into the tree");
-  if (isRepoContainedPath(rootKeyPath, repoRoot)) die("--root-key must be OUTSIDE the repository (production root material never lives in the tree)");
-
   let bundle;
   try {
     bundle = JSON.parse(readFileSync(bundlePath, "utf8"));
@@ -84,9 +159,16 @@ async function main() {
 
   let rootPrivatePem;
   try {
-    rootPrivatePem = readFileSync(rootKeyPath, "utf8");
+    rootPrivatePem = await readExternalRootKey(rootKeyPath);
   } catch (error) {
     die(`cannot read root key at ${rootKeyPath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  let canonicalOutDir;
+  try {
+    canonicalOutDir = prepareExternalOutputDirectory(outDir);
+  } catch (error) {
+    die(`unsafe output directory ${outDir}: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   const issuedAt = args["issued-at"] ?? new Date().toISOString();
@@ -114,15 +196,14 @@ async function main() {
     die(`issuance failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 
-  mkdirSync(resolve(outDir), { recursive: true });
   const stem = sanitizeFileStem(executorId);
-  const keyPath = join(resolve(outDir), `${stem}.key`);
-  const pubPath = join(resolve(outDir), `${stem}.pub.pem`);
-  const credPath = join(resolve(outDir), `${stem}.credential.json`);
+  const keyPath = join(canonicalOutDir, `${stem}.key`);
+  const pubPath = join(canonicalOutDir, `${stem}.pub.pem`);
+  const credPath = join(canonicalOutDir, `${stem}.credential.json`);
 
-  writeFileSync(keyPath, privatePem, { mode: 0o600 });
-  writeFileSync(pubPath, publicPem, { mode: 0o644 });
-  writeFileSync(credPath, `${JSON.stringify(credential, null, 2)}\n`, { mode: 0o644 });
+  writeFileSync(keyPath, privatePem, { mode: 0o600, flag: "wx" });
+  writeFileSync(pubPath, publicPem, { mode: 0o644, flag: "wx" });
+  writeFileSync(credPath, `${JSON.stringify(credential, null, 2)}\n`, { mode: 0o644, flag: "wx" });
 
   // Summary only — never the private key.
   console.log(JSON.stringify({
