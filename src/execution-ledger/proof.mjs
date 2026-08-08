@@ -32,7 +32,7 @@ import {
 } from "./index.mjs";
 import { leafHash, verifyInclusion } from "./merkle.mjs";
 import { verifyAgainstBundle, verifyAuthorityBundle } from "../custody/bundle.mjs";
-import { verifyCustodyAttestation, SIGNED_RECEIPT_SCHEMA } from "../authority-signing/index.mjs";
+import { isSignedReceiptEnvelope, verifyCustodyAttestation } from "../authority-signing/index.mjs";
 import { verifyPolicyReceipt } from "../policy-engine/receipt.mjs";
 
 function bad(step, code, reason) {
@@ -81,8 +81,14 @@ export async function verifyProofBundle(bundle, trustedBundle, options = {}) {
   }
 
   // ── 1. Receipt signature / integrity ─────────────────────────────────────────
-  if (receipt.schema_version === SIGNED_RECEIPT_SCHEMA) {
-    const att = await verifyCustodyAttestation(receipt, { authorityBundle: trustedBundle, trustedRootFingerprint, now });
+  if (isSignedReceiptEnvelope(receipt)) {
+    const att = await verifyCustodyAttestation(receipt, {
+      authorityBundle: trustedBundle,
+      trustedRootFingerprint,
+      now,
+      environmentId: options.executorEnvironmentId,
+      expectedExecutorId: options.expectedExecutorId
+    });
     if (!att.ok) return bad("receipt", LEDGER_ERRORS.RECEIPT_INVALID, att.reason);
   } else {
     const r = await verifyPolicyReceipt(receipt);

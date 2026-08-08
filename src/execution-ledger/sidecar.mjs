@@ -168,12 +168,21 @@ export function checkpointHeadResponse(runtime) {
 // Build an inclusion proof for a receipt against the current head checkpoint.
 // selector: { receipt_id } or { receipt_hash }. trustedBundle drives the built-in
 // self-verify (fail closed if ledger/merkle/checkpoint/bundle disagree).
-export async function proofResponse(runtime, selector, { trustedBundle } = {}) {
+export async function proofResponse(runtime, selector, {
+  trustedBundle,
+  executorEnvironmentId,
+  expectedExecutorId
+} = {}) {
   if (!runtime?.enabled) return { ok: false, code: "ERR_LEDGER_DISABLED" };
   try {
     const checkpoint = readCheckpointHead(runtime.checkpointPath);
     if (!checkpoint) return { ok: false, code: LEDGER_ERRORS.NOT_ANCHORED, message: "no checkpoint yet" };
-    const bundle = await buildProofBundle(runtime.ledgerPath, checkpoint, selector, { receiptStorePath: runtime.receiptStorePath, trustedBundle });
+    const bundle = await buildProofBundle(runtime.ledgerPath, checkpoint, selector, {
+      receiptStorePath: runtime.receiptStorePath,
+      trustedBundle,
+      executorEnvironmentId,
+      expectedExecutorId
+    });
     return { ok: true, proof: bundle };
   } catch (error) {
     return { ok: false, code: error?.code ?? LEDGER_ERRORS.ANCHOR_FAILED, message: error?.message ?? String(error) };

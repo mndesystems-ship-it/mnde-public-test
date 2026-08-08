@@ -25,6 +25,7 @@ export { extractPolicyAttributes } from "./policy-attributes.mjs";
 export { buildExecutionGateReceipt } from "./receipt.mjs";
 export { buildSignedExecutionReceipt, SIGNED_EXECUTION_RECEIPT_SCHEMA } from "./signed-receipt.mjs";
 export { verifySignedExecutionReceipt } from "./verify-signed-receipt.mjs";
+export { verifyLayeredReceipt, RECEIPT_VERIFICATION_STATES } from "./verify-layered-receipt.mjs";
 
 // Hard-coded decision gates. Returns { decision, refusalReason? }.
 function applyGates(req) {
@@ -88,8 +89,24 @@ export async function authorizeAndSign(request, options = {}) {
 
   const { decision, refusalReason } = applyGates(request);
 
-  const { authorityBundle, signingKeyId, signingPrivateKeyPem, policyProvenance } = options;
+  const {
+    authorityBundle,
+    signingKeyId,
+    signingPrivateKeyPem,
+    policyProvenance,
+    executor,
+    passportSubjectId
+  } = options;
   const canSign = authorityBundle && signingKeyId && signingPrivateKeyPem;
+  const executorRequested = executor !== undefined && executor !== null;
+
+  if (executorRequested && !canSign) {
+    return {
+      ok: false,
+      reason_code: "ERR_EXECUTOR_AUTHORITY_SIGNER_REQUIRED",
+      errors: ["ERR_EXECUTOR_AUTHORITY_SIGNER_REQUIRED"]
+    };
+  }
 
   if (canSign) {
     try {
@@ -98,7 +115,9 @@ export async function authorizeAndSign(request, options = {}) {
         signingKeyId,
         signingPrivateKeyPem,
         policyProvenance,
-        refusalReason
+        refusalReason,
+        executor,
+        passportSubjectId
       });
       return { ok: true, receipt, signed: true };
     } catch (error) {

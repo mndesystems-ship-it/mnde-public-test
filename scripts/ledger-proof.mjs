@@ -43,7 +43,12 @@ if (mode === "prove") {
   if (!checkpoint) { console.error("no checkpoint found; anchor the ledger first"); process.exit(2); }
   const selector = flags["receipt-id"] ? { receipt_id: flags["receipt-id"] } : { receipt_hash: flags["receipt-hash"] };
   try {
-    const bundle = await buildProofBundle(ledgerPath, checkpoint, selector, { receiptStorePath: resolve(flags["receipt-store"] ?? ""), trustedBundle });
+    const bundle = await buildProofBundle(ledgerPath, checkpoint, selector, {
+      receiptStorePath: resolve(flags["receipt-store"] ?? ""),
+      trustedBundle,
+      executorEnvironmentId: process.env.MNDE_EXECUTOR_ENVIRONMENT,
+      expectedExecutorId: process.env.MNDE_EXECUTOR_ID
+    });
     const out = JSON.stringify(bundle, null, 2);
     if (flags.out) { writeFileSync(resolve(flags.out), out + "\n"); console.error(`proof written to ${flags.out}`); }
     else console.log(out);
@@ -59,7 +64,11 @@ if (mode === "verify-proof") {
   if (!proofFile) { console.error("usage: verify-proof <proof.json> --bundle=<public-bundle>"); process.exit(2); }
   const proof = readJson(proofFile);
   const trustedBundle = readJson(flags.bundle);
-  const res = await verifyProofBundle(proof, trustedBundle, { trustedRootFingerprint: flags["root-fingerprint"] ?? trustedBundle.root_key?.fingerprint });
+  const res = await verifyProofBundle(proof, trustedBundle, {
+    trustedRootFingerprint: flags["root-fingerprint"] ?? trustedBundle.root_key?.fingerprint,
+    executorEnvironmentId: process.env.MNDE_EXECUTOR_ENVIRONMENT,
+    expectedExecutorId: process.env.MNDE_EXECUTOR_ID
+  });
   console.log(JSON.stringify(res, null, 2));
   if (!res.ok) { console.error(`\nFAIL verify-proof at step '${res.step}': ${res.reason}`); process.exit(1); }
   console.error(`\nPASS verify-proof: ${res.assurance} (seq ${res.sequence}, tree_size ${res.tree_size})`);

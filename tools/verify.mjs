@@ -34,12 +34,12 @@ import { pathToFileURL } from "node:url";
 
 import { verifyReceiptFile, verificationPassed } from "./verify-receipt.mjs";
 import { verifyPolicyReceipt, POLICY_RECEIPT_SCHEMA, POLICY_RECEIPT_SCHEMA_V2 } from "../src/policy-engine/receipt.mjs";
-import { verifyCustodyAttestation, SIGNED_RECEIPT_SCHEMA } from "../src/authority-signing/index.mjs";
+import { isSignedReceiptEnvelope, verifyCustodyAttestation } from "../src/authority-signing/index.mjs";
 
 // Verify a receipt object (legacy / policy-engine / custody-signed envelope).
 export async function verifyAnyReceiptObject(receipt, options = {}) {
   try {
-    if (receipt?.schema_version === SIGNED_RECEIPT_SCHEMA) {
+    if (isSignedReceiptEnvelope(receipt)) {
       return verifySignedEnvelope(receipt, options);
     }
     if (receipt?.schema_version === POLICY_RECEIPT_SCHEMA || receipt?.schema_version === POLICY_RECEIPT_SCHEMA_V2) {
@@ -66,7 +66,7 @@ export async function verifyAnyReceiptObject(receipt, options = {}) {
       rmSync(dir, { recursive: true, force: true });
     }
   } catch {
-    const kind = receipt?.schema_version === SIGNED_RECEIPT_SCHEMA
+    const kind = isSignedReceiptEnvelope(receipt)
       ? "custody-signed"
       : (receipt?.schema_version === POLICY_RECEIPT_SCHEMA || receipt?.schema_version === POLICY_RECEIPT_SCHEMA_V2)
         ? "policy-engine"
@@ -96,6 +96,10 @@ export async function verifySignedEnvelope(envelope, options = {}) {
     verified,
     reason,
     decision: attest.decision,
+    state: attest.state,
+    signing_mode: attest.signing_mode,
+    executor_id: attest.executor_id,
+    reason_code: attest.reason_code,
     custody: attest.ok
       ? { key_id: attest.signing_key_id, authority_fingerprint: attest.authority_fingerprint, trust_chain: "VALID", trust_source: attest.trust_source, revocation: "NOT_REVOKED", signed_at: attest.signed_at }
       : { trust_chain: "INVALID" },
@@ -128,10 +132,12 @@ async function main() {
   const historicalPolicyBundlePath = valueOf("--policy-bundle");
   const policyAuthorityBundlePath = valueOf("--policy-authority-bundle");
   const policyRootFingerprint = valueOf("--policy-root-fingerprint");
-  const flagValues = new Set([trustAnchorsPath, approvalAnchorsPath, authorityBundlePath, rootFingerprint, historicalPolicyBundlePath, policyAuthorityBundlePath, policyRootFingerprint].filter(Boolean));
+  const executorEnvironment = valueOf("--executor-environment");
+  const expectedExecutorId = valueOf("--expected-executor-id");
+  const flagValues = new Set([trustAnchorsPath, approvalAnchorsPath, authorityBundlePath, rootFingerprint, historicalPolicyBundlePath, policyAuthorityBundlePath, policyRootFingerprint, executorEnvironment, expectedExecutorId].filter(Boolean));
   const filePath = args.find((a) => !a.startsWith("--") && !flagValues.has(a));
   if (!filePath) {
-    process.stderr.write("Usage: node tools/verify.mjs <receipt.json> [--authority-bundle <f>] [--root-fingerprint <hex>] [--policy-bundle <f> --policy-authority-bundle <f> --policy-root-fingerprint <hex>] [--trust-anchors <f>] [--approval-trust-anchors <f>]\n");
+    process.stderr.write("Usage: node tools/verify.mjs <receipt.json> [--authority-bundle <f>] [--root-fingerprint <hex>] [--executor-environment <id>] [--expected-executor-id <id>] [--policy-bundle <f> --policy-authority-bundle <f> --policy-root-fingerprint <hex>] [--trust-anchors <f>] [--approval-trust-anchors <f>]\n");
     process.exit(2);
   }
   const trustAnchors = trustAnchorsPath ? JSON.parse(readFileSync(trustAnchorsPath, "utf8")) : undefined;
@@ -146,7 +152,9 @@ async function main() {
     trustedRootFingerprint: rootFingerprint,
     historicalPolicyBundle,
     policyAuthorityBundle,
-    policyTrustedRootFingerprint: policyRootFingerprint
+    policyTrustedRootFingerprint: policyRootFingerprint,
+    environmentId: executorEnvironment,
+    expectedExecutorId
   });
   process.stdout.write("========================================\n");
   process.stdout.write("MNDe Receipt Verification (unified)\n");
@@ -154,6 +162,10 @@ async function main() {
   process.stdout.write(`Receipt:  ${filePath}\n`);
   process.stdout.write(`Type:     ${result.kind}\n`);
   if (result.decision) process.stdout.write(`Decision: ${result.decision}\n`);
+  if (result.signing_mode) process.stdout.write(`Signing mode: ${result.signing_mode}\n`);
+  if (result.state) process.stdout.write(`Verification state: ${result.state}\n`);
+  if (result.executor_id) process.stdout.write(`Executor: ${result.executor_id}\n`);
+  if (result.reason_code) process.stdout.write(`Error code: ${result.reason_code}\n`);
   if (result.trust_source) process.stdout.write(`Trust source: ${result.trust_source}\n`);
   if (result.custody) {
     process.stdout.write(`Key id:      ${result.custody.key_id ?? "-"}\n`);
