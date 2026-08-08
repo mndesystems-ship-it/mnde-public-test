@@ -324,6 +324,22 @@ test("16b. authorizeAndSign forwards executor identity and passport without auth
   assert.equal(verified.verified, true, verified.reason ?? "");
 });
 
+test("16c. authorizeAndSign rejects executor identity without complete authority signing material", async () => {
+  const executorKey = generateAuthorityKeyPair();
+  const result = await authorizeAndSign(minimalRequest(), {
+    executor: {
+      executorId: "mnde:local:prod:executor:codex:01",
+      keyId: "mnde-exk:partial-config",
+      credentialId: "mnde-cred:partial-config",
+      privatePem: executorKey.privatePem
+    }
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason_code, "ERR_EXECUTOR_AUTHORITY_SIGNER_REQUIRED");
+  assert.equal(result.signed, undefined);
+  assert.equal(result.receipt, undefined);
+});
+
 test("17. Private key never appears in receipt output", async () => {
   const { receiptKey, bundle } = await makeBundle();
   const request = minimalRequest();

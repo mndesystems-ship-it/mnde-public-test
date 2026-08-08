@@ -1607,7 +1607,11 @@ const server = http.createServer(async (req, res) => {
     const rh = params.get("receipt_hash");
     const selector = rid ? { receipt_id: rid } : (rh ? { receipt_hash: rh } : null);
     if (!selector) { response(res, 400, { ok: false, code: "ERR_LEDGER_PROOF_SELECTOR", message: "receipt_id or receipt_hash query param required" }); return; }
-    const out = await proofResponse(LEDGER_RUNTIME, selector, { trustedBundle: LEDGER_BUNDLE });
+    const out = await proofResponse(LEDGER_RUNTIME, selector, {
+      trustedBundle: LEDGER_BUNDLE,
+      executorEnvironmentId: EXECUTOR_READINESS.configured ? EXECUTOR_READINESS.environment_id : undefined,
+      expectedExecutorId: EXECUTOR_READINESS.configured ? EXECUTOR_READINESS.executor_id : undefined
+    });
     auditAuthority(pathname, authz, out.ok ? "ALLOW" : "REFUSE", out.ok ? `seq:${out.proof.entry.sequence}` : "proof", null, out.ok ? null : out.code);
     response(res, out.ok ? 200 : 404, out);
     return;

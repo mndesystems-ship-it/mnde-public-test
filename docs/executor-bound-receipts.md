@@ -9,6 +9,8 @@ MNDe supports executor-bound live signing while preserving the existing authorit
 
 Executor mode also requires custody receipt signing (`MNDE_RECEIPT_SIGNING_MODE=custody` or the supported external-signer equivalent). A configured executor never falls back to authority-only signing. Invalid credentials, missing or unsafe keys, mismatched keys, and unavailable authority signing fail startup before the listener opens. A runtime executor or authority signing failure returns `ERR_EXECUTOR_BOUND_SIGNING_FAILED` without persisting or delivering an authority-only receipt.
 
+The executor credential is revalidated at every executor-bound signing timestamp, so a long-lived process stops issuing receipts at `expires_at` without reloading the private key. Historical verification evaluates credential validity at the authority-authenticated receipt `signed_at`: a receipt produced while the credential was valid remains verifiable after ordinary credential expiry, while a receipt produced before `not_before` or at/after `expires_at` is invalid.
+
 The sidecar constructs one frozen signing context after startup validation. It retains signing capabilities in process memory, passes the context explicitly to every live receipt path, and destroys the executor signer reference on process exit. Keys, signatures, credentials, and sensitive paths are not logged.
 
 ## Receipt and verification structure

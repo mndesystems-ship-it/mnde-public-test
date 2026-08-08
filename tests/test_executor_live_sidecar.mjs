@@ -10,6 +10,8 @@ import { startMndeSidecar } from "../executor/sidecar-harness.mjs";
 import { createLiveReceiptSigningContext, signLiveReceipt, verifyCustodyAttestation } from "../src/authority-signing/index.mjs";
 import { buildAuthorityBundle, generateAuthorityKeyPair, signCanonical } from "../src/custody/index.mjs";
 import { issueExecutorCredential } from "../src/custody/executor-credential.mjs";
+import { canonicalReceiptHash } from "../src/execution-ledger/index.mjs";
+import { verifyProofBundle } from "../src/execution-ledger/proof.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const verifierPath = join(repoRoot, "tools", "verify.mjs");
@@ -185,6 +187,37 @@ try {
     assert.match(verified.stdout, /FINAL VERDICT: FAILED/);
   });
 
+  await test("real v2 receipt appends, anchors, proves, and verifies offline", async () => {
+    const anchored = await fetch(`${sidecar.url}/ledger/anchor`, { method: "POST" });
+    const anchorBody = await anchored.json();
+    assert.equal(anchorBody.anchored, true, JSON.stringify(anchorBody));
+
+    const receiptHash = canonicalReceiptHash(validReceipt);
+    const proofResponse = await fetch(`${sidecar.url}/ledger/proof?receipt_hash=${encodeURIComponent(receiptHash)}`);
+    const proofBody = await proofResponse.json();
+    assert.equal(proofResponse.status, 200, JSON.stringify(proofBody));
+    assert.equal(proofBody.ok, true, JSON.stringify(proofBody));
+
+    const verified = await verifyProofBundle(structuredClone(proofBody.proof), structuredClone(F.bundle), {
+      trustedRootFingerprint: F.bundle.root_key.fingerprint,
+      executorEnvironmentId: ENVIRONMENT_ID,
+      expectedExecutorId: EXECUTOR_ID
+    });
+    assert.equal(verified.ok, true, verified.reason);
+
+    const tampered = structuredClone(proofBody.proof);
+    const canonicalRequest = JSON.parse(tampered.receipt.receipt.canonical_request);
+    canonicalRequest.context = { ...canonicalRequest.context, commit_sha: "tampered-proof-evidence" };
+    tampered.receipt.receipt.canonical_request = JSON.stringify(canonicalRequest);
+    const rejected = await verifyProofBundle(tampered, structuredClone(F.bundle), {
+      trustedRootFingerprint: F.bundle.root_key.fingerprint,
+      executorEnvironmentId: ENVIRONMENT_ID,
+      expectedExecutorId: EXECUTOR_ID
+    });
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.step, "receipt");
+  });
+
   await sidecar.stop();
   sidecar = null;
 
@@ -232,6 +265,95 @@ try {
     assert.equal(result.reason_code, "ERR_EXECUTOR_BOUND_SIGNING_FAILED");
     assert.equal(authorityCalls, 0, "authority signing must not run after executor signing fails");
     assert.equal(result.receipt, undefined);
+  });
+
+  await test("runtime executor credential expiry emits no receipt and no authority fallback", async () => {
+    let authorityCalls = 0;
+    const shortCredential = await issueExecutorCredential({
+      authorityBundle: F.bundle,
+      rootPrivatePem: F.root.privatePem,
+      executorId: EXECUTOR_ID,
+      publicPem: F.executor.publicPem,
+      environmentId: ENVIRONMENT_ID,
+      capabilities: ["sign_execution_receipt"],
+      issuedAt: "2026-01-01T00:00:00.000Z",
+      notBefore: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2026-02-01T00:00:00.000Z"
+    });
+    const provider = {
+      trustedRootFingerprint: F.bundle.root_key.fingerprint,
+      getPublicBundle: () => structuredClone(F.bundle),
+      signReceipt: async (payload) => {
+        authorityCalls += 1;
+        return { key_id: F.receipt.keyId, value: await signCanonical(payload, F.receipt.privatePem) };
+      }
+    };
+    const contextResult = createLiveReceiptSigningContext(
+      { ok: true, mode: "custody", provider },
+      {
+        configured: true,
+        executor_id: EXECUTOR_ID,
+        executor_key_id: shortCredential.key_id,
+        credential_id: shortCredential.credential_id,
+        environment_id: ENVIRONMENT_ID,
+        credential: shortCredential,
+        signer: Object.freeze({ sign: async (payload) => signCanonical(payload, F.executor.privatePem) })
+      }
+    );
+    const result = await signLiveReceipt(
+      { schema_version: "test.receipt.v1", evidence: { commit_sha: "abc" } },
+      contextResult.context,
+      { now: "2026-03-01T00:00:00.000Z" }
+    );
+    assert.equal(result.ok, false);
+    assert.equal(result.reason_code, "ERR_EXECUTOR_CREDENTIAL_EXPIRED");
+    assert.equal(authorityCalls, 0);
+    assert.equal(result.receipt, undefined);
+  });
+
+  await test("historical v2 receipt verifies after credential expiry when valid at signed_at", async () => {
+    const historicalCredential = await issueExecutorCredential({
+      authorityBundle: F.bundle,
+      rootPrivatePem: F.root.privatePem,
+      executorId: EXECUTOR_ID,
+      publicPem: F.executor.publicPem,
+      environmentId: ENVIRONMENT_ID,
+      capabilities: ["sign_execution_receipt"],
+      issuedAt: "2026-01-01T00:00:00.000Z",
+      notBefore: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2026-02-01T00:00:00.000Z"
+    });
+    const provider = {
+      trustedRootFingerprint: F.bundle.root_key.fingerprint,
+      getPublicBundle: () => structuredClone(F.bundle),
+      signReceipt: async (payload) => ({ key_id: F.receipt.keyId, value: await signCanonical(payload, F.receipt.privatePem) })
+    };
+    const contextResult = createLiveReceiptSigningContext(
+      { ok: true, mode: "custody", provider },
+      {
+        configured: true,
+        executor_id: EXECUTOR_ID,
+        executor_key_id: historicalCredential.key_id,
+        credential_id: historicalCredential.credential_id,
+        environment_id: ENVIRONMENT_ID,
+        credential: historicalCredential,
+        signer: Object.freeze({ sign: async (payload) => signCanonical(payload, F.executor.privatePem) })
+      }
+    );
+    const signed = await signLiveReceipt(
+      { schema_version: "test.receipt.v1", evidence: { commit_sha: "historical" } },
+      contextResult.context,
+      { now: "2026-01-15T00:00:00.000Z" }
+    );
+    assert.equal(signed.ok, true, signed.reason_code);
+    const verified = await verifyCustodyAttestation(signed.receipt, {
+      authorityBundle: F.bundle,
+      trustedRootFingerprint: F.bundle.root_key.fingerprint,
+      environmentId: ENVIRONMENT_ID,
+      expectedExecutorId: EXECUTOR_ID,
+      now: "2026-03-01T00:00:00.000Z"
+    });
+    assert.equal(verified.ok, true, verified.reason);
   });
 
   await test("authority-only compatibility remains byte-compatible and verifies", async () => {

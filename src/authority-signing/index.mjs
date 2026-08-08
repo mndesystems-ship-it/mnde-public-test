@@ -219,6 +219,24 @@ export async function signReceiptForDelivery(receipt, signingConfig, options = {
     if (!identity || typeof signer?.sign !== "function") {
       return { ok: false, reason_code: "ERR_EXECUTOR_BOUND_SIGNING_FAILED" };
     }
+    const credentialCheck = await verifyExecutorCredential(identity.credential, {
+      authorityBundle: bundle,
+      trustedRootFingerprint: provider.trustedRootFingerprint,
+      environmentId: identity.environment_id,
+      expectedExecutorId: identity.executor_id,
+      requiredCapability: EXECUTOR_RECEIPT_CAPABILITY,
+      now: at
+    });
+    if (!credentialCheck.ok) {
+      return { ok: false, reason_code: credentialCheck.code, detail: credentialCheck.detail };
+    }
+    if (
+      credentialCheck.key_id !== identity.key_id ||
+      credentialCheck.credential_id !== identity.credential_id ||
+      credentialCheck.environment_id !== identity.environment_id
+    ) {
+      return { ok: false, reason_code: "ERR_EXECUTOR_IDENTITY_MISMATCH" };
+    }
     try {
       const identityBody = {
         schema_version: EXECUTOR_ENVELOPE_SCHEMA,
@@ -364,7 +382,10 @@ export async function verifyCustodyAttestation(envelope, options = {}) {
       environmentId: expectedEnvironment,
       expectedExecutorId: options.expectedExecutorId ?? executor.identity.executor_id,
       requiredCapability: EXECUTOR_RECEIPT_CAPABILITY,
-      now
+      // Executor authorization is historical evidence: validate it at the
+      // authority-authenticated receipt event time. Runtime signing separately
+      // validates the same credential against the current signing timestamp.
+      now: attestation.signed_at
     });
     if (!credentialCheck.ok) return { ok: false, reason: credentialCheck.code, reason_code: credentialCheck.code };
     if (

@@ -98,6 +98,15 @@ export async function authorizeAndSign(request, options = {}) {
     passportSubjectId
   } = options;
   const canSign = authorityBundle && signingKeyId && signingPrivateKeyPem;
+  const executorRequested = executor !== undefined && executor !== null;
+
+  if (executorRequested && !canSign) {
+    return {
+      ok: false,
+      reason_code: "ERR_EXECUTOR_AUTHORITY_SIGNER_REQUIRED",
+      errors: ["ERR_EXECUTOR_AUTHORITY_SIGNER_REQUIRED"]
+    };
+  }
 
   if (canSign) {
     try {

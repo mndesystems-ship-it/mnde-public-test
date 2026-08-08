@@ -133,12 +133,13 @@ await test("authority-only receipt returns authority_verified", async () => {
   assert.equal(r.state, S.AUTHORITY);
 });
 
-await test("executor-only receipt returns executor_verified", async () => {
+await test("executor_and_authority receipt without authority layer fails closed", async () => {
   const full = await executorReceipt(codex);
   const { verifiable_signature: _drop, ...executorOnly } = full;
   const r = await verifyLayeredReceipt(executorOnly, baseOpts(authority, codex));
-  assert.equal(r.state, S.EXECUTOR);
-  assert.equal(r.executor_id, CODEX_ID);
+  assert.equal(r.state, S.FAILED);
+  assert.equal(r.reason, "ERR_AUTHORITY_SIGNATURE_MISSING");
+  assert.equal(r.layer, "authority");
 });
 
 await test("both valid returns executor_and_authority_verified", async () => {
@@ -202,6 +203,59 @@ await test("modified passport subject fails", async () => {
   const tampered = { ...receipt, passport_subject_id: "psub-evil" };
   const r = await verifyLayeredReceipt(tampered, baseOpts(authority, codex, { expectedPassportSubjectId: "psub-abc" }));
   assert.equal(r.state, S.FAILED);
+});
+
+await test("authority_only receipt rejects a partial executor layer", async () => {
+  const receipt = await authorityOnlyReceipt();
+  const partial = {
+    ...receipt,
+    signing_mode: "authority_only",
+    executor_signature: { algorithm: "ED25519" }
+  };
+  const { verifiable_signature: _drop, ...body } = partial;
+  partial.verifiable_signature = {
+    ...receipt.verifiable_signature,
+    value: await signCanonical(canonicalizeJson(body), authority.receiptKey.privatePem)
+  };
+  const r = await verifyLayeredReceipt(partial, baseOpts(authority, null));
+  assert.equal(r.state, S.FAILED);
+  assert.equal(r.reason, "ERR_SIGNING_MODE_INVALID");
+});
+
+await test("executor_and_authority receipt rejects a missing executor signature", async () => {
+  const receipt = await executorReceipt(codex);
+  const missing = structuredClone(receipt);
+  delete missing.executor_signature;
+  const r = await verifyLayeredReceipt(missing, baseOpts(authority, codex));
+  assert.equal(r.state, S.FAILED);
+  assert.equal(r.reason, "ERR_EXECUTOR_SIGNATURE_MISSING");
+});
+
+await test("partial authority layer fails structurally", async () => {
+  const receipt = await authorityOnlyReceipt();
+  const partial = structuredClone(receipt);
+  delete partial.verifiable_signature.value;
+  const r = await verifyLayeredReceipt(partial, baseOpts(authority, null));
+  assert.equal(r.state, S.FAILED);
+  assert.equal(r.reason, "ERR_AUTHORITY_SIGNATURE_INVALID");
+});
+
+await test("missing expected passport subject fails closed", async () => {
+  const receipt = await executorReceipt(codex);
+  const r = await verifyLayeredReceipt(receipt, baseOpts(authority, codex, {
+    expectedPassportSubjectId: "psub-required"
+  }));
+  assert.equal(r.state, S.FAILED);
+  assert.equal(r.reason, "ERR_PASSPORT_SUBJECT_MISSING");
+});
+
+await test("historical executor receipt verifies when credential was valid at signed_at", async () => {
+  const shortLived = await makeExecutor(authority, CODEX_ID, { expiresAt: "2026-06-20T00:00:00.000Z" });
+  const receipt = await executorReceipt(shortLived);
+  const r = await verifyLayeredReceipt(receipt, baseOpts(authority, shortLived, {
+    now: "2026-06-30T00:00:00.000Z"
+  }));
+  assert.equal(r.state, S.EXECUTOR_AND_AUTHORITY);
 });
 
 await test("modified executor signature fails even when the authority signature is re-made valid", async () => {

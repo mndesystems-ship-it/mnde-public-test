@@ -13,7 +13,6 @@
 // a present layer fails, the result is verification_failed.
 //
 //   authority_verified                          authority only (custody)
-//   executor_verified                           executor only, no authority sig
 //   executor_and_authority_verified             executor + authority
 //   executor_authority_and_passport_verified    executor + authority + passport
 //   legacy_verified                             shared-file (pre-custody) key
@@ -27,7 +26,6 @@ import { verifySignedExecutionReceipt } from "./verify-signed-receipt.mjs";
 
 export const RECEIPT_VERIFICATION_STATES = Object.freeze({
   AUTHORITY: "authority_verified",
-  EXECUTOR: "executor_verified",
   EXECUTOR_AND_AUTHORITY: "executor_and_authority_verified",
   EXECUTOR_AUTHORITY_AND_PASSPORT: "executor_authority_and_passport_verified",
   LEGACY: "legacy_verified",
@@ -39,6 +37,27 @@ function isObject(value) {
 }
 function isNonEmptyString(value) {
   return typeof value === "string" && value.length > 0;
+}
+function hasOwn(value, key) {
+  return Object.hasOwn(value, key);
+}
+function isValidTimestamp(value) {
+  return isNonEmptyString(value) && !Number.isNaN(Date.parse(value));
+}
+function isCompleteExecutorSignature(value) {
+  return isObject(value) &&
+    value.algorithm === "ED25519" &&
+    isValidTimestamp(value.signed_at) &&
+    isNonEmptyString(value.value);
+}
+function isCompleteAuthoritySignature(value) {
+  return isObject(value) &&
+    value.algorithm === "ED25519" &&
+    isNonEmptyString(value.authority_id) &&
+    isNonEmptyString(value.key_id) &&
+    isValidTimestamp(value.signed_at) &&
+    isNonEmptyString(value.public_key_fingerprint) &&
+    isNonEmptyString(value.value);
 }
 
 // Body the EXECUTOR signed over: no signatures present at all.
@@ -81,37 +100,50 @@ export async function verifyLayeredReceipt(receipt, options = {}) {
   const failed = (reason, extra = {}) => ({ ok: false, state: S.FAILED, reason, ...extra });
 
   if (!isObject(receipt)) return failed("receipt is not an object");
-  const executorFieldPresent = [
+  const executorFields = [
     "executor_signature",
     "executor_id",
     "executor_key_id",
     "executor_credential_id"
-  ].some((field) => receipt[field] !== undefined);
+  ];
+  const executorFieldPresent = executorFields.some((field) => hasOwn(receipt, field));
+  const authorityFieldPresent = hasOwn(receipt, "verifiable_signature");
   const signingMode = receipt.signing_mode ?? (executorFieldPresent ? null : "authority_only");
   if (signingMode === null) return failed("ERR_SIGNING_MODE_MISSING");
   if (signingMode !== "authority_only" && signingMode !== "executor_and_authority") {
     return failed("ERR_SIGNING_MODE_INVALID");
   }
 
-  const hasExecutorLayer =
-    isObject(receipt.executor_signature) &&
-    isNonEmptyString(receipt.executor_signature.value) &&
+  const hasExecutorIdentity =
     isNonEmptyString(receipt.executor_id) &&
     isNonEmptyString(receipt.executor_key_id) &&
     isNonEmptyString(receipt.executor_credential_id);
-
-  const hasAuthoritySig =
-    isObject(receipt.verifiable_signature) && isNonEmptyString(receipt.verifiable_signature.value);
+  const hasExecutorLayer = hasExecutorIdentity && isCompleteExecutorSignature(receipt.executor_signature);
+  const hasAuthoritySig = isCompleteAuthoritySignature(receipt.verifiable_signature);
 
   const passportPresent = isNonEmptyString(receipt.passport_subject_id);
-  if (signingMode === "executor_and_authority" && !hasExecutorLayer) {
-    return failed("ERR_EXECUTOR_ENVELOPE_MISSING");
-  }
-  if (signingMode === "authority_only" && hasExecutorLayer) {
+  if (signingMode === "authority_only" && executorFieldPresent) {
     return failed("ERR_SIGNING_MODE_INVALID");
   }
   if (signingMode === "authority_only" && options.requireExecutor) {
     return failed("ERR_EXECUTOR_REQUIRED");
+  }
+  if (signingMode === "executor_and_authority") {
+    if (!executorFieldPresent || !hasExecutorIdentity) {
+      return failed("ERR_EXECUTOR_ENVELOPE_MISSING");
+    }
+    if (!hasOwn(receipt, "executor_signature")) {
+      return failed("ERR_EXECUTOR_SIGNATURE_MISSING", { layer: "executor" });
+    }
+    if (!hasExecutorLayer) {
+      return failed("ERR_EXECUTOR_SIGNATURE_INVALID", { layer: "executor" });
+    }
+  }
+  if (!authorityFieldPresent) {
+    return failed("ERR_AUTHORITY_SIGNATURE_MISSING", { layer: "authority" });
+  }
+  if (!hasAuthoritySig) {
+    return failed("ERR_AUTHORITY_SIGNATURE_INVALID", { layer: "authority" });
   }
 
   // ── Executor layer (verified independently) ─────────────────────────────────
@@ -126,7 +158,10 @@ export async function verifyLayeredReceipt(receipt, options = {}) {
       environmentId,
       expectedExecutorId: expectedExecutorId ?? receipt.executor_id,
       requiredCapability: EXECUTOR_RECEIPT_CAPABILITY,
-      now
+      // Credential validity is evaluated at the authenticated receipt event
+      // time, not wall-clock verification time. The executor timestamp is
+      // countersigned by the authority layer below.
+      now: receipt.executor_signature.signed_at
     });
     if (!credRes.ok) return failed(credRes.code, { detail: credRes.detail });
     // Bind the receipt's identity fields to the verified credential.
@@ -143,25 +178,26 @@ export async function verifyLayeredReceipt(receipt, options = {}) {
   // ── Passport binding ────────────────────────────────────────────────────────
   // The subject is inside the signed body, so a modification breaks the layer
   // signatures above/below. Here we additionally enforce an expected value.
-  if (passportPresent && isNonEmptyString(expectedPassportSubjectId) && receipt.passport_subject_id !== expectedPassportSubjectId) {
-    return failed("ERR_PASSPORT_SUBJECT_MISMATCH");
+  if (isNonEmptyString(expectedPassportSubjectId)) {
+    if (!passportPresent) return failed("ERR_PASSPORT_SUBJECT_MISSING");
+    if (receipt.passport_subject_id !== expectedPassportSubjectId) {
+      return failed("ERR_PASSPORT_SUBJECT_MISMATCH");
+    }
   }
 
   // ── Authority layer (custody bundle, else shared-file legacy) ────────────────
   let authorityKind = null; // "authority" | "legacy"
-  if (hasAuthoritySig) {
-    if (authorityBundle) {
-      const authRes = await verifySignedExecutionReceipt(receipt, { authorityBundle, trustedRootFingerprint, now });
-      if (authRes.verified) authorityKind = "authority";
-    }
-    if (authorityKind === null && isNonEmptyString(legacyPublicKeyPem)) {
-      const legacyPayload = canonicalizeJson(bodyWithoutAuthoritySignature(receipt));
-      const legacyOk = await verifyCanonical(legacyPayload, receipt.verifiable_signature.value, legacyPublicKeyPem);
-      if (legacyOk) authorityKind = "legacy";
-    }
-    // A present authority signature that verifies against no trusted key fails.
-    if (authorityKind === null) return failed("ERR_RECEIPT_SIGNATURE_INVALID", { layer: "authority" });
+  if (authorityBundle) {
+    const authRes = await verifySignedExecutionReceipt(receipt, { authorityBundle, trustedRootFingerprint, now });
+    if (authRes.verified) authorityKind = "authority";
   }
+  if (authorityKind === null && isNonEmptyString(legacyPublicKeyPem)) {
+    const legacyPayload = canonicalizeJson(bodyWithoutAuthoritySignature(receipt));
+    const legacyOk = await verifyCanonical(legacyPayload, receipt.verifiable_signature.value, legacyPublicKeyPem);
+    if (legacyOk) authorityKind = "legacy";
+  }
+  // A present authority signature that verifies against no trusted key fails.
+  if (authorityKind === null) return failed("ERR_RECEIPT_SIGNATURE_INVALID", { layer: "authority" });
 
   // ── Resolve the exact state ─────────────────────────────────────────────────
   if (hasExecutorLayer) {
@@ -169,9 +205,6 @@ export async function verifyLayeredReceipt(receipt, options = {}) {
       return passportPresent
         ? pass(S.EXECUTOR_AUTHORITY_AND_PASSPORT, { executor_id: executorId, passport_subject_id: receipt.passport_subject_id })
         : pass(S.EXECUTOR_AND_AUTHORITY, { executor_id: executorId });
-    }
-    if (authorityKind === null) {
-      return pass(S.EXECUTOR, { executor_id: executorId });
     }
     // executor + legacy shared-file authority is not a defined Phase-0 pairing.
     return failed("ERR_RECEIPT_UNEXPECTED_LAYER_COMBINATION");
