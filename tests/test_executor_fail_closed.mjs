@@ -15,7 +15,7 @@
 
 import assert from "node:assert/strict";
 import http from "node:http";
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 
 import { createMndeExecutor } from "../executor/index.mjs";
 import { startMndeSidecar } from "../executor/sidecar-harness.mjs";
@@ -156,6 +156,13 @@ async function main() {
       assert.equal(r.executed, false);
       assert.equal(r.decision, "REFUSE");
       assert.equal(r.reason, "ERR_RECEIPT_UNVERIFIED");
+      // A distinct fail-closed refusal record must be written even though a
+      // receipt was supplied — so audit can tell the executor refused it.
+      assert.ok(r.receiptPath && /failclosed-/.test(r.receiptPath), "a fail-closed refusal record must be persisted");
+      const record = JSON.parse(readFileSync(r.receiptPath, "utf8"));
+      assert.equal(record.mnde_failclosed, true);
+      assert.equal(record.reason, "ERR_RECEIPT_UNVERIFIED");
+      assert.ok(record.supplied_receipt_path, "refusal record must reference the supplied receipt");
     } finally {
       await mock.stop();
     }

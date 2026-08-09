@@ -30,6 +30,7 @@ import { join, resolve } from "node:path";
 import { reviewerRequest } from "../scripts/reviewer-request.mjs";
 import { verifyReceiptFile, verificationPassed } from "../tools/verify-receipt.mjs";
 import { verifyAnyReceiptFile } from "../tools/verify.mjs";
+import { isSignedReceiptEnvelope } from "../src/authority-signing/index.mjs";
 import { canonicalizeJson, parseStrictJson } from "../shared/json.ts";
 import { resolveBearerToken, bearerAuthHeader } from "./bearer.mjs";
 
@@ -90,7 +91,19 @@ function jsonEqual(a, b) {
 // `parameters`). Once a receipt has verified offline, its `canonical_request` is
 // authenticated (its hash is the signed request_hash), so comparing this to the
 // exact action/input we sent is a trustworthy binding across both paths.
-function receiptBinding(receipt) {
+// For a custody-signed envelope (`mnde.signed-receipt.v1/v2`) the signed decision
+// and canonical request live in the inner `receipt`; the envelope as a whole is
+// what verifies, but request bindings must be read from that verified inner
+// receipt. Everything else binds against itself.
+export function receiptForBinding(receipt) {
+  if (isPlainObject(receipt) && isSignedReceiptEnvelope(receipt) && isPlainObject(receipt.receipt)) {
+    return receipt.receipt;
+  }
+  return receipt;
+}
+
+export function receiptBinding(receipt) {
+  if (!isPlainObject(receipt)) return { decision: null, requestIds: [], action: null, params: null, policyHash: null, policyVersion: null };
   const dout = isPlainObject(receipt.decision_output) ? receipt.decision_output : {};
   let cr = null;
   if (typeof receipt.canonical_request === "string") {
@@ -174,6 +187,12 @@ export function createMndeExecutor(config = {}) {
   // Optional published authority bundle for offline verification of custody-signed
   // receipts. Unset by default; legacy/PE receipts verify without it.
   const verifyAuthorityBundle = loadVerifyBundle(config.verifyAuthorityBundle ?? process.env.MNDE_VERIFY_AUTHORITY_BUNDLE);
+  // Custody-signed (`mnde.signed-receipt.v1/v2`) receipts additionally need the
+  // published root fingerprint, and v2 executor-bound receipts need the expected
+  // environment id, to verify offline. Without them a production custody ALLOW
+  // could never verify and would (correctly but uselessly) always fail closed.
+  const verifyTrustedRootFingerprint = config.verifyTrustedRootFingerprint ?? process.env.MNDE_VERIFY_TRUSTED_ROOT_FINGERPRINT ?? undefined;
+  const verifyEnvironmentId = config.verifyEnvironmentId ?? process.env.MNDE_VERIFY_ENVIRONMENT_ID ?? undefined;
 
   mkdirSync(receiptsDir, { recursive: true });
 
@@ -187,8 +206,13 @@ export function createMndeExecutor(config = {}) {
     try {
       // Unified verifier handles legacy pipeline, policy-engine, and custody-signed
       // receipts; legacy/PE receipts verify identically to before. A custody
-      // envelope additionally needs the published authority bundle.
-      return (await verifyAnyReceiptFile(receiptPath, { authorityBundle: verifyAuthorityBundle })).verified === true;
+      // envelope additionally needs the published authority bundle, the trusted
+      // root fingerprint, and (for v2 executor-bound receipts) the environment id.
+      return (await verifyAnyReceiptFile(receiptPath, {
+        authorityBundle: verifyAuthorityBundle,
+        trustedRootFingerprint: verifyTrustedRootFingerprint,
+        environmentId: verifyEnvironmentId
+      })).verified === true;
     } catch {
       return false;
     }
@@ -306,14 +330,18 @@ export function createMndeExecutor(config = {}) {
     // offline-verified receipt whose OWN signed decision is ALLOW and which is
     // bound to this exact request (and expected policy, when declared). Fail closed
     // on any gap. This is the execution-firewall claim.
-    const authz = authorizeExecution({ receipt: decision.receipt, action, input, executionId: id, verified });
+    const authz = authorizeExecution({ receipt: receiptForBinding(decision.receipt), action, input, executionId: id, verified });
     if (!authz.ok) {
-      const failPath = receiptPath ?? persist(`failclosed-${id}.json`, {
+      // Always persist a DISTINCT refusal record — even when the sidecar's ALLOW
+      // receipt was also stored — so an audit can tell the executor refused it
+      // rather than mistaking the stored ALLOW for an execution.
+      const failPath = persist(`failclosed-${id}.json`, {
         mnde_failclosed: true,
         decision: "REFUSE",
         action: action ?? null,
         execution_id: id,
         reason: authz.reason,
+        supplied_receipt_path: receiptPath ?? null,
         note: "Client-side fail-closed record: MNDe returned ALLOW but the receipt did not satisfy the strict execution gate (missing, unverifiable, or not bound to this request/policy), so the action was refused locally.",
         recorded_at: new Date().toISOString()
       });
@@ -359,7 +387,7 @@ export function createMndeExecutor(config = {}) {
     return { verified: verificationPassed(report), report };
   }
 
-  return { execute, wrapTool, verifyReceipt, config: { sidecarUrl, receiptsDir, testerId, installationId, timeoutMs, expectedPolicyHash, expectedPolicyVersion } };
+  return { execute, wrapTool, verifyReceipt, config: { sidecarUrl, receiptsDir, testerId, installationId, timeoutMs, expectedPolicyHash, expectedPolicyVersion, verifyTrustedRootFingerprint, verifyEnvironmentId } };
 }
 
 export default createMndeExecutor;
