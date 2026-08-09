@@ -218,6 +218,19 @@ function writeReleaseBuildInfo() {
     process.exit(1);
   }
   const commit = gitOutput(["rev-parse", "HEAD"]) || null;
+  // A real release MUST embed a source commit — that is the central promise of
+  // the release contract (an artifact identifies the source that produced it).
+  // `npm run release` sets MNDE_REQUIRE_COMMIT=1, so a release built from a
+  // source archive with no .git fails closed here instead of silently shipping a
+  // commit-less "source-checkout" artifact. Ordinary `npm pack` (used by tests
+  // from a git checkout) is unaffected.
+  if (process.env.MNDE_REQUIRE_COMMIT === "1" && !commit) {
+    process.stderr.write(
+      "FATAL: release build requires an embedded source commit, but `git rev-parse HEAD` " +
+        "returned nothing (no .git?). Refusing to emit a commit-less release artifact.\n"
+    );
+    process.exit(1);
+  }
   const commitShort = commit ? commit.slice(0, 12) : null;
   const dirty = commit ? gitOutput(["status", "--porcelain"]).length > 0 : null;
   // build_time is the one intentionally-mutable field: it makes the tarball not

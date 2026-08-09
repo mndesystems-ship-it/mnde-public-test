@@ -17,6 +17,7 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -60,13 +61,41 @@ function fail(message) {
   process.exit(1);
 }
 
-// Fresh output dir every run: a stale tarball from a previous version must never
-// be hashed into this release's manifest.
-rmSync(releaseDir, { recursive: true, force: true });
-mkdirSync(releaseDir, { recursive: true });
+// The release directory is wiped and recreated every run so a stale tarball from
+// a previous version can never be hashed into this release's manifest. Because
+// MNDE_RELEASE_DIR accepts an arbitrary path, that recursive delete is guarded:
+// we refuse obviously catastrophic destinations (the repo, home, cwd, a
+// filesystem root) and refuse to wipe any existing directory that holds files
+// other than prior release artifacts. Only a dedicated/empty directory is
+// cleaned; anything else is a hard error before a single byte is removed.
+function prepareReleaseDir(dir) {
+  const norm = resolve(dir);
+  const isFilesystemRoot = resolve(norm, "..") === norm;
+  const forbidden = new Set([resolve(repoRoot), resolve(homedir()), resolve(process.cwd())]);
+  if (isFilesystemRoot || forbidden.has(norm)) {
+    fail(`refusing to use ${norm} as the release directory (repo root, home, cwd, or a filesystem root). Set MNDE_RELEASE_DIR to a dedicated directory.`);
+  }
+  if (existsSync(norm)) {
+    const releaseArtifact = /(\.tgz|\.tar\.gz)$/;
+    const releaseMeta = new Set(["SHA256SUMS.txt", "release-manifest.json"]);
+    const foreign = readdirSync(norm).filter((e) => !releaseArtifact.test(e) && !releaseMeta.has(e));
+    if (foreign.length > 0) {
+      fail(`release directory ${norm} contains non-release files (${foreign.slice(0, 6).join(", ")}); refusing to delete it. Point MNDE_RELEASE_DIR at an empty or dedicated directory.`);
+    }
+    rmSync(norm, { recursive: true, force: true });
+  }
+  mkdirSync(norm, { recursive: true });
+}
+
+prepareReleaseDir(releaseDir);
 
 process.stdout.write("release: packing tarball (runs prepack -> build-package.mjs)...\n");
-const packResult = runNpm(["pack", "--json", "--pack-destination", releaseDir], { cwd: repoRoot });
+// Require an embedded source commit for a real release: build-package fails
+// closed if Git HEAD is unavailable, so we never publish a commit-less artifact.
+const packResult = runNpm(["pack", "--json", "--pack-destination", releaseDir], {
+  cwd: repoRoot,
+  env: { ...process.env, MNDE_REQUIRE_COMMIT: "1" }
+});
 if (packResult.status !== 0) {
   process.stderr.write(packResult.stdout ?? "");
   process.stderr.write(packResult.stderr ?? "");
@@ -85,6 +114,13 @@ if (!existsSync(tarballPath)) fail(`packed tarball missing: ${tarballPath}`);
 const buildInfoPath = join(repoRoot, "dist", "src", "release", "build-info.json");
 const buildInfo = existsSync(buildInfoPath) ? JSON.parse(readFileSync(buildInfoPath, "utf8")) : {};
 const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+
+// Defense in depth: even though build-package fails closed without a commit when
+// MNDE_REQUIRE_COMMIT=1, never write a release manifest / checksums that claim to
+// identify a source commit when they do not.
+if (!buildInfo.commit) {
+  fail("build produced no embedded source commit; refusing to write a commit-less release manifest.");
+}
 
 // Hash every file we actually placed in the release directory (currently just
 // the tarball; future desktop artifacts would be hashed the same way).

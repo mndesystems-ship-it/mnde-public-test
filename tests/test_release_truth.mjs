@@ -71,6 +71,21 @@ async function check(id, desc, fn) {
   }
 }
 
+// List the entries inside a tarball (posix paths, `package/` prefix stripped).
+// Runs `tar` with cwd = the tarball's directory and passes only the basename, so
+// GNU tar (Git Bash) does not misread a Windows `C:\` drive-colon as a remote
+// host; Windows bsdtar (CI) handles it identically.
+function tarListing(tarballPath) {
+  const dir = dirname(tarballPath);
+  const base = tarballPath.split(/[\\/]/).pop();
+  const r = spawnSync("tar", ["-tzf", base], { cwd: dir, encoding: "utf8" });
+  if (r.status !== 0) throw new Error(`tar -tzf failed for ${base}:\n${r.stderr}`);
+  return r.stdout
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((p) => p.replace(/\\/g, "/").replace(/^(\.\/)?package\//, ""));
+}
+
 // Recursively list files under a dir (relative posix paths).
 function listFiles(root, base = root, out = []) {
   for (const entry of readdirSync(root)) {
@@ -86,15 +101,35 @@ let packDir;
 let projectDir;
 let child;
 try {
-  // ---- Setup: pack the real tarball (hard prerequisite) ---------------------
-  packDir = mkdtempSync(join(tmpdir(), "mnde-reltruth-pack-"));
-  const packResult = hardOk("npm pack", runNpm(["pack", "--json", "--pack-destination", packDir], { cwd: repoRoot }));
-  const jsonStart = packResult.stdout.indexOf("[");
-  assert.ok(jsonStart >= 0, `npm pack --json produced no JSON array:\n${packResult.stdout}`);
-  const packInfo = JSON.parse(packResult.stdout.slice(jsonStart))[0];
-  const tarballPath = join(packDir, packInfo.filename);
-  assert.ok(existsSync(tarballPath), `packed tarball missing: ${tarballPath}`);
-  const shipped = packInfo.files.map((f) => f.path.replace(/\\/g, "/").replace(/^package\//, ""));
+  // ---- Setup: obtain the artifact under test --------------------------------
+  // Prefer the ACTUAL artifact `npm run release` emitted (release/*.tgz + its
+  // published SHA256SUMS.txt + release-manifest.json) so CI validates exactly
+  // what ships — digest, manifest, and all. Only when no release/ output exists
+  // (a standalone dev run of this test) do we pack a throwaway tarball, purely to
+  // exercise install/runtime behavior.
+  const releaseDir = join(repoRoot, "release");
+  const releaseTgz = existsSync(releaseDir)
+    ? readdirSync(releaseDir).find((f) => /^mnde-public-test-.*\.tgz$/.test(f))
+    : null;
+  let tarballPath;
+  let publishedManifest = null;
+  let publishedSums = null;
+  if (releaseTgz && existsSync(join(releaseDir, "release-manifest.json")) && existsSync(join(releaseDir, "SHA256SUMS.txt"))) {
+    tarballPath = join(releaseDir, releaseTgz);
+    publishedManifest = JSON.parse(readFileSync(join(releaseDir, "release-manifest.json"), "utf8"));
+    publishedSums = readFileSync(join(releaseDir, "SHA256SUMS.txt"), "utf8");
+    console.log(`[info] verifying the released artifact: release/${releaseTgz}`);
+  } else {
+    packDir = mkdtempSync(join(tmpdir(), "mnde-reltruth-pack-"));
+    const packResult = hardOk("npm pack", runNpm(["pack", "--json", "--pack-destination", packDir], { cwd: repoRoot }));
+    const jsonStart = packResult.stdout.indexOf("[");
+    assert.ok(jsonStart >= 0, `npm pack --json produced no JSON array:\n${packResult.stdout}`);
+    const packInfo = JSON.parse(packResult.stdout.slice(jsonStart))[0];
+    tarballPath = join(packDir, packInfo.filename);
+    console.log("[info] no release/ artifact present; verifying a freshly packed tarball");
+  }
+  assert.ok(existsSync(tarballPath), `tarball missing: ${tarballPath}`);
+  const shipped = tarListing(tarballPath);
 
   // ---- REL-04: required production files exist ------------------------------
   await check("REL-04", "required production files are present in the tarball", () => {
@@ -134,9 +169,18 @@ try {
   // ---- REL-12 / REL-13: checksum verification succeeds and tamper fails ------
   const tarballBytes = readFileSync(tarballPath);
   const trueDigest = createHash("sha256").update(tarballBytes).digest("hex");
+  const artifactBase = tarballPath.split(/[\\/]/).pop();
   await check("REL-12", "release checksum verification succeeds for the real artifact", () => {
     const recomputed = createHash("sha256").update(readFileSync(tarballPath)).digest("hex");
     assert.equal(recomputed, trueDigest, "recomputed digest must match");
+    // When validating the actual `npm run release` output, the digest MUST equal
+    // the one published in SHA256SUMS.txt — proving the checksum binds the shipped
+    // bytes, not a repack.
+    if (publishedSums) {
+      const line = publishedSums.split(/\r?\n/).find((l) => l.trim().endsWith(artifactBase));
+      assert.ok(line, `SHA256SUMS.txt has no entry for ${artifactBase}`);
+      assert.equal(line.trim().split(/\s+/)[0], trueDigest, "published SHA256SUMS digest must match the real artifact bytes");
+    }
   });
   await check("REL-13", "a modified artifact fails checksum verification", () => {
     const tampered = Buffer.from(tarballBytes);
@@ -197,6 +241,22 @@ try {
     assert.equal(id.source, "packaged");
     assert.equal(id.artifact_format, "npm-tarball");
   });
+
+  // ---- REL-19: the release manifest binds the real artifact -----------------
+  // Only meaningful when validating an actual `npm run release` output: the
+  // manifest's recorded digest/size/version/commit must match the shipped
+  // artifact and the identity embedded inside it.
+  if (publishedManifest) {
+    await check("REL-19", "release manifest binds the real artifact digest, size, version, and source commit", () => {
+      const entry = (publishedManifest.artifacts || []).find((a) => a.name === artifactBase);
+      assert.ok(entry, `manifest has no artifact entry for ${artifactBase}`);
+      assert.equal(entry.sha256, trueDigest, "manifest artifact digest must match the real artifact bytes");
+      assert.equal(entry.bytes, tarballBytes.length, "manifest artifact size must match the real artifact");
+      assert.equal(publishedManifest.version, installedPkg.version, "manifest version vs installed package version");
+      assert.ok(publishedManifest.commit, "manifest must carry a non-null source commit");
+      assert.equal(publishedManifest.commit, buildInfo.commit, "manifest commit vs the commit embedded in the shipped artifact");
+    });
+  }
 
   // ---- REL-14: no developer-machine absolute paths embedded -----------------
   await check("REL-14", "no developer-machine absolute paths are embedded in shipped files", () => {
