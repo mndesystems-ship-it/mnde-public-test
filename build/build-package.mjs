@@ -30,6 +30,7 @@
 // independent review caught exactly that. build/ is never in INCLUDE_DIRS, so
 // this file and its lib/ helper are never shipped.
 
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, rmSync, existsSync, copyFileSync } from "node:fs";
 import { join, dirname, relative, extname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -91,8 +92,18 @@ const NEVER_COPY = new Set([
   join(repoRoot, ".mnde-test")
 ].map((p) => p.toLowerCase()));
 
+// Dev-only files that physically live inside an otherwise-shipped directory but
+// are never on the packaged CLI/runtime path — no bin/*, the sidecar runtime, or
+// start-sidecar imports them. Excluded by exact path so the production surface
+// stays minimal and dev proof tooling never ships. `npm run reviewer-kit` still
+// runs it from the source checkout; it is simply absent from the tarball.
+const EXCLUDE_FILES = new Set([
+  join(repoRoot, "tools", "reviewer-kit.mjs")
+].map((p) => p.toLowerCase()));
+
 function isExcluded(absPath) {
   const lower = absPath.toLowerCase();
+  if (EXCLUDE_FILES.has(lower)) return true;
   for (const blocked of NEVER_COPY) {
     if (lower === blocked || lower.startsWith(blocked + "\\") || lower.startsWith(blocked + "/")) return true;
   }
@@ -181,7 +192,52 @@ function build() {
 
   process.stdout.write(`build-package: ${tsCount} .ts compiled, ${jsCount} .mjs/.js rewritten+copied, ${otherCount} other files copied -> ${relative(repoRoot, OUT_DIR)}/\n`);
 
+  writeReleaseBuildInfo();
   assertNoPrivateKeyMaterial();
+}
+
+// Capture immutable release metadata (source commit, build id, build time) at
+// PACK time, when Git is available, and embed it beside the release-identity
+// module in the output tree. The runtime never shells out to Git — a packaged
+// install has no .git — so this is the only place commit identity is bound to
+// the artifact. Written into dist/ only: it never touches the source tree, so a
+// source checkout has no build-info.json and truthfully reports "source".
+function gitOutput(args) {
+  try {
+    return execFileSync("git", args, { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return "";
+  }
+}
+
+function writeReleaseBuildInfo() {
+  const releaseDir = join(OUT_DIR, "src", "release");
+  if (!existsSync(releaseDir)) {
+    // src/release/identity.mjs must have been mirrored for identity to work.
+    process.stderr.write("FATAL: dist/src/release missing — release identity module was not packaged\n");
+    process.exit(1);
+  }
+  const commit = gitOutput(["rev-parse", "HEAD"]) || null;
+  const commitShort = commit ? commit.slice(0, 12) : null;
+  const dirty = commit ? gitOutput(["status", "--porcelain"]).length > 0 : null;
+  // build_time is the one intentionally-mutable field: it makes the tarball not
+  // byte-for-byte reproducible, but never changes the release IDENTITY
+  // (product/version/commit), which is what integrity checks bind to. Overridable
+  // via MNDE_BUILD_TIME for reproducible-release experiments.
+  const buildTime = process.env.MNDE_BUILD_TIME || new Date().toISOString();
+  const buildId =
+    process.env.MNDE_BUILD_ID || (commitShort ? `${commitShort}${dirty ? "-dirty" : ""}` : "source");
+  const info = {
+    schema: "mnde.release-identity.v1",
+    commit,
+    commit_short: commitShort,
+    dirty,
+    build_id: buildId,
+    build_time: buildTime,
+    artifact_format: "npm-tarball"
+  };
+  writeFileSync(join(releaseDir, "build-info.json"), `${JSON.stringify(info, null, 2)}\n`, "utf8");
+  process.stdout.write(`build-package: embedded release identity ${buildId} (commit ${commitShort ?? "unknown"})\n`);
 }
 
 // Authoritative, content-based backstop: fail the build outright if any

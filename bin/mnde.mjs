@@ -14,6 +14,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 
 import { buildContext, discover, planDeployment, buildDraft, apply, uninstall, status } from "../src/onboarding/index.mjs";
 import { buildPolicyReceipt, verifyPolicyReceipt } from "../src/policy-engine/receipt.mjs";
+import { getReleaseIdentity, formatReleaseIdentity } from "../src/release/identity.mjs";
 
 const argv = process.argv.slice(2);
 const command = argv[0];
@@ -80,6 +81,19 @@ function renderPlan(plan) {
 }
 
 async function main() {
+  // Report the identity of the installed artifact. Reads embedded release
+  // metadata only — never inspects Git — so it is truthful from a packaged
+  // install with no repository present.
+  if (command === "version" || command === "--version" || command === "-v") {
+    const identity = getReleaseIdentity();
+    if (has("--json")) {
+      line(JSON.stringify(identity, null, 2));
+    } else {
+      line(formatReleaseIdentity(identity));
+    }
+    return;
+  }
+
   const ctx = buildContext();
 
   if (command === "init") {
@@ -186,6 +200,9 @@ async function main() {
 
   if (command === "status") {
     banner("MNDe status");
+    const identity = getReleaseIdentity();
+    line(`Release:              ${identity.product} ${identity.version ?? "unknown"} (${identity.commit_short ?? identity.source})`);
+    line("");
     const s = status(ctx);
     line("Protected");
     if (s.protected.length === 0) {
@@ -206,6 +223,7 @@ async function main() {
   line("MNDe onboarding CLI");
   line("");
   line("Usage:");
+  line("  mnde version           show installed release identity (add --json for machine output)");
   line("  mnde init              discovery + recommendations (no changes)");
   line("  mnde init --dry-run    full wiring plan (no changes)");
   line("  mnde init --apply      apply approved wiring (backups created first)");

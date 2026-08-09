@@ -67,6 +67,7 @@ import {
 import { execIdDirPath, reserveExecutionId } from "./sidecar/execution_id_store.mjs";
 import { replayReceiptDeterministically } from "./sidecar/replay_engine.mjs";
 import { assertStartupDirectoryPermissions } from "./sidecar/startup_checks.mjs";
+import { getReleaseIdentity } from "./src/release/identity.mjs";
 
 const HOST = "127.0.0.1";
 const PORT = parseBindPort(process.env.MNDE_BIND_PORT, 8787);
@@ -1428,6 +1429,10 @@ const server = http.createServer(async (req, res) => {
     if (!authorizeProductionRead(req, res, pathname, "identity")) return;
     response(res, 200, {
       schema_version: "mnde.sidecar_identity.v1",
+      // Immutable release identity of the running artifact, from embedded build
+      // metadata (never Git). Lets a caller confirm the running sidecar and the
+      // installed CLI belong to the same MNDe release.
+      release: getReleaseIdentity(),
       repo_root: REPO_ROOT,
       process_id: process.pid,
       policy_hash,
