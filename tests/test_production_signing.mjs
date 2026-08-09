@@ -21,7 +21,7 @@ import {
   loadSigningConfig,
   signReceiptForDelivery,
   verifyCustodyAttestation,
-  SIGNED_RECEIPT_SCHEMA
+  LEGACY_SIGNED_RECEIPT_SCHEMA
 } from "../src/authority-signing/index.mjs";
 import { buildPolicyReceipt } from "../src/policy-engine/receipt.mjs";
 import { verifyAnyReceiptObject, verifyAnyReceiptFile } from "../tools/verify.mjs";
@@ -97,7 +97,9 @@ async function main() {
     const { provider } = await makeProvider();
     const out = await signReceiptForDelivery(sampleInner(), { mode: "custody", provider }, { now: NOW });
     assert.equal(out.ok, true);
-    assert.equal(out.receipt.schema_version, SIGNED_RECEIPT_SCHEMA);
+    assert.equal(out.receipt.schema_version, LEGACY_SIGNED_RECEIPT_SCHEMA);
+    assert.equal(out.receipt.signing_mode, undefined);
+    assert.equal(out.receipt.custody_attestation.signing_mode, undefined);
     const a = out.receipt.custody_attestation;
     for (const f of ["receipt_type", "receipt_version", "decision", "receipt_hash", "signing_key_id", "authority_bundle_fingerprint", "signed_at"]) {
       assert.ok(a[f] !== undefined, `missing ${f}`);
@@ -296,7 +298,7 @@ async function main() {
         const body = await res.json();
         assert.equal(body.decision, "ALLOW");
         assert.equal(body.receipt_signing, "custody");
-        assert.equal(body.receipt.schema_version, SIGNED_RECEIPT_SCHEMA);
+        assert.equal(body.receipt.schema_version, LEGACY_SIGNED_RECEIPT_SCHEMA);
 
         // Verify offline against the published bundle (as a third party would).
         const rPath = join(dir, "live-receipt.json");

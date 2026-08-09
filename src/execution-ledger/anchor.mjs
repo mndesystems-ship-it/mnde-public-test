@@ -229,7 +229,12 @@ function loadReceiptByHash(receiptStorePath, receiptHash) {
 // SELF-VERIFY it end to end before returning. Fails closed if the ledger, the
 // Merkle recomputation, the checkpoint, and the authority bundle disagree.
 //   selector: { receipt_id } or { receipt_hash }
-export async function buildProofBundle(ledgerPath, checkpoint, selector, { receiptStorePath, trustedBundle } = {}) {
+export async function buildProofBundle(ledgerPath, checkpoint, selector, {
+  receiptStorePath,
+  trustedBundle,
+  executorEnvironmentId,
+  expectedExecutorId
+} = {}) {
   if (!checkpoint || typeof checkpoint.tree_size !== "number") throw fail(LEDGER_ERRORS.CHECKPOINT_MALFORMED, "checkpoint required");
   const entries = readLedgerEntries(ledgerPath).slice(0, checkpoint.tree_size);
   if (entries.length !== checkpoint.tree_size) throw fail(LEDGER_ERRORS.ANCHOR_FAILED, "ledger shorter than checkpoint tree_size");
@@ -255,7 +260,11 @@ export async function buildProofBundle(ledgerPath, checkpoint, selector, { recei
   };
 
   // Fail closed unless the whole chain verifies against the trusted bundle.
-  const check = await verifyProofBundle(bundle, trustedBundle, { trustedRootFingerprint: trustedBundle?.root_key?.fingerprint });
+  const check = await verifyProofBundle(bundle, trustedBundle, {
+    trustedRootFingerprint: trustedBundle?.root_key?.fingerprint,
+    executorEnvironmentId,
+    expectedExecutorId
+  });
   if (!check.ok) throw fail(LEDGER_ERRORS.ANCHOR_FAILED, `proof self-verify failed: ${check.reason}`);
   return bundle;
 }
