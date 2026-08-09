@@ -293,6 +293,53 @@ test("16. authorizeAndSign with signing options produces a signed receipt", asyn
   assert.equal(v.verified, true, v.reason ?? "");
 });
 
+test("16b. authorizeAndSign forwards executor identity and passport without authority-only fallback", async () => {
+  const { receiptKey, bundle, trustedRootFingerprint } = await makeBundle();
+  const executorKey = generateAuthorityKeyPair();
+  const executor = {
+    executorId: "mnde:local:prod:executor:codex:01",
+    keyId: "mnde-exk:authorize-and-sign",
+    credentialId: "mnde-cred:authorize-and-sign",
+    privatePem: executorKey.privatePem
+  };
+  const passportSubjectId = "passport:authorize-and-sign";
+  const result = await authorizeAndSign(minimalRequest(), {
+    authorityBundle: bundle,
+    signingKeyId: receiptKey.keyId,
+    signingPrivateKeyPem: receiptKey.privatePem,
+    executor,
+    passportSubjectId
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.signed, true);
+  assert.equal(result.receipt.signing_mode, "executor_and_authority");
+  assert.notEqual(result.receipt.signing_mode, "authority_only");
+  assert.equal(result.receipt.executor_id, executor.executorId);
+  assert.equal(result.receipt.executor_key_id, executor.keyId);
+  assert.equal(result.receipt.executor_credential_id, executor.credentialId);
+  assert.equal(result.receipt.passport_subject_id, passportSubjectId);
+  assert.ok(result.receipt.executor_signature?.value);
+  assert.ok(result.receipt.verifiable_signature?.value);
+  const verified = await verifySignedExecutionReceipt(result.receipt, { authorityBundle: bundle, trustedRootFingerprint });
+  assert.equal(verified.verified, true, verified.reason ?? "");
+});
+
+test("16c. authorizeAndSign rejects executor identity without complete authority signing material", async () => {
+  const executorKey = generateAuthorityKeyPair();
+  const result = await authorizeAndSign(minimalRequest(), {
+    executor: {
+      executorId: "mnde:local:prod:executor:codex:01",
+      keyId: "mnde-exk:partial-config",
+      credentialId: "mnde-cred:partial-config",
+      privatePem: executorKey.privatePem
+    }
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason_code, "ERR_EXECUTOR_AUTHORITY_SIGNER_REQUIRED");
+  assert.equal(result.signed, undefined);
+  assert.equal(result.receipt, undefined);
+});
+
 test("17. Private key never appears in receipt output", async () => {
   const { receiptKey, bundle } = await makeBundle();
   const request = minimalRequest();

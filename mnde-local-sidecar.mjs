@@ -273,6 +273,8 @@ function receiptPathForWorker(basePath) {
 // primary BEFORE forking so a misconfiguration fails fast (no worker crash-loop).
 // In MNDE_PROFILE=local (default) this is a no-op and custody is not loaded.
 let ACTIVATION_ID = null;
+let EXECUTOR_READINESS = { ok: true, configured: false };
+let PRELOADED_SIGNING_CONFIG = null;
 {
   const { assertTrustRoot } = await import("./src/authority-signing/preflight.mjs");
   const trust = await assertTrustRoot(process.env, { repoRoot: DATA_ROOT });
@@ -287,6 +289,48 @@ let ACTIVATION_ID = null;
   ACTIVATION_ID = typeof trust.activation_id === "string" ? trust.activation_id : null;
   if (trust.profile === "production") {
     process.stdout.write(`MNDe trust-root: production custody verified (authority '${trust.authority_id || "?"}')${ACTIVATION_ID ? `; activation ${ACTIVATION_ID.slice(0, 12)}…` : ""}\n`);
+  }
+}
+
+// ── Executor-identity pre-flight (Phase 0 / Design A) ────────────────────────
+// Executor identity is OPT-IN. When MNDE_EXECUTOR_* is configured, the material
+// must be usable (credential verifies, unexpired, right environment, key matches)
+// or MNDe refuses to start — no silent downgrade to authority-only. When absent,
+// this is a no-op and authority-only signing is unchanged.
+{
+  const { assertExecutorIdentityReadiness } = await import("./src/custody/executor-readiness.mjs");
+  const executorConfiguration = [
+    process.env.MNDE_EXECUTOR_ID,
+    process.env.MNDE_EXECUTOR_PRIVATE_KEY,
+    process.env.MNDE_EXECUTOR_CREDENTIAL,
+    process.env.MNDE_EXECUTOR_ENVIRONMENT
+  ];
+  const executorFullyConfigured = executorConfiguration.every((value) => typeof value === "string" && value.length > 0);
+  let readinessOptions = {};
+  if (executorFullyConfigured) {
+    const requestedSigningMode = process.env.MNDE_RECEIPT_SIGNING_MODE;
+    if (requestedSigningMode !== "custody" && requestedSigningMode !== "external-signer") {
+      process.stderr.write("ERR_EXECUTOR_AUTHORITY_SIGNER_REQUIRED\n");
+      process.exit(1);
+    }
+    const signingModule = await import("./src/authority-signing/index.mjs");
+    PRELOADED_SIGNING_CONFIG = await signingModule.loadSigningConfig(process.env);
+    if (!PRELOADED_SIGNING_CONFIG.ok) {
+      process.stderr.write(`${PRELOADED_SIGNING_CONFIG.reason_code}\n`);
+      process.exit(1);
+    }
+    readinessOptions = {
+      authorityBundle: PRELOADED_SIGNING_CONFIG.provider.getPublicBundle(),
+      trustedRootFingerprint: PRELOADED_SIGNING_CONFIG.provider.trustedRootFingerprint
+    };
+  }
+  EXECUTOR_READINESS = await assertExecutorIdentityReadiness(process.env, readinessOptions);
+  if (!EXECUTOR_READINESS.ok) {
+    process.stderr.write(`\nMNDe refused to start — executor identity pre-flight failed.\n  reason_code: ${EXECUTOR_READINESS.reason_code}\n  ${EXECUTOR_READINESS.detail}\n\n`);
+    process.exit(1);
+  }
+  if (EXECUTOR_READINESS.configured) {
+    process.stdout.write(`MNDe executor identity: ${EXECUTOR_READINESS.executor_id} (key ${String(EXECUTOR_READINESS.executor_key_id).slice(0, 20)}…) ready\n`);
   }
 }
 
@@ -408,20 +452,21 @@ if (LEDGER_RUNTIME.enabled) {
   process.stdout.write(`MNDe execution ledger: DISABLED (MNDE_EXECUTION_LEDGER=off; non-production only)\n`);
 }
 
-// Optional, opt-in live receipt signing. Default "legacy" keeps receipt bytes
-// unchanged. The custody signing adapter is dynamically imported ONLY in custody
-// mode, so legacy mode never loads custody and stays byte-for-byte identical.
+// Optional custody-backed live receipt signing. Default "legacy" retains the
+// existing authority signer and adds only the required explicit authority_only
+// mode. The custody signing adapter is imported only when custody is selected.
 // Signing is applied as a separate step AFTER the receipt is built — decision
 // engines never sign and never import custody.
 const SIGNING_MODE = (process.env.MNDE_RECEIPT_SIGNING_MODE === "custody" || process.env.MNDE_RECEIPT_SIGNING_MODE === "external-signer") ? "custody" : "legacy";
 let signingConfig = { ok: true, mode: "legacy" };
 let signReceiptAdapter = async (receipt) => ({ ok: true, receipt });
+let liveSigningContext = null;
 let signingConfigError = null;
 if (SIGNING_MODE === "custody") {
   try {
     const mod = await import("./src/authority-signing/index.mjs");
-    signingConfig = await mod.loadSigningConfig(process.env);
-    signReceiptAdapter = mod.signReceiptForDelivery;
+    signingConfig = PRELOADED_SIGNING_CONFIG ?? await mod.loadSigningConfig(process.env);
+    signReceiptAdapter = mod.signLiveReceipt;
     if (!signingConfig.ok) signingConfigError = signingConfig.reason_code;
     // Bind receipts to the preflight-verified activation (mnde.activation.v1).
     if (signingConfig.ok && ACTIVATION_ID) signingConfig.activation_id = ACTIVATION_ID;
@@ -430,6 +475,35 @@ if (SIGNING_MODE === "custody") {
     signingConfigError = "ERR_CUSTODY_UNAVAILABLE";
     process.stderr.write(`MNDe custody signing failed to load: ${error instanceof Error ? error.message : String(error)}\n`);
   }
+}
+if (EXECUTOR_READINESS.configured && SIGNING_MODE !== "custody") {
+  process.stderr.write("ERR_EXECUTOR_AUTHORITY_SIGNER_REQUIRED\n");
+  process.exit(1);
+}
+if (SIGNING_MODE === "custody") {
+  const mod = await import("./src/authority-signing/index.mjs");
+  const contextResult = mod.createLiveReceiptSigningContext(signingConfig, EXECUTOR_READINESS);
+  if (!contextResult.ok) {
+    if (EXECUTOR_READINESS.configured) {
+      process.stderr.write(`${contextResult.reason_code}\n`);
+      process.exit(1);
+    }
+    liveSigningContext = Object.freeze({ mode: "authority_only", authorityConfig: Object.freeze({ ...signingConfig }), authoritySigner: null, executorSigner: null, executorIdentity: null });
+  } else {
+    liveSigningContext = contextResult.context;
+  }
+} else {
+  liveSigningContext = Object.freeze({
+    mode: "authority_only",
+    authorityConfig: Object.freeze({ ...signingConfig }),
+    authoritySigner: null,
+    executorSigner: null,
+    executorIdentity: null
+  });
+}
+process.stdout.write(`MNDe live receipt signing_mode=${liveSigningContext.mode}\n`);
+if (EXECUTOR_READINESS.signer?.destroy) {
+  process.once("exit", () => EXECUTOR_READINESS.signer.destroy());
 }
 
 // Ledger signing custody. Execution-ledger entries are always signed v2. In
@@ -498,7 +572,7 @@ if (LEDGER_RUNTIME.enabled) {
 async function signForDelivery(receipt) {
   if (SIGNING_MODE !== "custody") return { ok: true, receipt };
   if (signingConfigError) return { ok: false, reason_code: signingConfigError };
-  return signReceiptAdapter(receipt, signingConfig, { now: new Date().toISOString() });
+  return signReceiptAdapter(receipt, liveSigningContext, { now: new Date().toISOString() });
 }
 
 function testTimingHeaders(timings) {
@@ -579,7 +653,7 @@ function response(res, status, body, timings) {
 }
 
 async function persistRefusal(reason_code, extra = {}, timings = {}) {
-  const receipt = buildSidecarRefusalReceipt({
+  const builtReceipt = buildSidecarRefusalReceipt({
     raw_body: extra.raw_body ?? "",
     reason_code,
     policy_hash,
@@ -589,6 +663,9 @@ async function persistRefusal(reason_code, extra = {}, timings = {}) {
     request_hash: extra.request_hash ?? null,
     decision_hash: extra.decision_hash ?? null
   });
+  const signed = await signForDelivery(builtReceipt);
+  if (!signed.ok) return { ok: false, reason_code: signed.reason_code, receipt: null };
+  const receipt = signed.receipt;
   const queued = await receiptQueue.enqueue(receipt);
   if (!queued.ok) {
     counters.refused_overload += 1;
@@ -1530,7 +1607,11 @@ const server = http.createServer(async (req, res) => {
     const rh = params.get("receipt_hash");
     const selector = rid ? { receipt_id: rid } : (rh ? { receipt_hash: rh } : null);
     if (!selector) { response(res, 400, { ok: false, code: "ERR_LEDGER_PROOF_SELECTOR", message: "receipt_id or receipt_hash query param required" }); return; }
-    const out = await proofResponse(LEDGER_RUNTIME, selector, { trustedBundle: LEDGER_BUNDLE });
+    const out = await proofResponse(LEDGER_RUNTIME, selector, {
+      trustedBundle: LEDGER_BUNDLE,
+      executorEnvironmentId: EXECUTOR_READINESS.configured ? EXECUTOR_READINESS.environment_id : undefined,
+      expectedExecutorId: EXECUTOR_READINESS.configured ? EXECUTOR_READINESS.executor_id : undefined
+    });
     auditAuthority(pathname, authz, out.ok ? "ALLOW" : "REFUSE", out.ok ? `seq:${out.proof.entry.sequence}` : "proof", null, out.ok ? null : out.code);
     response(res, out.ok ? 200 : 404, out);
     return;

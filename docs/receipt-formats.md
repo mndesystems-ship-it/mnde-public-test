@@ -8,7 +8,8 @@ developer which format to produce and guarantees what stays verifiable.
 | Schema | Status | Role | Produced by |
 |---|---|---|---|
 | `mnde.pe.receipt.v1` | **Stable / canonical** | The v1 execution-authority receipt. New development targets this. | Policy engine (the default decision engine) |
-| `mnde.signed-receipt.v1` | **Stable / canonical** | Production custody signing envelope that wraps a canonical receipt. | `file-backed-production` / external-signer custody |
+| `mnde.signed-receipt.v2` | **Stable / canonical** | Explicit executor-and-authority custody envelope. | Executor-configured `file-backed-production` / external-signer custody |
+| `mnde.signed-receipt.v1` | **Stable / canonical** | Byte-compatible authority-only custody envelope. | Custody signing without executor identity |
 | `ecs.receipt.v2` | **Legacy — verify-only, feature-frozen** | The legacy GPU/compute-cost pipeline receipt. No new fields/features. Kept verifiable for historical receipts. | Legacy pipeline, only under `MNDE_DECISION_ENGINE=legacy` |
 
 Definitions:
@@ -24,10 +25,14 @@ Definitions:
 - Every schema above continues to verify offline through `tools/verify.mjs`
   (`node tools/verify.mjs <receipt.json>`), which auto-detects the schema and
   reports a `kind` (`policy-engine` / `custody-signed` / `pipeline`).
-- Conformance vectors for all three receipt schemas are locked in
-  `conformance/manifest.lock.json` and enforced by `npm run test:conformance`.
-  Reclassifying `ecs.receipt.v2` as legacy does **not** change its bytes or
-  invalidate any existing receipt.
+- Existing conformance vectors remain locked in `conformance/manifest.lock.json`
+  and enforced by `npm run test:conformance`; the executor-bound v2 process test
+  independently exercises live issuance and verification. Reclassifying
+  `ecs.receipt.v2` as legacy does **not** change historical bytes or invalidate
+  any existing receipt.
+- Executor-bound v2 structure, startup behavior, verification states, key-path
+  restrictions, and exact non-claims are documented in
+  [`executor-bound-receipts.md`](executor-bound-receipts.md).
 
 ## Operator migration note (v1 default change)
 

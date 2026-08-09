@@ -77,6 +77,8 @@ The repository also includes a committed demo authority under `authority/`. It i
 
 Receipts do not trust their own embedded key. The verifier checks the signed authority manifest first, then verifies the receipt with an authority-approved key. If keys or authority evidence are missing or invalid, MNDe refuses to start with a clear `ERR_RECEIPT_SIGNING_KEYS_*` or `ERR_AUTHORITY_MANIFEST_INVALID` error instead of crashing during the first decision.
 
+Optional executor identity produces explicit `executor_and_authority` live receipts with no authority-only fallback. Without executor configuration, authority-only receipt bytes remain identical to the existing v1 formats. See [executor-bound live receipts](docs/executor-bound-receipts.md) for configuration, verification, private-key path restrictions, and exact security claims.
+
 Production verification requires a stable MNDe-published authority bundle. Receipts are independently verifiable only when the verifier has the trusted authority manifest and root public key. Unknown authority IDs, unknown key IDs, expired keys, and invalid manifests fail closed.
 
 Desktop installers are not committed to this repository. Download release artifacts from GitHub Releases and verify their SHA-256 checksums before running them:
