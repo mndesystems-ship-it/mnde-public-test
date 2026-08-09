@@ -104,6 +104,10 @@ export function receiptForBinding(receipt) {
 
 export function receiptBinding(receipt) {
   if (!isPlainObject(receipt)) return { decision: null, requestIds: [], action: null, params: null, policyHash: null, policyVersion: null };
+  // Defense in depth: bindings always come from the (verified) inner receipt, so
+  // even a caller that hands us a raw custody envelope binds the inner receipt
+  // rather than the binding-less outer wrapper.
+  receipt = receiptForBinding(receipt);
   const dout = isPlainObject(receipt.decision_output) ? receipt.decision_output : {};
   let cr = null;
   if (typeof receipt.canonical_request === "string") {
@@ -330,7 +334,7 @@ export function createMndeExecutor(config = {}) {
     // offline-verified receipt whose OWN signed decision is ALLOW and which is
     // bound to this exact request (and expected policy, when declared). Fail closed
     // on any gap. This is the execution-firewall claim.
-    const authz = authorizeExecution({ receipt: receiptForBinding(decision.receipt), action, input, executionId: id, verified });
+    const authz = authorizeExecution({ receipt: decision.receipt, action, input, executionId: id, verified });
     if (!authz.ok) {
       // Always persist a DISTINCT refusal record — even when the sidecar's ALLOW
       // receipt was also stored — so an audit can tell the executor refused it

@@ -65,14 +65,14 @@ test("receiptBinding extracts decision/id/action from the inner custody receipt"
   assert.equal(b.policyHash, "ph-1");
 });
 
-test("receiptBinding on the RAW envelope (no unwrap) yields no bindings", () => {
-  // Proves the bug the unwrap fixes: without unwrapping, the outer envelope has
-  // no decision_output/canonical_request, so binding would fail closed.
+test("receiptBinding self-unwraps a custody envelope (defense in depth)", () => {
+  // receiptBinding unwraps internally too, so even a caller that hands it a raw
+  // custody envelope binds the inner receipt rather than the binding-less wrapper.
   const env = custodyEnvelope("exec-42", "deploy_service");
   const b = receiptBinding(env);
-  assert.equal(b.decision, null);
-  assert.equal(b.requestIds.length, 0);
-  assert.equal(b.action, null);
+  assert.equal(b.decision, "ALLOW");
+  assert.ok(b.requestIds.includes("exec-42"));
+  assert.equal(b.action, "deploy_service");
 });
 
 // P1 (191): the custody trust context is wired into the executor from config/env.
