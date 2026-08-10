@@ -100,13 +100,25 @@ function failClosedForward(name, outcome, code) {
 
 async function gateToolCall(id, params) {
   const name = params?.name;
-  const args = isPlainObject(params?.arguments) ? params.arguments : {};
+  if (!isPlainObject(params) || typeof name !== "string" || name.length === 0) {
+    sendError(id, -32602, "tools/call requires a non-empty string name");
+    return;
+  }
+  if (params.arguments !== undefined && !isPlainObject(params.arguments)) {
+    sendError(id, -32602, "tools/call arguments must be an object");
+    return;
+  }
+  const args = params.arguments ?? {};
+  // Forward only the exact tool name and argument object that the receipt binds.
+  // Unrecognized top-level fields are not authorization inputs and therefore
+  // must never reach an upstream implementation as hidden execution controls.
+  const boundParams = { name, arguments: args };
 
   // The gate. run() forwards to upstream and is reached ONLY on ALLOW.
   const outcome = await mnde.execute({
     action: name,
     input: args,
-    run: () => upstream.request("tools/call", params, upstreamTimeoutMs)
+    run: () => upstream.request("tools/call", boundParams, upstreamTimeoutMs)
   });
 
   if (!outcome.allowed) {
@@ -169,8 +181,8 @@ process.stdin.on("data", (chunk) => {
     Promise.resolve(handle(message)).catch((error) => log("handler error:", error?.message ?? String(error)));
   }
 });
-process.stdin.on("end", () => {
-  upstream.stop();
+process.stdin.on("end", async () => {
+  await upstream.stop();
   process.exit(0);
 });
 

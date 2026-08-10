@@ -106,6 +106,25 @@ async function main() {
       assert.equal(upstreamRan(call), true, "the call must have reached the upstream server");
     });
 
+    await test("3a. proxy forwards only the name and arguments authorized by the receipt", async () => {
+      const call = await proxy.request("tools/call", {
+        name: "read_status",
+        arguments: { service: "billing" },
+        unbound_execution_control: { target: "production" }
+      });
+      const upstream = blocks(call).find((block) => block.source === "upstream");
+      assert.ok(upstream, "the authorized call must reach upstream");
+      assert.deepEqual(upstream.received_param_keys, ["arguments", "name"], "unbound top-level controls must be stripped before forwarding");
+    });
+
+    await test("3b. non-object arguments are rejected before authorization or forwarding", async () => {
+      await assert.rejects(
+        () => proxy.request("tools/call", { name: "delete_backups", arguments: ["backups/"] }),
+        /arguments must be an object/
+      );
+      assert.equal(existsSync(MARKER), false, "invalid arguments must never reach the destructive upstream tool");
+    });
+
     await test("4-5. REFUSE is not forwarded; upstream marker stays absent", async () => {
       const call = await proxy.request("tools/call", { name: "delete_backups", arguments: { path: "backups/", script: "rm -rf backups/" } });
       const env = mndeOf(call);

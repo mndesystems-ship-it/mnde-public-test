@@ -30,7 +30,7 @@ import { join, resolve } from "node:path";
 import { reviewerRequest } from "../scripts/reviewer-request.mjs";
 import { verifyReceiptFile, verificationPassed } from "../tools/verify-receipt.mjs";
 import { verifyAnyReceiptFile } from "../tools/verify.mjs";
-import { isSignedReceiptEnvelope } from "../src/authority-signing/index.mjs";
+import { isSignedReceiptEnvelope, SIGNED_RECEIPT_SCHEMA } from "../src/authority-signing/index.mjs";
 import { canonicalizeJson, parseStrictJson } from "../shared/json.ts";
 import { resolveBearerToken, bearerAuthHeader } from "./bearer.mjs";
 
@@ -103,7 +103,7 @@ export function receiptForBinding(receipt) {
 }
 
 export function receiptBinding(receipt) {
-  if (!isPlainObject(receipt)) return { decision: null, requestIds: [], action: null, params: null, policyHash: null, policyVersion: null };
+  if (!isPlainObject(receipt)) return { decision: null, requestIds: [], action: null, params: null, subjectId: null, policyHash: null, policyVersion: null };
   // Defense in depth: bindings always come from the (verified) inner receipt, so
   // even a caller that hands us a raw custody envelope binds the inner receipt
   // rather than the binding-less outer wrapper.
@@ -152,6 +152,9 @@ export function receiptBinding(receipt) {
     requestIds,
     action,
     params,
+    subjectId: er
+      ? (typeof er?.actor?.user_id === "string" ? er.actor.user_id : null)
+      : (typeof cr?.principal?.id === "string" ? cr.principal.id : null),
     policyHash: dout.policy_hash ?? receipt.policy_hash ?? null,
     policyVersion: dout.policy_version ?? receipt.policy_version ?? null
   };
@@ -186,6 +189,7 @@ export function createMndeExecutor(config = {}) {
   // expects to be enforced, a receipt decided under any other policy is refused.
   const expectedPolicyHash = config.expectedPolicyHash ?? process.env.MNDE_EXECUTOR_EXPECTED_POLICY_HASH ?? null;
   const expectedPolicyVersion = config.expectedPolicyVersion ?? process.env.MNDE_EXECUTOR_EXPECTED_POLICY_VERSION ?? null;
+  const expectedSubjectId = config.expectedSubjectId ?? process.env.MNDE_EXECUTOR_EXPECTED_SUBJECT_ID ?? null;
   // Sent only when configured (env MNDE_SIDECAR_BEARER_TOKEN or config.bearerToken).
   const bearerToken = resolveBearerToken(config.bearerToken);
   // Optional published authority bundle for offline verification of custody-signed
@@ -197,6 +201,8 @@ export function createMndeExecutor(config = {}) {
   // could never verify and would (correctly but uselessly) always fail closed.
   const verifyTrustedRootFingerprint = config.verifyTrustedRootFingerprint ?? process.env.MNDE_VERIFY_TRUSTED_ROOT_FINGERPRINT ?? undefined;
   const verifyEnvironmentId = config.verifyEnvironmentId ?? process.env.MNDE_VERIFY_ENVIRONMENT_ID ?? undefined;
+  const verifyExpectedExecutorId = config.verifyExpectedExecutorId ?? process.env.MNDE_VERIFY_EXPECTED_EXECUTOR_ID ?? undefined;
+  const verifyRequireExecutor = config.verifyRequireExecutor === true || (typeof verifyExpectedExecutorId === "string" && verifyExpectedExecutorId.length > 0);
 
   mkdirSync(receiptsDir, { recursive: true });
 
@@ -215,7 +221,9 @@ export function createMndeExecutor(config = {}) {
       return (await verifyAnyReceiptFile(receiptPath, {
         authorityBundle: verifyAuthorityBundle,
         trustedRootFingerprint: verifyTrustedRootFingerprint,
-        environmentId: verifyEnvironmentId
+        environmentId: verifyEnvironmentId,
+        expectedExecutorId: verifyExpectedExecutorId,
+        requireExecutor: verifyRequireExecutor
       })).verified === true;
     } catch {
       return false;
@@ -228,6 +236,12 @@ export function createMndeExecutor(config = {}) {
   function authorizeExecution({ receipt, action, input, executionId, verified }) {
     if (!isPlainObject(receipt)) return { ok: false, reason: "ERR_NO_RECEIPT" };
     if (verified !== true) return { ok: false, reason: "ERR_RECEIPT_UNVERIFIED" };
+    // When an executor identity is required, raw legacy/PE receipts and
+    // authority-only custody v1 envelopes are not an acceptable downgrade. A
+    // verified executor layer exists only on mnde.signed-receipt.v2.
+    if (verifyRequireExecutor && receipt.schema_version !== SIGNED_RECEIPT_SCHEMA) {
+      return { ok: false, reason: "ERR_EXECUTOR_MISMATCH" };
+    }
     const b = receiptBinding(receipt);
     // The receipt's OWN signed decision must be ALLOW (not just the HTTP body).
     if (b.decision !== "ALLOW") return { ok: false, reason: "ERR_RECEIPT_DECISION_MISMATCH" };
@@ -241,6 +255,10 @@ export function createMndeExecutor(config = {}) {
     // and parameters we submitted.
     if (b.action == null || b.action !== action) return { ok: false, reason: "ERR_RECEIPT_ACTION_MISMATCH" };
     if (!jsonEqual(b.params ?? {}, isPlainObject(input) ? input : {})) return { ok: false, reason: "ERR_RECEIPT_ACTION_MISMATCH" };
+    // Optional subject binding. Bearer-authenticated deployments should set the
+    // expected mapped caller id explicitly; unauthenticated/local deployments
+    // may bind the configured tester identity the same way.
+    if (expectedSubjectId && b.subjectId !== expectedSubjectId) return { ok: false, reason: "ERR_SUBJECT_MISMATCH" };
     // Expected-policy binding (only when the caller declares one).
     if (expectedPolicyHash && b.policyHash !== expectedPolicyHash) return { ok: false, reason: "ERR_POLICY_MISMATCH" };
     if (expectedPolicyVersion && b.policyVersion !== expectedPolicyVersion) return { ok: false, reason: "ERR_POLICY_MISMATCH" };
@@ -391,7 +409,25 @@ export function createMndeExecutor(config = {}) {
     return { verified: verificationPassed(report), report };
   }
 
-  return { execute, wrapTool, verifyReceipt, config: { sidecarUrl, receiptsDir, testerId, installationId, timeoutMs, expectedPolicyHash, expectedPolicyVersion, verifyTrustedRootFingerprint, verifyEnvironmentId } };
+  return {
+    execute,
+    wrapTool,
+    verifyReceipt,
+    config: {
+      sidecarUrl,
+      receiptsDir,
+      testerId,
+      installationId,
+      timeoutMs,
+      expectedPolicyHash,
+      expectedPolicyVersion,
+      expectedSubjectId,
+      verifyTrustedRootFingerprint,
+      verifyEnvironmentId,
+      verifyExpectedExecutorId,
+      verifyRequireExecutor
+    }
+  };
 }
 
 export default createMndeExecutor;

@@ -24,6 +24,7 @@ const REAL_URL = "http://127.0.0.1:8806";
 const MOCK_PORT = 8807;
 const MOCK_URL = `http://127.0.0.1:${MOCK_PORT}`;
 const RECEIPTS_DIR = "./mnde-receipts/executor-fail-closed-tests";
+const REAL_ID = "fc-real-allow-001";
 
 rmSync(RECEIPTS_DIR, { recursive: true, force: true });
 
@@ -57,115 +58,226 @@ function mockSidecar(bodyForRequest) {
   };
 }
 
+async function executeAgainstMock(body, {
+  action = "read_status",
+  input = { service: "billing" },
+  executionId = REAL_ID,
+  executorConfig = {}
+} = {}) {
+  const mock = mockSidecar(() => structuredClone(body));
+  await mock.start();
+  try {
+    const exec = createMndeExecutor({ sidecarUrl: MOCK_URL, receiptsDir: RECEIPTS_DIR, timeoutMs: 2000, ...executorConfig });
+    let executorCallCount = 0;
+    const result = await exec.execute({
+      action,
+      input,
+      executionId,
+      run: async () => { executorCallCount += 1; return "DANGER"; }
+    });
+    return { result, executorCallCount };
+  } finally {
+    await mock.stop();
+  }
+}
+
 async function main() {
   console.log("MNDe Executor — strict fail-closed enforcement\n");
 
-  const sidecar = await startMndeSidecar({ url: REAL_URL, testerId: "EXEC-FC-001" });
+  const sidecar = await startMndeSidecar({
+    url: REAL_URL,
+    testerId: "EXEC-FC-001",
+    env: { MNDE_INLINE_REFUSAL_RECEIPTS: "1" }
+  });
   const real = createMndeExecutor({ sidecarUrl: REAL_URL, receiptsDir: RECEIPTS_DIR });
 
   // Capture a genuine, signed, offline-verifiable ALLOW receipt bound to a known
   // execution id + action. This is the material the replay/substitution attacks
   // below reuse.
   let capturedReceipt = null;
-  const REAL_ID = "fc-real-allow-001";
+  let capturedRefuseReceipt = null;
   try {
     await test("positive: a valid, request-bound ALLOW receipt DOES execute", async () => {
-      let ran = false;
-      const r = await real.execute({ action: "read_status", input: {}, executionId: REAL_ID, run: async () => { ran = true; return "ok"; } });
+      let executorCallCount = 0;
+      const r = await real.execute({ action: "read_status", input: { service: "billing" }, executionId: REAL_ID, run: async () => { executorCallCount += 1; return "ok"; } });
       assert.equal(r.decision, "ALLOW");
       assert.equal(r.executed, true, "a valid bound receipt must execute");
-      assert.equal(ran, true);
+      assert.equal(executorCallCount, 1, "valid authorization must execute exactly once");
       assert.equal(r.verified, true, "the receipt must verify offline");
       assert.ok(r.receipt, "receipt must be present");
       capturedReceipt = r.receipt;
+    });
+
+    await test("valid signed REFUSE does NOT execute", async () => {
+      let executorCallCount = 0;
+      const r = await real.execute({
+        action: "delete_backups",
+        input: { path: "backups/", script: "rm -rf backups/" },
+        executionId: "fc-real-refuse-001",
+        run: async () => { executorCallCount += 1; return "DANGER"; }
+      });
+      assert.equal(r.decision, "REFUSE");
+      assert.equal(r.executed, false);
+      assert.equal(executorCallCount, 0, "executorCallCount must remain zero on REFUSE");
+      assert.equal(r.verified, true);
+      capturedRefuseReceipt = r.receipt;
     });
   } finally {
     await sidecar.stop();
   }
 
   assert.ok(capturedReceipt, "could not capture a real receipt; cannot run replay attacks");
+  assert.ok(capturedRefuseReceipt, "could not capture a real REFUSE receipt");
 
   // (a) Bare ALLOW, NO receipt — the core fail-open bug.
   await test("(a) ALLOW with NO receipt does NOT execute", async () => {
-    const mock = mockSidecar(() => ({ decision: "ALLOW", reason_code: "OK_ALLOW" }));
-    await mock.start();
-    try {
-      const exec = createMndeExecutor({ sidecarUrl: MOCK_URL, receiptsDir: RECEIPTS_DIR, timeoutMs: 2000 });
-      let ran = false;
-      const r = await exec.execute({ action: "read_status", input: {}, run: async () => { ran = true; return "DANGER"; } });
-      assert.equal(ran, false, "a bare ALLOW with no receipt must NOT execute");
-      assert.equal(r.executed, false);
-      assert.equal(r.decision, "REFUSE");
-      assert.equal(r.failClosed, true);
-      assert.equal(r.reason, "ERR_NO_RECEIPT");
-    } finally {
-      await mock.stop();
-    }
+    const { result: r, executorCallCount } = await executeAgainstMock({ decision: "ALLOW", reason_code: "OK_ALLOW" });
+    assert.equal(executorCallCount, 0, "executorCallCount must remain zero without a receipt");
+    assert.equal(r.executed, false);
+    assert.equal(r.decision, "REFUSE");
+    assert.equal(r.failClosed, true);
+    assert.equal(r.reason, "ERR_NO_RECEIPT");
   });
 
   // (b) A genuinely valid receipt, but for a DIFFERENT execution id (replay).
   await test("(b) a VALID receipt replayed under a different execution id does NOT execute", async () => {
-    const mock = mockSidecar(() => ({ decision: "ALLOW", reason_code: "OK_ALLOW", receipt: capturedReceipt }));
-    await mock.start();
-    try {
-      const exec = createMndeExecutor({ sidecarUrl: MOCK_URL, receiptsDir: RECEIPTS_DIR, timeoutMs: 2000 });
-      let ran = false;
-      // Different execution id than the captured receipt was issued for.
-      const r = await exec.execute({ action: "read_status", input: {}, executionId: "fc-replay-999", run: async () => { ran = true; return "DANGER"; } });
-      assert.equal(ran, false, "a replayed receipt (wrong execution id) must NOT execute");
-      assert.equal(r.executed, false);
-      assert.equal(r.decision, "REFUSE");
-      assert.equal(r.reason, "ERR_RECEIPT_REQUEST_MISMATCH");
-    } finally {
-      await mock.stop();
-    }
+    const { result: r, executorCallCount } = await executeAgainstMock(
+      { decision: "ALLOW", reason_code: "OK_ALLOW", receipt: capturedReceipt },
+      { executionId: "fc-replay-999" }
+    );
+    assert.equal(executorCallCount, 0, "executorCallCount must remain zero for a receipt from another request");
+    assert.equal(r.executed, false);
+    assert.equal(r.decision, "REFUSE");
+    assert.equal(r.reason, "ERR_RECEIPT_REQUEST_MISMATCH");
   });
 
   // (c) A valid receipt for the right execution id but the WRONG action.
   await test("(c) a VALID receipt bound to a different action does NOT execute", async () => {
-    const mock = mockSidecar(() => ({ decision: "ALLOW", reason_code: "OK_ALLOW", receipt: capturedReceipt }));
-    await mock.start();
-    try {
-      const exec = createMndeExecutor({ sidecarUrl: MOCK_URL, receiptsDir: RECEIPTS_DIR, timeoutMs: 2000 });
-      let ran = false;
-      // Matching execution id, but the captured receipt is for read_status — ask
-      // to delete backups instead.
-      const r = await exec.execute({ action: "delete_backups", input: { path: "backups/" }, executionId: REAL_ID, run: async () => { ran = true; return "DELETED"; } });
-      assert.equal(ran, false, "a receipt bound to a different action must NOT execute");
-      assert.equal(r.executed, false);
-      assert.equal(r.decision, "REFUSE");
-      assert.equal(r.reason, "ERR_RECEIPT_ACTION_MISMATCH");
-    } finally {
-      await mock.stop();
-    }
+    const { result: r, executorCallCount } = await executeAgainstMock(
+      { decision: "ALLOW", reason_code: "OK_ALLOW", receipt: capturedReceipt },
+      { action: "delete_backups", input: { path: "backups/" } }
+    );
+    assert.equal(executorCallCount, 0, "executorCallCount must remain zero for a different action");
+    assert.equal(r.executed, false);
+    assert.equal(r.decision, "REFUSE");
+    assert.equal(r.reason, "ERR_RECEIPT_ACTION_MISMATCH");
   });
 
   // (d) ALLOW with a present but unverifiable (forged) receipt.
+  const forged = JSON.parse(JSON.stringify(capturedReceipt));
+  if (forged.signature) forged.signature.value = "0".repeat((forged.signature.value || "").length || 64);
+  if (forged.verifiable_signature) forged.verifiable_signature.value = "0".repeat((forged.verifiable_signature.value || "").length || 128);
   await test("(d) ALLOW with an unverifiable receipt does NOT execute", async () => {
-    const forged = JSON.parse(JSON.stringify(capturedReceipt));
-    // Corrupt the signature so offline verification fails.
-    if (forged.signature) forged.signature.value = "0".repeat((forged.signature.value || "").length || 64);
-    if (forged.verifiable_signature) forged.verifiable_signature.value = "0".repeat((forged.verifiable_signature.value || "").length || 128);
-    const mock = mockSidecar(() => ({ decision: "ALLOW", reason_code: "OK_ALLOW", receipt: forged }));
-    await mock.start();
-    try {
-      const exec = createMndeExecutor({ sidecarUrl: MOCK_URL, receiptsDir: RECEIPTS_DIR, timeoutMs: 2000 });
-      let ran = false;
-      const r = await exec.execute({ action: "read_status", input: {}, executionId: REAL_ID, run: async () => { ran = true; return "DANGER"; } });
-      assert.equal(ran, false, "an unverifiable receipt must NOT execute");
-      assert.equal(r.executed, false);
-      assert.equal(r.decision, "REFUSE");
-      assert.equal(r.reason, "ERR_RECEIPT_UNVERIFIED");
-      // A distinct fail-closed refusal record must be written even though a
-      // receipt was supplied — so audit can tell the executor refused it.
-      assert.ok(r.receiptPath && /failclosed-/.test(r.receiptPath), "a fail-closed refusal record must be persisted");
-      const record = JSON.parse(readFileSync(r.receiptPath, "utf8"));
-      assert.equal(record.mnde_failclosed, true);
-      assert.equal(record.reason, "ERR_RECEIPT_UNVERIFIED");
-      assert.ok(record.supplied_receipt_path, "refusal record must reference the supplied receipt");
-    } finally {
-      await mock.stop();
-    }
+    const { result: r, executorCallCount } = await executeAgainstMock({ decision: "ALLOW", reason_code: "OK_ALLOW", receipt: forged });
+    assert.equal(executorCallCount, 0, "executorCallCount must remain zero for an invalid signature");
+    assert.equal(r.executed, false);
+    assert.equal(r.decision, "REFUSE");
+    assert.equal(r.reason, "ERR_RECEIPT_UNVERIFIED");
+    // A distinct fail-closed refusal record must be written even though a
+    // receipt was supplied — so audit can tell the executor refused it.
+    assert.ok(r.receiptPath && /failclosed-/.test(r.receiptPath), "a fail-closed refusal record must be persisted");
+    const record = JSON.parse(readFileSync(r.receiptPath, "utf8"));
+    assert.equal(record.mnde_failclosed, true);
+    assert.equal(record.reason, "ERR_RECEIPT_UNVERIFIED");
+    assert.ok(record.supplied_receipt_path, "refusal record must reference the supplied receipt");
+  });
+
+  await test("malformed receipt does NOT execute", async () => {
+    const { result: r, executorCallCount } = await executeAgainstMock({ decision: "ALLOW", receipt: {} });
+    assert.equal(executorCallCount, 0);
+    assert.equal(r.reason, "ERR_RECEIPT_UNVERIFIED");
+  });
+
+  await test("unknown signing key does NOT execute", async () => {
+    const unknownKey = structuredClone(capturedReceipt);
+    const signature = unknownKey.verifiable_signature ?? unknownKey.signature;
+    signature.key_id = "unknown-receipt-key";
+    const { result: r, executorCallCount } = await executeAgainstMock({ decision: "ALLOW", receipt: unknownKey });
+    assert.equal(executorCallCount, 0);
+    assert.equal(r.reason, "ERR_RECEIPT_UNVERIFIED");
+  });
+
+  await test("request arguments changed after authorization do NOT execute", async () => {
+    const { result: r, executorCallCount } = await executeAgainstMock(
+      { decision: "ALLOW", receipt: capturedReceipt },
+      { input: { service: "payments" } }
+    );
+    assert.equal(executorCallCount, 0);
+    assert.equal(r.reason, "ERR_RECEIPT_ACTION_MISMATCH");
+  });
+
+  await test("target/resource changed after authorization does NOT execute", async () => {
+    const { result: r, executorCallCount } = await executeAgainstMock(
+      { decision: "ALLOW", receipt: capturedReceipt },
+      { input: { service: "production-control-plane" } }
+    );
+    assert.equal(executorCallCount, 0);
+    assert.equal(r.reason, "ERR_RECEIPT_ACTION_MISMATCH");
+  });
+
+  await test("caller/subject mismatch does NOT execute", async () => {
+    const { result: r, executorCallCount } = await executeAgainstMock(
+      { decision: "ALLOW", receipt: capturedReceipt },
+      { executorConfig: { expectedSubjectId: "different-subject" } }
+    );
+    assert.equal(executorCallCount, 0);
+    assert.equal(r.reason, "ERR_SUBJECT_MISMATCH");
+  });
+
+  await test("required executor identity rejects a raw receipt with no executor layer", async () => {
+    const { result: r, executorCallCount } = await executeAgainstMock(
+      { decision: "ALLOW", receipt: capturedReceipt },
+      { executorConfig: { verifyExpectedExecutorId: "executor-42" } }
+    );
+    assert.equal(executorCallCount, 0);
+    assert.equal(r.reason, "ERR_EXECUTOR_MISMATCH");
+  });
+
+  await test("policy mismatch does NOT execute", async () => {
+    const { result: r, executorCallCount } = await executeAgainstMock(
+      { decision: "ALLOW", receipt: capturedReceipt },
+      { executorConfig: { expectedPolicyHash: "not-the-authorized-policy" } }
+    );
+    assert.equal(executorCallCount, 0);
+    assert.equal(r.reason, "ERR_POLICY_MISMATCH");
+  });
+
+  await test("HTTP ALLOW carrying a valid signed REFUSE does NOT execute", async () => {
+    const { result: r, executorCallCount } = await executeAgainstMock(
+      { decision: "ALLOW", receipt: capturedRefuseReceipt },
+      {
+        action: "delete_backups",
+        input: { path: "backups/", script: "rm -rf backups/" },
+        executionId: "fc-real-refuse-001"
+      }
+    );
+    assert.equal(executorCallCount, 0);
+    assert.equal(r.reason, "ERR_RECEIPT_DECISION_MISMATCH");
+  });
+
+  for (const decision of ["REVIEW", "INDETERMINATE", "UNKNOWN"]) {
+    await test(`${decision} response does NOT execute`, async () => {
+      const { result: r, executorCallCount } = await executeAgainstMock({ decision, receipt: capturedReceipt });
+      assert.equal(executorCallCount, 0);
+      assert.equal(r.reason, "ERR_MALFORMED_DECISION");
+    });
+  }
+
+  await test("malformed canonical payload fails verification and does NOT execute", async () => {
+    const malformedCanonical = structuredClone(capturedReceipt);
+    malformedCanonical.canonical_request = "{not-json";
+    const { result: r, executorCallCount } = await executeAgainstMock({ decision: "ALLOW", receipt: malformedCanonical });
+    assert.equal(executorCallCount, 0);
+    assert.equal(r.reason, "ERR_RECEIPT_UNVERIFIED");
+  });
+
+  await test("legacy verify:false cannot bypass mandatory verification", async () => {
+    const { result: r, executorCallCount } = await executeAgainstMock(
+      { decision: "ALLOW", receipt: forged },
+      { executorConfig: { verify: false } }
+    );
+    assert.equal(executorCallCount, 0);
+    assert.equal(r.reason, "ERR_RECEIPT_UNVERIFIED");
   });
 
   // (e, f) Policy-engine path — the SAME gate, a different receipt shape. The
@@ -182,10 +294,10 @@ async function main() {
   try {
     await test("(e) policy-engine: a valid, request-bound ALLOW receipt DOES execute", async () => {
       const exec = createMndeExecutor({ sidecarUrl: PE_URL, receiptsDir: RECEIPTS_DIR });
-      let ran = false;
-      const r = await exec.execute({ action: "read_status", input: {}, executionId: PE_ID, run: async () => { ran = true; return "ok"; } });
+      let executorCallCount = 0;
+      const r = await exec.execute({ action: "read_status", input: {}, executionId: PE_ID, run: async () => { executorCallCount += 1; return "ok"; } });
       assert.equal(r.executed, true, "a valid PE receipt must execute");
-      assert.equal(ran, true);
+      assert.equal(executorCallCount, 1);
       assert.equal(r.verified, true);
       peReceipt = r.receipt;
     });
@@ -199,9 +311,9 @@ async function main() {
     await mock.start();
     try {
       const exec = createMndeExecutor({ sidecarUrl: MOCK_URL, receiptsDir: RECEIPTS_DIR, timeoutMs: 2000 });
-      let ran = false;
-      const r = await exec.execute({ action: "read_status", input: {}, executionId: "fc-pe-replay-999", run: async () => { ran = true; return "DANGER"; } });
-      assert.equal(ran, false, "a replayed PE receipt (wrong execution id) must NOT execute");
+      let executorCallCount = 0;
+      const r = await exec.execute({ action: "read_status", input: {}, executionId: "fc-pe-replay-999", run: async () => { executorCallCount += 1; return "DANGER"; } });
+      assert.equal(executorCallCount, 0, "a replayed PE receipt (wrong execution id) must NOT execute");
       assert.equal(r.executed, false);
       assert.equal(r.decision, "REFUSE");
       assert.equal(r.reason, "ERR_RECEIPT_REQUEST_MISMATCH");

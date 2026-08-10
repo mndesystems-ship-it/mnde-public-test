@@ -23,6 +23,7 @@ function innerReceipt(executionId, tool) {
   const canonical = JSON.stringify({
     execution_request: {
       request_id: executionId,
+      actor: { user_id: "subject-1" },
       release_request: { execution_id: executionId },
       tool_calls: [{ priority: 1, tool }]
     }
@@ -62,6 +63,7 @@ test("receiptBinding extracts decision/id/action from the inner custody receipt"
   assert.equal(b.decision, "ALLOW", "inner signed decision must surface");
   assert.ok(b.requestIds.includes("exec-42"), "inner execution id must surface");
   assert.equal(b.action, "deploy_service", "inner action must surface");
+  assert.equal(b.subjectId, "subject-1");
   assert.equal(b.policyHash, "ph-1");
 });
 
@@ -81,10 +83,15 @@ test("executor forwards custody trust context (root fingerprint + environment id
     sidecarUrl: "http://127.0.0.1:1",
     receiptsDir: "./mnde-receipts/custody-binding-test",
     verifyTrustedRootFingerprint: "root-fp-abc",
-    verifyEnvironmentId: "prod-eu"
+    verifyEnvironmentId: "prod-eu",
+    verifyExpectedExecutorId: "executor-42",
+    expectedSubjectId: "subject-1"
   });
   assert.equal(exec.config.verifyTrustedRootFingerprint, "root-fp-abc");
   assert.equal(exec.config.verifyEnvironmentId, "prod-eu");
+  assert.equal(exec.config.verifyExpectedExecutorId, "executor-42");
+  assert.equal(exec.config.verifyRequireExecutor, true, "an expected executor id must reject authority-only envelopes");
+  assert.equal(exec.config.expectedSubjectId, "subject-1");
 });
 
 if (failures > 0) {
