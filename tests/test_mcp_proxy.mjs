@@ -81,6 +81,25 @@ async function main() {
     await test("3. ALLOW forwards the call to upstream", async () => {
       const call = await proxy.request("tools/call", { name: "read_status", arguments: { service: "billing" } });
       allowEnv = mndeOf(call);
+      
+      // Instrument full diagnostic state for transient failure diagnosis
+      if (call.isError !== false) {
+        const errorDetails = {
+          call_isError: call.isError,
+          mnde_decision: allowEnv?.decision,
+          mnde_forwarded: allowEnv?.forwarded,
+          mnde_upstreamError: allowEnv?.upstreamError,
+          mnde_reason: allowEnv?.reason,
+          mnde_failClosed: allowEnv?.failClosed,
+          upstream_ran: upstreamRan(call),
+          proxy_stderr: proxy.getStderr(),
+          call_content: JSON.stringify(call.content, null, 2)
+        };
+        throw new Error(
+          `call.isError was ${call.isError} (expected false). Diagnostics: ${JSON.stringify(errorDetails, null, 2)}`
+        );
+      }
+      
       assert.equal(call.isError, false);
       assert.equal(allowEnv.decision, "ALLOW");
       assert.equal(allowEnv.forwarded, true);
