@@ -94,6 +94,8 @@
     "test:signed-result-codes": "node ./tests/test_signed_result_codes.mjs",
     "test:executor": "node ./tests/test_executor.mjs",
     "test:executor-credential": "node ./tests/test_executor_credential.mjs",
+    "test:executor-custody-binding": "node ./tests/test_executor_custody_binding.mjs",
+    "test:executor-fail-closed": "node ./tests/test_executor_fail_closed.mjs",
     "test:executor-identity-hostile": "node ./tests/test_executor_identity_hostile.mjs",
     "test:executor-identity-signing": "node ./tests/test_executor_identity_signing.mjs",
     "test:executor-key-path-security": "node ./tests/test_executor_key_path_security.mjs",

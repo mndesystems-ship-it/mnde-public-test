@@ -98,6 +98,14 @@ async function main() {
       assert.equal(verificationPassed(verifyReceiptFile(env.receiptPath)), true);
     });
 
+    await test("non-object tool arguments are rejected before the protected tool can run", async () => {
+      await assert.rejects(
+        () => client.request("tools/call", { name: "delete_backups", arguments: ["backups/"] }),
+        /arguments must be an object/
+      );
+      assert.equal(existsSync(MARKER), false, "invalid arguments must never reach the destructive tool");
+    });
+
     await test("unknown tool returns a JSON-RPC error", async () => {
       await assert.rejects(() => client.request("tools/call", { name: "no_such_tool", arguments: {} }));
     });

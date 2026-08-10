@@ -35,8 +35,9 @@ export function createStdioClient(command, args, env = {}, options = {}) {
         continue;
       }
       if (message.id !== undefined && message.id !== null && pending.has(message.id)) {
-        const { resolve, reject } = pending.get(message.id);
+        const { resolve, reject, timer } = pending.get(message.id);
         pending.delete(message.id);
+        clearTimeout(timer);
         if (message.error) reject(new Error(message.error.message));
         else resolve(message.result);
       } else if (typeof options.onUnmatched === "function") {
@@ -46,39 +47,85 @@ export function createStdioClient(command, args, env = {}, options = {}) {
     }
   });
 
+  function rejectPending(error) {
+    for (const [, { reject, timer }] of pending) {
+      clearTimeout(timer);
+      reject(error);
+    }
+    pending.clear();
+  }
+
+  child.on("error", (error) => {
+    closed = true;
+    rejectPending(error);
+  });
+
   child.on("exit", (code) => {
     closed = true;
     const error = new Error(`process exited (code ${code})`);
-    for (const [, { reject }] of pending) reject(error);
-    pending.clear();
+    rejectPending(error);
   });
 
   function request(method, params, timeoutMs = 15_000) {
     if (closed) return Promise.reject(new Error("process is not running"));
     const id = nextId++;
     return new Promise((resolve, reject) => {
-      pending.set(id, { resolve, reject });
-      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         if (pending.has(id)) {
           pending.delete(id);
           reject(new Error(`MCP request timed out: ${method}\n${stderr}`));
         }
       }, timeoutMs);
+      pending.set(id, { resolve, reject, timer });
+      try {
+        child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`, (error) => {
+          if (!error || !pending.has(id)) return;
+          pending.delete(id);
+          clearTimeout(timer);
+          reject(error);
+        });
+      } catch (error) {
+        pending.delete(id);
+        clearTimeout(timer);
+        reject(error);
+      }
     });
   }
 
   function notify(method, params) {
+    if (closed) return;
     child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
   }
 
   async function stop() {
-    try {
-      child.stdin.end();
-    } catch {
-      /* already closed */
-    }
-    child.kill();
+    if (closed) return;
+    await new Promise((resolveStop) => {
+      let finished = false;
+      let terminateTimer;
+      let forceTimer;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(terminateTimer);
+        clearTimeout(forceTimer);
+        resolveStop();
+      };
+      child.once("exit", finish);
+      terminateTimer = setTimeout(() => {
+        if (!closed) child.kill();
+      }, 250);
+      forceTimer = setTimeout(() => {
+        if (!closed) child.kill();
+        finish();
+      }, 2000);
+      terminateTimer.unref();
+      forceTimer.unref();
+      try {
+        child.stdin.end();
+      } catch {
+        child.kill();
+      }
+    });
   }
 
   return { request, notify, stop, getStderr: () => stderr };

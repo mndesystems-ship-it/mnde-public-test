@@ -23,6 +23,8 @@
   "test:execution-result",
   "test:executor",
   "test:executor-credential",
+  "test:executor-custody-binding",
+  "test:executor-fail-closed",
   "test:executor-identity-hostile",
   "test:executor-identity-signing",
   "test:executor-key-path-security",
