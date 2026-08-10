@@ -89,6 +89,7 @@
     "executor-demo": "node ./scripts/executor-demo.mjs",
     "test:execution-gate": "node ./tests/test_execution_gate.mjs",
     "test:execution-gate-signing": "node ./tests/test_execution_gate_signing.mjs",
+    "test:execution-grant": "node ./tests/test_execution_grant.mjs",
     "test:execution-ledger": "node ./tests/test_execution_ledger.mjs",
     "test:ledger-merkle": "node ./tests/test_ledger_merkle.mjs",
     "test:ledger-anchor": "node ./tests/test_ledger_anchor.mjs",
