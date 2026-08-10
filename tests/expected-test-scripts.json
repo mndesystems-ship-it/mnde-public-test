@@ -19,6 +19,7 @@
   "test:event-import",
   "test:execution-gate",
   "test:execution-gate-signing",
+  "test:execution-grant",
   "test:execution-id-dedup",
   "test:execution-ledger",
   "test:execution-result",
