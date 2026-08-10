@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { reviewerRequest } from "../scripts/reviewer-request.mjs";
 import { verifyReceiptFile, verificationPassed } from "./verify-receipt.mjs";
+import { bootstrapReceiptKeys } from "../scripts/bootstrap_dev_receipt_keys.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const artifactsRoot = join(repoRoot, "reviewer-kit", "artifacts");
@@ -16,6 +17,8 @@ const sidecarUrl = process.env.MNDE_SIDECAR_URL ?? "http://127.0.0.1:8787";
 const testerId = process.env.MNDE_TESTER_ID ?? readTesterIdentity().tester_id ?? "TESTER-UNASSIGNED";
 const installationId = process.env.MNDE_INSTALLATION_ID ?? readTesterIdentity().installation_id ?? "INSTALLATION-UNASSIGNED";
 let sidecarProcess = null;
+let sidecarStderrBuf = "";
+const sidecarPidFile = join(repoRoot, "reviewer-kit", ".sidecar.pid");
 
 function readTesterIdentity() {
   try {
@@ -63,17 +66,34 @@ async function httpJson(path, { method = "GET", body, headers = {} } = {}) {
   return { status: response.status, body: parsed };
 }
 
+function readSidecarStderr() {
+  const text = sidecarStderrBuf.trim();
+  if (!text) return "";
+  return `: ${text.split("\n").filter(Boolean).slice(-3).join(" | ")}`;
+}
+
 async function waitReady() {
-  const deadline = Date.now() + 20_000;
+  const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
+    // Fail fast with the real cause: if the spawned sidecar has already exited
+    // (e.g. it refused to start because required state was missing), keep
+    // polling a dead process no longer — surface its stderr instead of the
+    // misleading "readiness timed out" that only shows up 20s later.
+    if (sidecarProcess && sidecarProcess.exitCode !== null) {
+      throw new Error(`sidecar exited during startup (code ${sidecarProcess.exitCode})${readSidecarStderr()}`);
+    }
     try {
       const ready = await httpJson("/readyz");
       if (ready.body?.ok === true) return;
     } catch {
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      // not accepting connections yet — fall through to the shared backoff
     }
+    // Always back off between polls. Previously the delay lived only in the
+    // catch branch, so a sidecar answering /readyz with {ok:false} while still
+    // booting was hammered in a tight loop during its slowest window.
+    await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  throw new Error("sidecar readiness timed out");
+  throw new Error(`sidecar readiness timed out after 30s${readSidecarStderr()}`);
 }
 
 async function assertPortFree() {
@@ -83,6 +103,68 @@ async function assertPortFree() {
   } catch (error) {
     if (String(error.message).includes("already in use")) throw error;
   }
+}
+
+function ensureBootstrap() {
+  // The local sidecar refuses to start unless a signed authority manifest and
+  // receipt-signing keypair already exist on disk — it fails closed with
+  // ERR_AUTHORITY_MANIFEST_INVALID and never binds its port. It does NOT
+  // self-bootstrap. Generate that state here (idempotently: an existing, valid
+  // keypair is left untouched) so a genuine fresh clone needs no manual
+  // `npm run tester:init` first. This is what makes `npm run reviewer-kit` a
+  // true one-command proof on a cold clone.
+  const result = bootstrapReceiptKeys();
+  console.log(result.message);
+}
+
+async function reapStaleSidecar() {
+  // A prior run that died before shutdown can leave its sidecar holding the
+  // port, failing every subsequent run with "already in use". Reap it — but
+  // only a sidecar THIS tool spawned, identified by the pid file we wrote, and
+  // only when it is actually still holding the port. Never kill an arbitrary
+  // process bound to the port; assertPortFree() surfaces that case instead.
+  let portOccupied = false;
+  try {
+    await httpJson("/healthz");
+    portOccupied = true;
+  } catch {
+    portOccupied = false;
+  }
+  let pid = NaN;
+  try {
+    pid = Number.parseInt(String(readFileSync(sidecarPidFile, "utf8")).trim(), 10);
+  } catch {
+    return;
+  }
+  let alive = Number.isInteger(pid) && pid > 0;
+  if (alive) {
+    try {
+      process.kill(pid, 0); // signal 0 only checks liveness; throws if gone
+    } catch {
+      alive = false;
+    }
+  }
+  if (!portOccupied || !alive) {
+    // Nothing of ours is holding the port; drop the stale pid file and move on.
+    rmSync(sidecarPidFile, { force: true });
+    return;
+  }
+  try {
+    process.kill(pid);
+    console.log(`Reaped orphaned reviewer-kit sidecar (pid ${pid}) holding ${sidecarUrl}.`);
+  } catch {
+    // best effort — assertPortFree() will still catch a port that stays busy
+  }
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    try {
+      await httpJson("/healthz");
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    } catch {
+      break;
+    }
+  }
+  rmSync(sidecarPidFile, { force: true });
 }
 
 function startSidecar() {
@@ -110,6 +192,7 @@ function startSidecar() {
     // non-default port actually moves the sidecar (not just the health check).
     MNDE_BIND_PORT: new URL(sidecarUrl).port || "8787"
   };
+  sidecarStderrBuf = "";
   sidecarProcess = spawn(process.execPath, ["mnde-local-sidecar.mjs"], {
     cwd: repoRoot,
     env,
@@ -117,10 +200,14 @@ function startSidecar() {
     windowsHide: true
   });
   sidecarProcess.stderr?.on("data", (chunk) => {
+    sidecarStderrBuf += chunk.toString();
     writeFileSync(stderrPath, chunk, { flag: "a" });
   });
   writeFileSync(stdoutPath, "", "utf8");
   writeFileSync(join(logsRoot, "sidecar.pid"), String(sidecarProcess.pid), "utf8");
+  // Persistent pid file (survives cleanArtifacts) so a later run can reap this
+  // sidecar if we die before stopSidecar() runs. See reapStaleSidecar().
+  writeFileSync(sidecarPidFile, String(sidecarProcess.pid), "utf8");
 }
 
 async function stopSidecar() {
@@ -149,6 +236,7 @@ async function stopSidecar() {
       await httpJson("/healthz");
       await new Promise((resolve) => setTimeout(resolve, 250));
     } catch {
+      rmSync(sidecarPidFile, { force: true });
       return;
     }
   }
@@ -263,6 +351,8 @@ async function ensureMissingAuthorityFails() {
 
 async function main() {
   cleanArtifacts();
+  ensureBootstrap();
+  await reapStaleSidecar();
   await assertPortFree();
   startSidecar();
   try {
