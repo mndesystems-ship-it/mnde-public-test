@@ -68,6 +68,7 @@
     "test:proxy-auth": "node ./tests/test_proxy_auth.mjs",
     "test:custody": "node ./tests/test_custody.mjs",
     "test:engine-default": "node ./tests/test_engine_default.mjs",
+    "test:event-import": "node ./tests/test_event_import_foundation.mjs",
     "test:production-posture": "node ./tests/test_production_posture.mjs",
     "test:production-signing": "node ./tests/test_production_signing.mjs",
     "test:dashboard": "node ./tests/test_dashboard.mjs",
