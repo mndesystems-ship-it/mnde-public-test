@@ -81,10 +81,48 @@ async function main() {
     await test("3. ALLOW forwards the call to upstream", async () => {
       const call = await proxy.request("tools/call", { name: "read_status", arguments: { service: "billing" } });
       allowEnv = mndeOf(call);
+
+      // Instrument full diagnostic state for transient failure diagnosis
+      if (call.isError !== false) {
+        const errorDetails = {
+          call_isError: call.isError,
+          mnde_decision: allowEnv?.decision,
+          mnde_forwarded: allowEnv?.forwarded,
+          mnde_upstreamError: allowEnv?.upstreamError,
+          mnde_reason: allowEnv?.reason,
+          mnde_failClosed: allowEnv?.failClosed,
+          upstream_ran: upstreamRan(call),
+          proxy_stderr: proxy.getStderr(),
+          call_content: JSON.stringify(call.content, null, 2)
+        };
+        throw new Error(
+          `call.isError was ${call.isError} (expected false). Diagnostics: ${JSON.stringify(errorDetails, null, 2)}`
+        );
+      }
+
       assert.equal(call.isError, false);
       assert.equal(allowEnv.decision, "ALLOW");
       assert.equal(allowEnv.forwarded, true);
       assert.equal(upstreamRan(call), true, "the call must have reached the upstream server");
+    });
+
+    await test("3a. proxy forwards only the name and arguments authorized by the receipt", async () => {
+      const call = await proxy.request("tools/call", {
+        name: "read_status",
+        arguments: { service: "billing" },
+        unbound_execution_control: { target: "production" }
+      });
+      const upstream = blocks(call).find((block) => block.source === "upstream");
+      assert.ok(upstream, "the authorized call must reach upstream");
+      assert.deepEqual(upstream.received_param_keys, ["arguments", "name"], "unbound top-level controls must be stripped before forwarding");
+    });
+
+    await test("3b. non-object arguments are rejected before authorization or forwarding", async () => {
+      await assert.rejects(
+        () => proxy.request("tools/call", { name: "delete_backups", arguments: ["backups/"] }),
+        /arguments must be an object/
+      );
+      assert.equal(existsSync(MARKER), false, "invalid arguments must never reach the destructive upstream tool");
     });
 
     await test("4-5. REFUSE is not forwarded; upstream marker stays absent", async () => {

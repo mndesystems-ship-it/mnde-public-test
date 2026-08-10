@@ -2,7 +2,7 @@
 
 Authorize a function call through MNDe before running it.
 
-Wrap a function. MNDe is asked first. `ALLOW` runs it; `REFUSE` does not. The call returns a signed receipt either way.
+Wrap a function. MNDe is asked first. The wrapped function runs **only** when MNDe returns a receipt that verifies offline, carries an `ALLOW` decision in its own signed body, and is bound to this exact request (execution id + action + parameters, and the expected policy when you declare one). A bare `ALLOW` string is never sufficient — no receipt, an unverifiable receipt, or a receipt issued for a different request fails closed and does not execute. The call returns a signed receipt either way.
 
 ```js
 import { createMndeExecutor } from "@mnde/executor";
@@ -20,11 +20,15 @@ const result = await mnde.execute({
 
 ```
 Ask MNDe first.
-If ALLOW, execute.
-If REFUSE, do not execute.
-Return and store the receipt when the sidecar returns one.
-Fail closed on anything ambiguous.
+Execute ONLY if the receipt: is present, verifies offline, has a signed ALLOW
+  decision, and is bound to this exact request (execution id + action +
+  parameters, plus the expected policy hash/version when configured).
+Otherwise — REFUSE, missing/unverifiable/mismatched receipt, unreachable sidecar,
+  malformed decision, timeout — do NOT execute.
+Return and store the receipt (or a fail-closed record) either way.
 ```
+
+Optional `expectedPolicyHash` / `expectedPolicyVersion` (or `MNDE_EXECUTOR_EXPECTED_POLICY_HASH` / `MNDE_EXECUTOR_EXPECTED_POLICY_VERSION`) reject a receipt decided under any other policy. Offline verification is mandatory and cannot be disabled.
 
 ## Result shape
 
@@ -54,7 +58,12 @@ Fail closed on anything ambiguous.
 | `receiptsDir` | `./mnde-receipts` | where receipts are written |
 | `testerId` / `installationId` | env or `*-UNASSIGNED` | identity stamped into requests |
 | `timeoutMs` | `5000` | decision request timeout (then fail closed) |
-| `verify` | `true` | verify each stored receipt offline |
+| `expectedPolicyHash` / `expectedPolicyVersion` | unset | require the signed receipt to name this policy |
+| `expectedSubjectId` | unset | require the signed request subject/caller to match |
+| `verifyAuthorityBundle` | unset | published authority-bundle path for custody receipts |
+| `verifyTrustedRootFingerprint` | unset | out-of-band root pin for custody verification |
+| `verifyEnvironmentId` | unset | expected executor credential environment |
+| `verifyExpectedExecutorId` | unset | require this executor id (also rejects authority-only custody receipts) |
 
 Returns `{ execute, wrapTool, verifyReceipt, config }`.
 
@@ -75,8 +84,9 @@ separate raw-function references for protected actions.
 > If a tool is wrapped with MNDe, there is no code path where `REFUSE` executes.
 
 In [`index.mjs`](./index.mjs) there is exactly **one** call site for the wrapped
-function, reachable only after a well-formed `ALLOW`. REFUSE, an unreachable
-sidecar, a malformed decision, a timeout — all return without calling it.
+function, reachable only after a verified, exact-request-bound `ALLOW`. REFUSE,
+an unreachable sidecar, a malformed decision, a timeout, an identity mismatch,
+or an unverifiable receipt all return without calling it.
 
 ## ⚠️ The one bypass: direct (unwrapped) execution
 

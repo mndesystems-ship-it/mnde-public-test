@@ -58,21 +58,24 @@ function handleToolCall(id, params) {
   const reason = receipt.decision_output.reason_code;
   const receiptPath = writeShellReceipt(receipt, receiptsDir, `shell-${receipt.request_hash.slice(0, 16)}-${Date.now()}.json`);
   const verified = verifyShellReceipt(receipt).verified;
+  const authorized = decision === "ALLOW" && verified === true;
+  const effectiveDecision = decision === "ALLOW" && !authorized ? "REFUSE" : decision;
+  const effectiveReason = decision === "ALLOW" && !authorized ? "ERR_RECEIPT_UNVERIFIED" : reason;
 
   let executed = false;
   let result = null;
-  if (decision === "ALLOW") {
+  if (authorized) {
     result = runCommand(command);
     executed = true;
   }
 
-  const envelope = { decision, reason, executed, receiptPath, verified, policy_id: receipt.decision_output.policy_id };
+  const envelope = { decision: effectiveDecision, reason: effectiveReason, executed, receiptPath, verified, policy_id: receipt.decision_output.policy_id };
   const human =
-    decision === "ALLOW"
+    authorized
       ? `ALLOW — ran: ${command}`
       : decision === "APPROVAL_REQUIRED"
         ? `APPROVAL_REQUIRED — '${command}' needs human approval. Not run.`
-        : `REFUSE (${reason}) — '${command}' not run.`;
+        : `REFUSE (${effectiveReason}) — '${command}' not run.`;
 
   sendResult(id, {
     content: [
@@ -80,7 +83,7 @@ function handleToolCall(id, params) {
       ...(result ? [{ type: "text", text: JSON.stringify(result) }] : []),
       { type: "text", text: JSON.stringify({ mnde: envelope }) }
     ],
-    isError: decision !== "ALLOW"
+    isError: !authorized
   });
 }
 

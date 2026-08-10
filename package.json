@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "bin": {
     "mnde": "./dist/bin/mnde.mjs",
@@ -17,6 +17,7 @@
   ],
   "scripts": {
     "prepack": "node ./build/build-package.mjs",
+    "release": "node ./build/release.mjs",
     "test": "node ./scripts/run-all-tests.mjs",
     "ci": "node ./scripts/run-ci.mjs",
     "check:whitespace": "node ./scripts/check-whitespace.mjs",
@@ -32,7 +33,9 @@
     "test:private-key-scan-hostile": "node ./tests/test_private_key_scan_hostile.mjs",
     "test:receipt-signing-characterization": "node ./tests/test_receipt_signing_characterization.mjs",
     "test:receipt-signing-key-status": "node ./tests/test_receipt_signing_key_status.mjs",
+    "test:release-identity": "node ./tests/test_release_identity.mjs",
     "test:replay": "node ./scripts/test-replay-verification.mjs",
+    "release:verify": "node ./tests/test_release_truth.mjs",
     "mnde": "node ./bin/mnde.mjs",
     "test:onboarding": "node ./tests/test_onboarding.mjs",
     "test:policy-engine": "node ./tests/test_policy_engine.mjs",
@@ -94,6 +97,8 @@
     "test:signed-result-codes": "node ./tests/test_signed_result_codes.mjs",
     "test:executor": "node ./tests/test_executor.mjs",
     "test:executor-credential": "node ./tests/test_executor_credential.mjs",
+    "test:executor-custody-binding": "node ./tests/test_executor_custody_binding.mjs",
+    "test:executor-fail-closed": "node ./tests/test_executor_fail_closed.mjs",
     "test:executor-identity-hostile": "node ./tests/test_executor_identity_hostile.mjs",
     "test:executor-identity-signing": "node ./tests/test_executor_identity_signing.mjs",
     "test:executor-key-path-security": "node ./tests/test_executor_key_path_security.mjs",

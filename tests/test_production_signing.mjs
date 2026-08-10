@@ -211,6 +211,22 @@ async function main() {
     assert.equal((await verifyCustodyAttestation(out.receipt, { authorityBundle: bundle, trustedRootFingerprint: bundle.root_key.fingerprint, now: NOW })).reason, "receipt hash mismatch");
   });
 
+  await test("cryptographically valid envelope with a decision that disagrees with its inner receipt fails", async () => {
+    const { provider, bundle, receipt } = await makeProvider();
+    const out = await signReceiptForDelivery(sampleInner(), { mode: "custody", provider }, { now: NOW });
+    const attestation = out.receipt.custody_attestation;
+    attestation.decision = "REFUSE";
+    const { signing_key_id: _keyId, signature: _signature, ...signedFields } = attestation;
+    attestation.signature.value = await signCanonical(canonicalizeJson(signedFields), receipt.privatePem);
+    const verified = await verifyCustodyAttestation(out.receipt, {
+      authorityBundle: bundle,
+      trustedRootFingerprint: bundle.root_key.fingerprint,
+      now: NOW
+    });
+    assert.equal(verified.ok, false);
+    assert.equal(verified.reason_code, "ERR_RECEIPT_DECISION_MISMATCH");
+  });
+
   // ── fail closed on config ──────────────────────────────────────────────────
   await test("custody provider failure fails closed (unknown provider)", async () => {
     const cfg = await loadSigningConfig({ MNDE_RECEIPT_SIGNING_MODE: "custody", MNDE_KEY_CUSTODY: "magic-vault" });

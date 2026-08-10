@@ -22,6 +22,8 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSyn
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { getReleaseIdentity, formatReleaseIdentity } from "../src/release/identity.mjs";
+
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = resolve(process.env.MNDE_HOME ?? join(process.cwd(), ".mnde"));
 // Publish HOME back onto the real env var (not just this local const) so any
@@ -105,6 +107,15 @@ function buildRequest(reviewerRequest, tool, parameters) {
 
 // ---- commands ---------------------------------------------------------------
 
+// Report the identity of the installed artifact from embedded metadata only —
+// never Git. `version --json` emits the machine-readable release identity.
+function cmdVersion() {
+  const identity = getReleaseIdentity();
+  if (process.argv.includes("--json")) say(JSON.stringify(identity, null, 2));
+  else say(formatReleaseIdentity(identity));
+  return 0;
+}
+
 function cmdInit() {
   say("MNDe Sidecar — init\n");
   say(`  home: ${HOME}`);
@@ -138,7 +149,8 @@ function cmdInit() {
 }
 
 async function cmdDoctor() {
-  say("MNDe Sidecar — doctor\n");
+  const identity = getReleaseIdentity();
+  say(`MNDe Sidecar — doctor  (${identity.product} ${identity.version ?? "unknown"}, ${identity.commit_short ?? identity.source})\n`);
   const checks = [];
   const push = (label, pass, detail = "", soft = false) => checks.push({ label, pass, detail, soft });
 
@@ -269,6 +281,7 @@ Usage:
   npx @mnde/sidecar <command>
 
 Commands:
+  version   show installed release identity (add --json for machine output)
   init      generate local receipt keys + authority + starter policy (idempotent)
   doctor    fail-closed readiness check (exit 1 on any hard failure)
   start     run the sidecar in the foreground on port ${PORT}
@@ -284,7 +297,7 @@ Env:  MNDE_HOME (default ./.mnde)   MNDE_BIND_PORT (default 8787)   MNDE_SMOKE_P
 }
 
 const command = process.argv[2] ?? "help";
-const table = { init: cmdInit, doctor: cmdDoctor, start: cmdStart, smoke: cmdSmoke, help: cmdHelp, "--help": cmdHelp, "-h": cmdHelp };
+const table = { version: cmdVersion, "--version": cmdVersion, "-v": cmdVersion, init: cmdInit, doctor: cmdDoctor, start: cmdStart, smoke: cmdSmoke, help: cmdHelp, "--help": cmdHelp, "-h": cmdHelp };
 const fn = table[command];
 if (!fn) { err(`Unknown command: ${command}\n`); cmdHelp(); process.exit(2); }
 

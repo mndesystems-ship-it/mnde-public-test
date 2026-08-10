@@ -2,13 +2,16 @@
 
 Goal (roadmap): `npx @mnde/sidecar init → doctor → start`, **first receipt < 2 min**.
 
-## What's built (this branch: `feat/npm-packaging-transpiled`)
+Release identity, `mnde version`, checksums, and the full install/reinstall/
+uninstall contract are documented in [`docs/RELEASE.md`](docs/RELEASE.md).
 
-Two problems blocked every earlier packaging attempt, both fixed here:
+## What's built (on `main`)
+
+Two problems blocked every earlier packaging attempt, both fixed:
 
 1. **This repo runs `.ts` files via Node's native type-stripping, which Node refuses
    for any file under `node_modules`** (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`).
-   Fixed with a real build step, [`scripts/build-package.mjs`](scripts/build-package.mjs)
+   Fixed with a real build step, [`build/build-package.mjs`](build/build-package.mjs)
    (wired as `prepack`): compiles every `.ts` to type-stripped `.js` and rewrites relative
    `.ts`/`.mts` import specifiers to `.js`/`.mjs`, mirroring the source tree into `dist/`
    unchanged in logic. `npm pack` / `npm install` now installs something Node can actually run.
@@ -82,11 +85,15 @@ you ran the CLI from). It never writes anywhere under its own install location.
    lookup in this environment (the scoped name isn't actually published), which is a property of
    testing an unpublished rename locally, not a defect in the packaging — but it means the exact
    literal command has not been exercised end-to-end against a real registry.
-3. **Demo signing secret default.** `scripts/start-sidecar.mjs` still defaults
-   `MNDE_RECEIPT_HMAC_SECRET` to a hardcoded demo value when unset. This is pre-existing behavior
-   (unchanged by this packaging work) and orthogonal to the build/MNDE_HOME fixes here, but it
-   remains a real pre-publish concern: a published package must not let a demo signing default
-   pass as a production posture. Flagged, not fixed, in this slice.
+3. **Demo signing secret default.** `scripts/start-sidecar.mjs` defaults
+   `MNDE_RECEIPT_HMAC_SECRET` to a hardcoded demo value when unset — a convenience for the
+   zero-config **local** experience. It is env-overridable and is **rejected under
+   `MNDE_PROFILE=production`**: a production sidecar refuses to start on legacy signing and
+   leaves no listener behind (proven by `test_release_truth.mjs` REL-06). The demo constant is
+   confined to local/demo bootstrap files and never appears in the decision/signing/verification
+   trust core (proven by REL-15); it is not a private key and cannot sign production receipts.
+   Gating local demo signing behind an explicit opt-in remains a future follow-up, not a
+   packaging defect.
 4. **`doctor`'s port check is a liveness probe, not a bind-availability check.** It calls the
    sidecar's own `/healthz` over HTTP; a non-HTTP process silently occupying the port reads as
    "available" until `start`/`smoke` actually try to bind and fail. `start`/`smoke` do fail

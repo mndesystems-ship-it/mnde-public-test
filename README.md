@@ -81,7 +81,7 @@ Optional executor identity produces explicit `executor_and_authority` live recei
 
 Production verification requires a stable MNDe-published authority bundle. Receipts are independently verifiable only when the verifier has the trusted authority manifest and root public key. Unknown authority IDs, unknown key IDs, expired keys, and invalid manifests fail closed.
 
-Desktop installers are not committed to this repository. Download release artifacts from GitHub Releases and verify their SHA-256 checksums before running them:
+The supported pilot artifact is the versioned **npm tarball** published on GitHub Releases with a `SHA256SUMS.txt` digest; there is no desktop installer in this release. Verify the checksum before installing, then install without cloning the repo. See [`docs/RELEASE.md`](docs/RELEASE.md) for the full install / verify / start / stop / reinstall / uninstall contract and [`installer/README.md`](installer/README.md) for why desktop installers are out of scope.
 
 ```text
 https://github.com/mndesystems-ship-it/mnde-public-test/releases
@@ -137,11 +137,7 @@ npm run test:fresh-setup
 
 Expected result: every command exits 0 and prints `PASS` or `FINAL VERDICT: VERIFIED`.
 
-Optional desktop smoke testing can be run after downloading a release executable:
-
-```bash
-MNDE_DESKTOP_EXE=/path/to/MNDe-Execution-Control.exe npm run desktop-smoke
-```
+> There is no desktop installer or desktop executable in this release (see [`installer/README.md`](installer/README.md)). The `desktop-smoke` script is a source-development harness that runs only against a separately-provided desktop build; it is not part of the supported pilot artifact.
 
 ## Onboard An MCP Client
 
@@ -309,6 +305,7 @@ These exist as architecture or concepts in the repository but are not claimed as
 ## More Docs
 
 - [First tester onboarding](docs/first-tester-onboarding.md)
+- [MNDe CLI v1 spec (first iteration)](docs/mnde-cli-v1-spec.md)
 - [Independent receipt verification](docs/independent-verification.md)
 - [Minimal agent integration](docs/integration-guide.md)
 - [MNDe Guard for OpenClaw spec](docs/openclaw-integration-spec.md)
