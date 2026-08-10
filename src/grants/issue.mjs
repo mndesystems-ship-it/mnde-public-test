@@ -9,28 +9,62 @@
 import { canonicalizeJson } from "../../shared/json.ts";
 import { randomBytes } from "../crypto/provider.mjs";
 import { findBundleKey } from "../custody/index.mjs";
+import { verifyAnyReceiptObject } from "../../tools/verify.mjs";
 import {
   EXECUTION_GRANT_SCHEMA,
   GRANT_ERR,
   canonicalGrantPayload,
   receiptFacts,
   validateLimits,
-  validateScope
+  validateScope,
+  validateScopeAgainstReceipt
 } from "./grant.mjs";
 
-// issueExecutionGrant({ receipt, request, signer, bundle, now? })
+// issueExecutionGrant({ receipt, request, signer, bundle, verify?, now? })
 //
 //   receipt  — a signed/verifiable ALLOW decision receipt (legacy, PE, or custody
-//              envelope). Its four binding hashes are pinned into the grant.
+//              envelope). It is CRYPTOGRAPHICALLY VERIFIED before any of its facts
+//              are trusted; its four binding hashes are then pinned into the grant.
 //   request  — { scope, limits: { max_cost_cents, max_calls?, not_before?, not_after },
 //               grant_id? }. grant_id is generated when absent.
 //   signer   — async (canonicalString) => { key_id, value }: the custody receipt
 //              signer (e.g. provider.signReceipt from loadSigningConfig).
 //   bundle   — the published authority bundle (provider.getPublicBundle()).
+//   verify   — receipt-verification context. { trustedRootFingerprint,
+//              authorityBundle?, environmentId?, expectedExecutorId?,
+//              requireExecutor?, verifyReceipt?, options? }. authorityBundle
+//              defaults to `bundle`; verifyReceipt defaults to the unified
+//              verifier. Without enough context to verify, issuance FAILS CLOSED.
+//
+// SECURITY INVARIANT: a grant's binding facts and approved scope are derived
+// ONLY from a receipt whose signature verified against the trusted authority
+// bundle. An unsigned / forged / cross-authority receipt cannot mint a grant, and
+// a grant's DB scope can never widen the action the receipt approved.
 //
 // Returns { ok: true, grant } or { ok: false, reason_code, detail? }.
-export async function issueExecutionGrant({ receipt, request, signer, bundle, now } = {}) {
+export async function issueExecutionGrant({ receipt, request, signer, bundle, verify, now } = {}) {
   const at = now ?? new Date().toISOString();
+
+  // GRANT-1: authenticate the receipt BEFORE trusting any fact it carries. The
+  // binding hashes are only as trustworthy as the decision they came from.
+  const verifyReceipt = typeof verify?.verifyReceipt === "function" ? verify.verifyReceipt : verifyAnyReceiptObject;
+  let receiptCheck;
+  try {
+    receiptCheck = await verifyReceipt(receipt, {
+      authorityBundle: verify?.authorityBundle ?? bundle,
+      trustedRootFingerprint: verify?.trustedRootFingerprint,
+      environmentId: verify?.environmentId,
+      expectedExecutorId: verify?.expectedExecutorId,
+      requireExecutor: verify?.requireExecutor,
+      now: at,
+      ...(verify?.options && typeof verify.options === "object" ? verify.options : {})
+    });
+  } catch (error) {
+    return { ok: false, reason_code: GRANT_ERR.RECEIPT_UNVERIFIED, detail: error?.message ?? String(error) };
+  }
+  if (!receiptCheck || receiptCheck.verified !== true) {
+    return { ok: false, reason_code: GRANT_ERR.RECEIPT_UNVERIFIED, detail: receiptCheck?.reason ?? "receipt not verified" };
+  }
 
   const facts = receiptFacts(receipt);
   if (facts.decision !== "ALLOW") return { ok: false, reason_code: GRANT_ERR.RECEIPT_NOT_ALLOW };
@@ -41,6 +75,10 @@ export async function issueExecutionGrant({ receipt, request, signer, bundle, no
   if (!request || typeof request !== "object") return { ok: false, reason_code: GRANT_ERR.SCOPE_INVALID };
   const scopeErr = validateScope(request.scope);
   if (scopeErr) return { ok: false, reason_code: scopeErr };
+
+  // GRANT-2: a DB-egress grant may not exceed the receipt's approved action.
+  const scopeBoundErr = validateScopeAgainstReceipt(request.scope, receipt);
+  if (scopeBoundErr) return { ok: false, reason_code: scopeBoundErr };
 
   const requested = request.limits && typeof request.limits === "object" ? request.limits : {};
   const limits = {
