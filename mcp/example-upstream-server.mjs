@@ -67,7 +67,10 @@ function handle(message) {
         send({ jsonrpc: "2.0", id, error: { code: -32602, message: `unknown tool: ${params?.name}` } });
         return;
       }
-      const output = tool.run(params?.arguments ?? {});
+      const output = {
+        ...tool.run(params?.arguments ?? {}),
+        received_param_keys: Object.keys(params ?? {}).sort()
+      };
       send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(output) }], isError: false } });
       return;
     }

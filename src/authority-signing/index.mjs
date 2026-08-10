@@ -351,6 +351,16 @@ export async function verifyCustodyAttestation(envelope, options = {}) {
   if (sha256Hex(canonicalizeJson(inner)) !== attestation.receipt_hash) {
     return { ok: false, reason: "receipt hash mismatch", reason_code: "ERR_RECEIPT_SIGNATURE_INVALID" };
   }
+  // The attestation and its hashed inner receipt are one authorization. Even a
+  // correctly signed envelope is invalid if its signed decision/schema metadata
+  // disagrees with the exact receipt it attests; accepting split-brain evidence
+  // would let downstream gates select whichever layer was more permissive.
+  if (attestation.decision !== decisionOf(inner)) {
+    return { ok: false, reason: "ERR_RECEIPT_DECISION_MISMATCH", reason_code: "ERR_RECEIPT_DECISION_MISMATCH" };
+  }
+  if (attestation.receipt_type !== inner.schema_version || attestation.receipt_version !== versionOf(inner.schema_version)) {
+    return { ok: false, reason: "ERR_RECEIPT_SCHEMA_MISMATCH", reason_code: "ERR_RECEIPT_SCHEMA_MISMATCH" };
+  }
 
   let executorId = null;
   if (signingMode === LIVE_RECEIPT_SIGNING_MODES.AUTHORITY_ONLY) {

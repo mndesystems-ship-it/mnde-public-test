@@ -36,15 +36,22 @@ function sendError(id, code, message) {
 function log(...parts) {
   process.stderr.write(`[mnde-mcp] ${parts.join(" ")}\n`);
 }
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
 
 async function handleToolCall(id, params) {
   const name = params?.name;
-  const args = params?.arguments ?? {};
   const tool = toolMap.get(name);
   if (!tool) {
     sendError(id, -32602, `unknown tool: ${name}`);
     return;
   }
+  if (params?.arguments !== undefined && !isPlainObject(params.arguments)) {
+    sendError(id, -32602, "tools/call arguments must be an object");
+    return;
+  }
+  const args = params?.arguments ?? {};
 
   // The guard. run() is reached only on ALLOW (enforced inside the executor).
   const outcome = await mnde.execute({ action: name, input: args, run: () => tool.run(args) });

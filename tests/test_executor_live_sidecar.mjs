@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { createMndeExecutor } from "../executor/index.mjs";
 import { startMndeSidecar } from "../executor/sidecar-harness.mjs";
 import { createLiveReceiptSigningContext, signLiveReceipt, verifyCustodyAttestation } from "../src/authority-signing/index.mjs";
 import { buildAuthorityBundle, generateAuthorityKeyPair, signCanonical } from "../src/custody/index.mjs";
@@ -172,6 +173,61 @@ try {
     assert.equal(verified.status, 0, `${verified.stdout}\n${verified.stderr}`);
     assert.match(verified.stdout, /Verification state: executor_and_authority_verified/);
     assert.match(verified.stdout, /FINAL VERDICT: VERIFIED/);
+  });
+
+  await test("executor-bound receipt is rejected for a different expected executor id", async () => {
+    const rejected = await verifyCustodyAttestation(validReceipt, {
+      authorityBundle: F.bundle,
+      trustedRootFingerprint: F.bundle.root_key.fingerprint,
+      environmentId: ENVIRONMENT_ID,
+      expectedExecutorId: "mnde:local:prod:executor:attacker:99"
+    });
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.reason_code, "ERR_EXECUTOR_IDENTITY_MISMATCH");
+  });
+
+  await test("strict executor runs exactly once with a real verified v2 executor-bound receipt", async () => {
+    const guarded = createMndeExecutor({
+      sidecarUrl: sidecar.url,
+      receiptsDir: join(dir, "strict-executor-valid"),
+      verifyAuthorityBundle: F.paths.bundle,
+      verifyTrustedRootFingerprint: F.bundle.root_key.fingerprint,
+      verifyEnvironmentId: ENVIRONMENT_ID,
+      verifyExpectedExecutorId: EXECUTOR_ID
+    });
+    let executorCallCount = 0;
+    const result = await guarded.execute({
+      action: "read_status",
+      input: {},
+      executionId: "strict-executor-v2-valid",
+      run: async () => { executorCallCount += 1; return "ok"; }
+    });
+    assert.equal(result.verified, true);
+    assert.equal(result.executed, true);
+    assert.equal(executorCallCount, 1);
+    assert.equal(result.receipt.schema_version, "mnde.signed-receipt.v2");
+  });
+
+  await test("strict executor calls the protected action zero times for the wrong expected executor id", async () => {
+    const guarded = createMndeExecutor({
+      sidecarUrl: sidecar.url,
+      receiptsDir: join(dir, "strict-executor-mismatch"),
+      verifyAuthorityBundle: F.paths.bundle,
+      verifyTrustedRootFingerprint: F.bundle.root_key.fingerprint,
+      verifyEnvironmentId: ENVIRONMENT_ID,
+      verifyExpectedExecutorId: "mnde:local:prod:executor:attacker:99"
+    });
+    let executorCallCount = 0;
+    const result = await guarded.execute({
+      action: "read_status",
+      input: {},
+      executionId: "strict-executor-v2-mismatch",
+      run: async () => { executorCallCount += 1; return "DANGER"; }
+    });
+    assert.equal(result.executed, false);
+    assert.equal(result.failClosed, true);
+    assert.equal(executorCallCount, 0);
+    assert.equal(result.reason, "ERR_RECEIPT_UNVERIFIED");
   });
 
   await test("tampering signed receipt evidence becomes INVALID", () => {
