@@ -47,3 +47,35 @@ jobs:
 
       - name: Conformance freeze
         run: npm run test:conformance
+
+  # Package & release-truth contract. Kept in a separate job (not folded into the
+  # default suite) so it can pack, install into a clean project, boot, and
+  # uninstall without inflating every other suite's cost. Requires no secrets.
+  release-contract:
+    name: Release contract
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        # actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Set up Node.js
+        # actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "24.14.1"
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Release identity (version drift)
+        run: npm run test:release-identity
+
+      - name: Release build + checksums
+        run: npm run release
+
+      - name: Release truth (pack, install, run outside repo, fail-closed, uninstall)
+        run: npm run release:verify

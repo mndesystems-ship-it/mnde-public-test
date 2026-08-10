@@ -65,6 +65,7 @@
   "test:receipt-signing-characterization",
   "test:receipt-signing-key-status",
   "test:receipt-verifier",
+  "test:release-identity",
   "test:replay",
   "test:reviewer-kit",
   "test:shell",
