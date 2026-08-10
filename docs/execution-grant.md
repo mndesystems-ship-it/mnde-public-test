@@ -87,8 +87,12 @@ const v = await verifyExecutionGrant(grant, {
 2. **Tamper-evident.** Mutating any signed field (scope, a binding hash, a cost
    cap) after signing → `ERR_GRANT_INVALID_SIGNATURE`. Escalating `DELETE` → `DROP`
    is a signature break.
-3. **Bound to one decision.** Verifying a valid grant against a different receipt
-   → `ERR_GRANT_REQUEST_MISMATCH`.
+3. **Bound to one decision.** When a receipt is supplied it is first cryptographically
+   verified against the bundle (`ERR_GRANT_RECEIPT_UNVERIFIED` if it is unsigned,
+   forged, or from another authority — even when its facts match), then the grant's
+   four hashes must pin it exactly (`ERR_GRANT_REQUEST_MISMATCH` otherwise). A
+   non-serializable / malformed grant fails closed with `ERR_GRANT_MALFORMED` rather
+   than throwing.
 4. **Time-bounded.** Outside `[not_before, not_after]` → `ERR_GRANT_NOT_YET_VALID`
    / `ERR_GRANT_EXPIRED`.
 5. **Root-anchored trust.** Missing bundle → `ERR_GRANT_BUNDLE_REQUIRED`; wrong

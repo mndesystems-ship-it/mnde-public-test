@@ -216,6 +216,33 @@ async function main() {
     assert.equal(v.reason_code, "ERR_GRANT_REQUEST_MISMATCH");
   });
 
+  // --- GRANT-4 (regression): the verify-side receipt is authenticated, not just compared ---
+  await test("SEC/GRANT-4: a forged receipt whose facts MATCH the grant is still refused", async () => {
+    // Same four hashes as the grant, but never signed by anyone. Pure field-equality
+    // would pass; authentication must catch it.
+    const forged = {
+      decision_output: {
+        decision: "ALLOW",
+        execution_id: goodGrant.execution_id,
+        decision_hash: goodGrant.decision_hash,
+        request_hash: goodGrant.request_hash,
+        policy_hash: goodGrant.policy_hash
+      }
+    };
+    const v = await verifyExecutionGrant(goodGrant, { ...verifyOpts, receipt: forged });
+    assert.equal(v.ok, false);
+    assert.equal(v.reason_code, "ERR_GRANT_RECEIPT_UNVERIFIED");
+  });
+
+  // --- GRANT-5 (regression): a non-serializable grant fails closed, never throws ---
+  await test("SEC/GRANT-5: a grant with a non-serializable field is MALFORMED, not an exception", async () => {
+    const t = structuredClone(goodGrant);
+    t.scope.target.table = undefined; // passes validateScope, but canonicalization would throw
+    const v = await verifyExecutionGrant(t, verifyOpts); // must return, not throw
+    assert.equal(v.ok, false);
+    assert.equal(v.reason_code, "ERR_GRANT_MALFORMED");
+  });
+
   // --- Hostile: TTL ---
   await test("ttl: verifying after not_after is EXPIRED", async () => {
     const v = await verifyExecutionGrant(goodGrant, { ...verifyOpts, now: AFTER_EXPIRY });
