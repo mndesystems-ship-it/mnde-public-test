@@ -41,7 +41,7 @@ Plus the capability's own bounds:
 | `scope.protocol` / `scope.resource` / `scope.target` | where the grant may act. For database protocols the target **must** name `database` + `operation` (e.g. `DELETE`, `DROP`, `TRUNCATE`). |
 | `limits.max_cost_cents` | hard cost ceiling (non-negative integer) |
 | `limits.max_calls` | call ceiling (≥1; single-use by default, enforced in CAP-3) |
-| `limits.not_before` / `limits.not_after` | validity window (short TTL) |
+| `limits.not_before` / `limits.not_after` | validity window; the span is **hard-capped** (`MAX_GRANT_TTL_MS`, 5 min) so a grant can never be a standing credential |
 | `signature` | Ed25519, produced by the **same custody authority** that signs receipts — no new PKI |
 
 The signature covers every field **except** `issuer_key_id` and `signature`
@@ -56,7 +56,7 @@ same Ed25519 signature.
 import { issueExecutionGrant } from "./src/grants/issue.mjs";
 import { verifyExecutionGrant } from "./src/grants/verify.mjs";
 
-// Mint (server side): sign an ALLOW receipt into a bounded grant.
+// Mint (server side): verify an ALLOW receipt, then sign it into a bounded grant.
 const { ok, grant } = await issueExecutionGrant({
   receipt,                       // an ALLOW decision receipt (legacy/PE/custody)
   request: {
@@ -65,7 +65,10 @@ const { ok, grant } = await issueExecutionGrant({
     limits: { max_cost_cents: 0, not_after: "2026-08-10T00:01:00.000Z" }
   },
   signer: provider.signReceipt, // custody Ed25519 signer (loadSigningConfig)
-  bundle: provider.getPublicBundle()
+  bundle: provider.getPublicBundle(),
+  verify: { trustedRootFingerprint: fingerprint }  // REQUIRED: the receipt is
+                                                   // cryptographically verified
+                                                   // before any fact is trusted
 });
 
 // Verify (anywhere, offline): no issuer, no network.
@@ -95,8 +98,18 @@ const v = await verifyExecutionGrant(grant, {
    an unbindable receipt (`ERR_GRANT_RECEIPT_UNBINDABLE`), a malformed DB scope
    (`ERR_GRANT_SCOPE_INVALID`), or invalid limits (`ERR_GRANT_LIMITS_INVALID`)
    cannot mint a grant.
-7. **Deterministic.** Same inputs → identical canonical bytes → identical Ed25519
-   signature.
+7. **Authenticated binding.** The receipt is cryptographically verified against
+   the trusted authority bundle **before any of its facts are trusted**. An
+   unsigned, forged, or cross-authority receipt → `ERR_GRANT_RECEIPT_UNVERIFIED`;
+   issuance fails closed when it lacks the trust context to verify.
+8. **Scope bounded by the receipt.** A DB-egress grant may not widen the action
+   the decision approved — a different operation, database, or table, or a
+   whole-database claim over a table-scoped approval → `ERR_GRANT_SCOPE_EXCEEDS_RECEIPT`.
+   (Non-DB protocols are not yet constrained — a later rung settles that vocabulary.)
+9. **Bounded TTL.** A validity window longer than `MAX_GRANT_TTL_MS` (5 min) →
+   `ERR_GRANT_LIMITS_INVALID`, at both issuance and verification.
+10. **Deterministic.** Same inputs → identical canonical bytes → identical Ed25519
+    signature.
 
 ## Stable failure codes
 
@@ -105,6 +118,7 @@ const v = await verifyExecutionGrant(grant, {
 `ERR_GRANT_BUNDLE_REQUIRED`, `ERR_GRANT_BUNDLE_UNTRUSTED`,
 `ERR_GRANT_INVALID_SIGNATURE`, `ERR_GRANT_REQUEST_MISMATCH`,
 `ERR_GRANT_RECEIPT_NOT_ALLOW`, `ERR_GRANT_RECEIPT_UNBINDABLE`,
+`ERR_GRANT_RECEIPT_UNVERIFIED`, `ERR_GRANT_SCOPE_EXCEEDS_RECEIPT`,
 `ERR_GRANT_SIGNING_FAILED`, `ERR_GRANT_SIGNING_KEY_INVALID`.
 
 These strings are part of the artifact contract; CAP-3's redemption proxy branches
