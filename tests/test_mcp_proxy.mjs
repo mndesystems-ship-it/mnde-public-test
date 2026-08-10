@@ -81,7 +81,7 @@ async function main() {
     await test("3. ALLOW forwards the call to upstream", async () => {
       const call = await proxy.request("tools/call", { name: "read_status", arguments: { service: "billing" } });
       allowEnv = mndeOf(call);
-      
+
       // Instrument full diagnostic state for transient failure diagnosis
       if (call.isError !== false) {
         const errorDetails = {
@@ -99,7 +99,7 @@ async function main() {
           `call.isError was ${call.isError} (expected false). Diagnostics: ${JSON.stringify(errorDetails, null, 2)}`
         );
       }
-      
+
       assert.equal(call.isError, false);
       assert.equal(allowEnv.decision, "ALLOW");
       assert.equal(allowEnv.forwarded, true);
