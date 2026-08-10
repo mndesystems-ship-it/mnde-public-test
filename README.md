@@ -137,11 +137,7 @@ npm run test:fresh-setup
 
 Expected result: every command exits 0 and prints `PASS` or `FINAL VERDICT: VERIFIED`.
 
-Optional desktop smoke testing can be run after downloading a release executable:
-
-```bash
-MNDE_DESKTOP_EXE=/path/to/MNDe-Execution-Control.exe npm run desktop-smoke
-```
+> There is no desktop installer or desktop executable in this release (see [`installer/README.md`](installer/README.md)). The `desktop-smoke` script is a source-development harness that runs only against a separately-provided desktop build; it is not part of the supported pilot artifact.
 
 ## Onboard An MCP Client
 

@@ -304,6 +304,43 @@ try {
     assert.deepEqual(demoLeaks, [], `demo signing default leaked outside local/demo bootstrap files: ${demoLeaks.join(", ")}`);
   });
 
+  // ---- REL-20: every relative import resolves with EXACT case (Linux-safe) ---
+  // CI runs only on case-insensitive Windows, so a mis-cased import (Foo.mjs
+  // imported as foo.mjs) would ship broken to Linux while CI stays green. This
+  // compares each shipped module's relative import specifiers against the actual
+  // on-disk filenames case-sensitively, catching that class of defect on any OS.
+  await check("REL-20", "shipped modules' relative imports resolve with exact case (Linux-safe)", () => {
+    const distDir = join(pkgDir, "dist");
+    const specRe = /(?:from\s+|import\s*\(\s*|export\s+[^;]*?from\s+)["'](\.[^"'\n]+)["']/g;
+    const dirCache = new Map();
+    const listing = (dir) => {
+      if (!dirCache.has(dir)) {
+        try { dirCache.set(dir, new Set(readdirSync(dir))); } catch { dirCache.set(dir, new Set()); }
+      }
+      return dirCache.get(dir);
+    };
+    const offenders = [];
+    let scanned = 0;
+    for (const rel of listFiles(distDir)) {
+      if (!/\.(mjs|js)$/.test(rel)) continue;
+      const abs = join(distDir, rel);
+      const src = readFileSync(abs, "utf8");
+      let m;
+      while ((m = specRe.exec(src))) {
+        const target = resolve(dirname(abs), m[1]);
+        const base = target.split(/[\\/]/).pop();
+        const names = listing(dirname(target));
+        scanned += 1;
+        if (names.has(base)) continue; // exact-case match
+        const clash = [...names].find((n) => n.toLowerCase() === base.toLowerCase());
+        if (clash) offenders.push(`${rel} imports "${m[1]}" but on disk it is "${clash}"`);
+        else if (!existsSync(target)) offenders.push(`${rel} imports "${m[1]}" -> missing target`);
+      }
+    }
+    assert.ok(scanned > 0, "expected to scan at least one relative import");
+    assert.deepEqual(offenders, [], `case-mismatched or missing imports:\n  ${offenders.join("\n  ")}`);
+  });
+
   // ---- init under MNDE_HOME, then data-location assertions -------------------
   const home = join(projectDir, "customer-data");
   const cliEnv = { ...process.env, MNDE_HOME: home };
