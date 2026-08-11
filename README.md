@@ -2,11 +2,30 @@
 
 # MNDe Public Test
 
-MNDe is a local pre-execution authority layer. Tools, agents, and automation ask MNDe before they execute. MNDe returns `ALLOW` or `REFUSE` and writes a signed receipt that can be verified later.
+**When an AI agent takes an irreversible action — moves money, deletes
+infrastructure, files a document — MNDe produces a signed receipt that proves
+whether that action was authorized, and lets a second party verify the proof
+without trusting the operator.**
+
+That second party is the point: an auditor, a controller, a security reviewer in
+an incident postmortem. Approval workflows, RBAC, and audit logs record what a
+*human* did — none of them prove that an *autonomous agent's* action was allowed
+under policy. MNDe's receipt does, and it verifies **offline** against a trust
+anchor, so the reviewer never has to take the operator's logs on faith.
+
+> **Status: pilot.** The offline-verification mechanism works today against a
+> trust anchor. A *stable, MNDe-published* authority bundle for verification
+> outside this repository **does not exist yet** (see [Limitations](#limitations)) —
+> that bundle is the next milestone, and until it ships, third-party verification
+> is repo-local.
 
 ## What It Does
 
-A caller submits a proposed action before executing it. MNDe evaluates the action against a policy and returns `ALLOW` or `REFUSE`, and writes a signed receipt. The decision, receipt, policy hash, signature, and replay result can all be inspected after the fact.
+A caller submits a proposed action *before* executing it. MNDe evaluates it
+against a policy, returns `ALLOW` or `REFUSE`, and writes a signed receipt. The
+caller executes only after an `ALLOW`. The decision, receipt, policy hash,
+signature, and replay result can all be inspected — and independently verified —
+after the fact.
 
 ## What It Does Not Do
 
