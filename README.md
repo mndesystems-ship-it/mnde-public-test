@@ -316,6 +316,7 @@ These exist as architecture or concepts in the repository but are not claimed as
 - [MNDe Policy Engine production spec](docs/mnde-policy-engine-production-spec-v1.md)
 - [Onboarding security model](docs/security-model.md)
 - [Trust-anchored receipt verification](docs/trust-anchored-verification.md)
+- [Production trust model](docs/production-trust-model.md)
 - [Production readiness notes](docs/production-readiness.md)
 - [Release note: safe MCP onboarding](docs/release-891ceda-onboarding.md)
 - [Demo scenarios](docs/demo-scenarios.md)
