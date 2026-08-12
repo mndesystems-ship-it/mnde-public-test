@@ -26,6 +26,7 @@ import { canonicalizeForContainment, isRepoContained } from "../src/authority-si
 import { initProductionAuthority } from "../scripts/init-production-authority.mjs";
 import { buildAuthorityBundle, generateAuthorityKeyPair, signCanonical, verifyAgainstBundle } from "../src/custody/index.mjs";
 import { canonicalizeJson } from "../shared/json.ts";
+import { bootstrapReceiptKeys } from "../scripts/bootstrap_dev_receipt_keys.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const NOW = "2026-06-14T00:00:00.000Z";
@@ -76,7 +77,10 @@ function spawnRuntime(env, port) {
     const killer = setTimeout(() => {
       try { child.kill("SIGKILL"); } catch { /* gone */ }
     }, 30000);
-    child.on("exit", async (code) => {
+    // Resolve on "close" (all stdio drained), NOT "exit": a fast-refusing child
+    // can fire "exit" before its stderr is fully read, which would race the
+    // reason-code assertions to an empty buffer.
+    child.on("close", async (code) => {
       clearTimeout(killer);
       let bound = false;
       try { await fetch(`http://127.0.0.1:${port}/readyz`); bound = true; } catch { bound = false; }
@@ -147,6 +151,12 @@ async function main() {
     assert.equal(r.ok, true);
     assert.equal(r.profile, "local");
   });
+
+  // The real sidecar validates dev receipt keys BEFORE the trust-root gate; on a
+  // fresh clone they don't exist yet, so it would refuse for a different reason.
+  // Bootstrap them (idempotent, gitignored) so these tests deterministically reach
+  // — and prove — the profile gate itself. Mirrors the sidecar test harness.
+  bootstrapReceiptKeys({ repoRoot });
 
   await test("F1: REAL runtime — missing MNDE_PROFILE exits non-zero, never binds a port", async () => {
     const port = await getFreePort();
