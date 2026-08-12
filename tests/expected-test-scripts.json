@@ -84,5 +84,6 @@
   "test:startup-checks",
   "test:trust-anchor",
   "test:trust-root",
-  "test:verifier-policy"
+  "test:verifier-policy",
+  "test:witnessed-authority"
 ]

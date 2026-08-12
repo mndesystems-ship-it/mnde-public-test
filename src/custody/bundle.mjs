@@ -15,7 +15,7 @@ import { generateKeyPair, sign as providerSign, spkiFingerprint, verify as provi
 import { canonicalizeJson } from "../../shared/json.ts";
 
 export const BUNDLE_SCHEMA = "mnde.authority.bundle.v1";
-export const AUTHORITY_KEY_ROLES = Object.freeze(["receipt", "policy", "approval", "result", "ledger", "activation"]);
+export const AUTHORITY_KEY_ROLES = Object.freeze(["receipt", "policy", "approval", "result", "ledger", "activation", "checkpoint"]);
 
 function isObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -60,6 +60,12 @@ export async function buildAuthorityBundle(input) {
     ledger: mapKeys(input.ledgerKeys),
     activation: mapKeys(input.activationKeys)
   };
+  // The `checkpoint` role signs authority-state checkpoints. It is emitted only
+  // when checkpoint keys are supplied, so bundles built without them are
+  // byte-identical to before (no signature/fixture churn).
+  if (Array.isArray(input.checkpointKeys) && input.checkpointKeys.length > 0) {
+    mappedKeys.checkpoint = mapKeys(input.checkpointKeys);
+  }
 
   // Reject duplicate key_id or fingerprint across all roles.
   const seenKeyIds = new Set();
