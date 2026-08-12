@@ -14,6 +14,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createServer } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
@@ -45,6 +46,20 @@ function skip(name, why) {
   console.log(`  [SKIP] ${name} (${why})`);
 }
 
+// Allocate a guaranteed-free ephemeral port so the real-runtime spawn tests never
+// collide with a lingering sidecar from another suite/worktree (which would make a
+// "did it bind?" check falsely see someone else's server).
+function getFreePort() {
+  return new Promise((res, rej) => {
+    const srv = createServer();
+    srv.once("error", rej);
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address();
+      srv.close(() => res(port));
+    });
+  });
+}
+
 // Spawn the REAL sidecar runtime with a given env and resolve with its outcome.
 function spawnRuntime(env, port) {
   return new Promise((resolvePromise) => {
@@ -60,7 +75,7 @@ function spawnRuntime(env, port) {
     child.stderr?.on("data", (c) => (stderr += c.toString()));
     const killer = setTimeout(() => {
       try { child.kill("SIGKILL"); } catch { /* gone */ }
-    }, 15000);
+    }, 30000);
     child.on("exit", async (code) => {
       clearTimeout(killer);
       let bound = false;
@@ -134,7 +149,7 @@ async function main() {
   });
 
   await test("F1: REAL runtime — missing MNDE_PROFILE exits non-zero, never binds a port", async () => {
-    const port = 8931;
+    const port = await getFreePort();
     const env = { ...process.env, MNDE_BIND_PORT: String(port), MNDE_RECEIPT_LOG: join(base, "f1-r.jsonl") };
     delete env.MNDE_PROFILE;
     const out = await spawnRuntime(env, port);
@@ -144,7 +159,7 @@ async function main() {
   });
 
   await test("F1: REAL runtime — explicit production without custody refuses (not local fallback)", async () => {
-    const port = 8932;
+    const port = await getFreePort();
     const env = { ...process.env, MNDE_PROFILE: "production", MNDE_BIND_PORT: String(port), MNDE_RECEIPT_LOG: join(base, "f1-p.jsonl") };
     const out = await spawnRuntime(env, port);
     assert.notEqual(out.code, 0, `expected refusal, got ${out.code}\n${out.stderr}`);
