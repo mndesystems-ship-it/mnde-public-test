@@ -54,7 +54,11 @@ export async function startMndeSidecar({
     // Bind where the caller said it would poll. Without this, a url on a
     // non-default port silently spawns a sidecar on 8787 and polls the wrong one.
     MNDE_BIND_PORT: new URL(url).port || "8787",
-    // Caller overrides last (e.g. MNDE_DECISION_ENGINE, MNDE_PE_POLICY, MNDE_BIND_PORT).
+    // F1: the runtime refuses to start without an explicit MNDE_PROFILE. This is
+    // the test/demo harness — choose local explicitly; callers that need the
+    // production gate pass MNDE_PROFILE via extraEnv, which overrides just below.
+    MNDE_PROFILE: process.env.MNDE_PROFILE ?? "local",
+    // Caller overrides last (e.g. MNDE_PROFILE, MNDE_DECISION_ENGINE, MNDE_PE_POLICY, MNDE_BIND_PORT).
     ...extraEnv
   };
 

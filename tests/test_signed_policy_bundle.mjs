@@ -229,7 +229,7 @@ test("default policy-engine file configuration remains legacy-compatible", async
   try {
     const policyPath = join(f.dir, "legacy-policy.json");
     writeFileSync(policyPath, JSON.stringify(policy("legacy-1")));
-    const config = await loadPolicyEngineConfig({ MNDE_PE_POLICY: policyPath });
+    const config = await loadPolicyEngineConfig({ MNDE_PROFILE: "local", MNDE_PE_POLICY: policyPath });
     assert.equal(config.ok, true, config.reason);
     assert.equal(config.policy.version, "legacy-1");
     assert.equal(config.signedPolicyBundle, undefined);
@@ -343,6 +343,7 @@ test("policy-engine configuration activates a signed bundle before exposing its 
     writeFileSync(policyBundlePath, JSON.stringify(await signedBundle(4, "4.0.0", f)));
     writeFileSync(authorityBundlePath, JSON.stringify(f.authorityBundle));
     const config = await loadPolicyEngineConfig({
+      MNDE_PROFILE: "local",
       MNDE_PE_POLICY_BUNDLE: policyBundlePath,
       MNDE_PE_AUTHORITY_BUNDLE: authorityBundlePath,
       MNDE_PE_POLICY_BUNDLE_STATE: f.statePath,
@@ -439,7 +440,7 @@ test("legacy bundle-off receipts carry no policy_bundle_provenance", async () =>
   try {
     const policyPath = join(f.dir, "legacy-policy.json");
     writeFileSync(policyPath, JSON.stringify(policy("legacy-9")));
-    const config = await loadPolicyEngineConfig({ MNDE_PE_POLICY: policyPath });
+    const config = await loadPolicyEngineConfig({ MNDE_PROFILE: "local", MNDE_PE_POLICY: policyPath });
     assert.equal(config.ok, true, config.reason);
     assert.equal(config.policyBundleProvenance, undefined);
     const decision = decidePolicyEngine({

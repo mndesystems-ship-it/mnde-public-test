@@ -21,7 +21,7 @@
 // Fail-closed: refuses to write into the repository, refuses to overwrite, and
 // refuses to finish if the produced bundle does not verify.
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -30,9 +30,10 @@ import {
   generateAuthorityKeyPair,
   signCanonical,
   verifyAuthorityBundle,
-  findBundleKey
+  verifyAgainstBundle
 } from "../src/custody/index.mjs";
 import { canonicalizeJson } from "../shared/json.ts";
+import { isRepoContained } from "../src/authority-signing/repo-containment.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -61,9 +62,11 @@ export async function initProductionAuthority(options = {}) {
   if (/local|demo/i.test(authorityId)) return { ok: false, reason: "authorityId must not contain 'local' or 'demo' (those mark development bundles)" };
 
   const out = resolve(outDir);
-  const root = resolve(repoRoot);
-  if (out === root || out.startsWith(root + "\\") || out.startsWith(root + "/")) {
-    return { ok: false, reason: "refusing to write keys inside the repository; choose an --out path outside the project" };
+  // F4: reject any destination that resolves INTO the repository, including path
+  // aliases (relative traversal, drive-letter/dir casing on Windows, existing
+  // symlinks/junctions). Canonical filesystem resolution, not string prefixing.
+  if (isRepoContained(out, repoRoot)) {
+    return { ok: false, reason: "refusing to write keys inside the repository (after canonical path resolution); choose an --out path outside the project" };
   }
 
   const paths = {
@@ -97,23 +100,52 @@ export async function initProductionAuthority(options = {}) {
   // Verify the produced trust root before writing anything (fail closed).
   const bundleCheck = await verifyAuthorityBundle(bundle, { trustedRootFingerprint: bundle.root_key.fingerprint, now });
   if (!bundleCheck.ok) return { ok: false, reason: `produced bundle failed verification: ${bundleCheck.reason}` };
-  const probe = await signCanonical(canonicalizeJson({ probe: true }), receipt.privatePem);
-  const keyCheck = findBundleKey(bundle, "receipt", receipt.keyId, now);
-  if (!keyCheck.ok || probe.length === 0) return { ok: false, reason: "receipt key did not validate against the bundle" };
-  const ledgerProbe = await signCanonical(canonicalizeJson({ ledger_probe: true }), ledger.privatePem);
-  const ledgerKeyCheck = findBundleKey(bundle, "ledger", ledger.keyId, now);
-  if (!ledgerKeyCheck.ok || ledgerProbe.length === 0) return { ok: false, reason: "ledger key did not validate against the bundle" };
-  const activationProbe = await signCanonical(canonicalizeJson({ probe: true }), activation.privatePem);
-  const activationKeyCheck = findBundleKey(bundle, "activation", activation.keyId, now);
-  if (!activationKeyCheck.ok || activationProbe.length === 0) return { ok: false, reason: "activation key did not validate against the bundle" };
+  // F3: prove possession of each generated private key by signing a deterministic
+  // probe and CRYPTOGRAPHICALLY verifying it against the PUBLISHED public key that
+  // downstream verifiers will actually use (looked up by role + key id in the
+  // bundle, honoring validity/revocation). A non-empty signature is not enough —
+  // the bytes must verify. Reuses the same verifyAgainstBundle primitive used at
+  // serve time; no init-only signature format.
+  for (const probe of [
+    { role: "receipt", keyId: receipt.keyId, privatePem: receipt.privatePem },
+    { role: "ledger", keyId: ledger.keyId, privatePem: ledger.privatePem },
+    { role: "activation", keyId: activation.keyId, privatePem: activation.privatePem }
+  ]) {
+    const payload = canonicalizeJson({ "mnde.init_probe.v1": true, role: probe.role, key_id: probe.keyId });
+    const signature = await signCanonical(payload, probe.privatePem);
+    const verified = await verifyAgainstBundle(payload, signature, probe.role, probe.keyId, now, bundle);
+    if (!verified.ok) {
+      return { ok: false, reason: `${probe.role} key probe did not verify against the published bundle key (${verified.reason ?? "unknown"})` };
+    }
+  }
 
   mkdirSync(out, { recursive: true });
-  writeFileSync(paths.rootPrivate, root_.privatePem, { mode: 0o600 });
-  writeFileSync(paths.rootPublic, root_.publicPem, { mode: 0o644 });
-  writeFileSync(paths.receiptPrivate, receipt.privatePem, { mode: 0o600 });
-  writeFileSync(paths.ledgerPrivate, ledger.privatePem, { mode: 0o600 });
-  writeFileSync(paths.activationPrivate, activation.privatePem, { mode: 0o600 });
-  writeFileSync(paths.bundle, `${JSON.stringify(bundle, null, 2)}\n`, { mode: 0o644 });
+  // F2: exclusive creation (flag "wx") — never truncate or replace an existing
+  // trust artifact, even under a race between the existence check above and here.
+  // If any write fails, remove the files THIS ceremony created so no partial,
+  // half-valid trust root is left behind.
+  const written = [];
+  for (const w of [
+    { path: paths.rootPrivate, data: root_.privatePem, mode: 0o600 },
+    { path: paths.rootPublic, data: root_.publicPem, mode: 0o644 },
+    { path: paths.receiptPrivate, data: receipt.privatePem, mode: 0o600 },
+    { path: paths.ledgerPrivate, data: ledger.privatePem, mode: 0o600 },
+    { path: paths.activationPrivate, data: activation.privatePem, mode: 0o600 },
+    { path: paths.bundle, data: `${JSON.stringify(bundle, null, 2)}\n`, mode: 0o644 }
+  ]) {
+    try {
+      writeFileSync(w.path, w.data, { mode: w.mode, flag: "wx" });
+      written.push(w.path);
+    } catch (error) {
+      for (const done of [...written].reverse()) {
+        try { rmSync(done, { force: true }); } catch { /* best-effort cleanup of this ceremony's files */ }
+      }
+      const why = error && error.code === "EEXIST"
+        ? `refusing to overwrite existing file: ${w.path}`
+        : `failed to write ${w.path}: ${error?.message ?? String(error)}`;
+      return { ok: false, reason: why };
+    }
+  }
 
   return {
     ok: true,

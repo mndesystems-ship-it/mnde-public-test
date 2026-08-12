@@ -87,8 +87,18 @@ if (!bundle.ok) problems.push(`Authority manifest invalid: ${bundle.reason}`);
 if (problems.length > 0) failClosed(problems);
 
 // 5. Start the existing sidecar runtime in the foreground, streaming its logs.
+if (!process.env.MNDE_PROFILE) {
+  process.stdout.write(
+    "start-sidecar: MNDE_PROFILE not set — defaulting to local development mode " +
+      "(export MNDE_PROFILE=production to run the production trust gate).\n"
+  );
+}
 const env = {
   ...process.env,
+  // F1: the runtime trust-root gate refuses to start without an explicit
+  // MNDE_PROFILE. This is the local development launcher, so choose local
+  // explicitly here; an operator can still override to production.
+  MNDE_PROFILE: process.env.MNDE_PROFILE ?? "local",
   MNDE_BIND_PORT: String(PORT),
   MNDE_RECEIPT_LOG: process.env.MNDE_RECEIPT_LOG ?? join(logsDir, "sidecar-receipts.jsonl"),
   MNDE_AUTH_AUDIT_LOG: process.env.MNDE_AUTH_AUDIT_LOG ?? join(logsDir, "auth-audit.jsonl"),

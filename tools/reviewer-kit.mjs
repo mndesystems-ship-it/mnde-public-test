@@ -188,6 +188,9 @@ function startSidecar() {
     // legacy GPU pipeline, so pin the legacy compatibility engine explicitly unless
     // an ambient value selects a different engine.
     MNDE_DECISION_ENGINE: process.env.MNDE_DECISION_ENGINE ?? "legacy",
+    // F1: the runtime refuses to start without an explicit MNDE_PROFILE. The
+    // reviewer kit is a local dev tool — choose local explicitly (overridable).
+    MNDE_PROFILE: process.env.MNDE_PROFILE ?? "local",
     // Bind where sidecarUrl says we will poll, so MNDE_SIDECAR_URL on a
     // non-default port actually moves the sidecar (not just the health check).
     MNDE_BIND_PORT: new URL(sidecarUrl).port || "8787"

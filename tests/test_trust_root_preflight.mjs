@@ -98,12 +98,26 @@ async function productionEnforcementExtras(dir) {
 async function main() {
   console.log("MNDe trust-root pre-flight (S-02)\n");
 
-  // ── local/demo mode unchanged ──────────────────────────────────────────────
-  await test("local profile (default) passes — demo custody allowed", async () => {
-    assert.equal((await assertTrustRoot({})).ok, true);
-    assert.equal((await assertTrustRoot({ MNDE_KEY_CUSTODY: "local-demo" })).profile, "local");
+  // ── explicit local/demo mode unchanged ─────────────────────────────────────
+  await test("explicit local profile passes — demo custody allowed", async () => {
+    assert.equal((await assertTrustRoot({ MNDE_PROFILE: "local" })).ok, true);
+    assert.equal((await assertTrustRoot({ MNDE_PROFILE: "local", MNDE_KEY_CUSTODY: "local-demo" })).profile, "local");
     // legacy signing in local mode is fine
     assert.equal((await assertTrustRoot({ MNDE_PROFILE: "local", MNDE_RECEIPT_SIGNING_MODE: "legacy" })).ok, true);
+  });
+
+  // ── F1: a missing profile is NOT implicit local — it refuses ────────────────
+  await test("missing/empty MNDE_PROFILE refuses (ERR_PROFILE_REQUIRED)", async () => {
+    const missing = await assertTrustRoot({});
+    assert.equal(missing.ok, false);
+    assert.equal(missing.reason_code, "ERR_PROFILE_REQUIRED");
+    // a bare non-profile env (custody set, profile absent) still refuses
+    const bare = await assertTrustRoot({ MNDE_KEY_CUSTODY: "local-demo" });
+    assert.equal(bare.ok, false);
+    assert.equal(bare.reason_code, "ERR_PROFILE_REQUIRED");
+    const empty = await assertTrustRoot({ MNDE_PROFILE: "   " });
+    assert.equal(empty.ok, false);
+    assert.equal(empty.reason_code, "ERR_PROFILE_REQUIRED");
   });
 
   // ── production fail-closed matrix ────────────────────────────────────────────
