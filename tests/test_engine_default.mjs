@@ -36,8 +36,11 @@ function spawnSidecar(overrides) {
     MNDE_RECEIPT_LOG: join(mkdtempSync(join(tmpdir(), "mnde-ed-")), "r.jsonl"),
     MNDE_WORKER_POOL_SIZE: "1"
   };
-  // Start from a clean engine/profile/policy slate so we exercise the real default.
-  for (const k of ["MNDE_DECISION_ENGINE", "MNDE_PROFILE", "MNDE_PE_POLICY", "MNDE_PE_POLICY_BUNDLE"]) delete env[k];
+  // Start from a clean engine/policy slate so we exercise the real default.
+  for (const k of ["MNDE_DECISION_ENGINE", "MNDE_PE_POLICY", "MNDE_PE_POLICY_BUNDLE"]) delete env[k];
+  // F1: a missing MNDE_PROFILE now refuses startup — this suite exercises the
+  // local-dev default decision engine, so select local explicitly.
+  env.MNDE_PROFILE = "local";
   for (const [k, v] of Object.entries(overrides)) { if (v === undefined) delete env[k]; else env[k] = v; }
   const child = spawn(process.execPath, ["mnde-local-sidecar.mjs"], { cwd: repoRoot, env });
   let err = ""; child.stderr.on("data", (d) => (err += d));

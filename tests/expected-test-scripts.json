@@ -61,6 +61,7 @@
   "test:policy-receipt",
   "test:policy-trust",
   "test:private-key-scan-hostile",
+  "test:prod-trust-gate-hostile",
   "test:production-posture",
   "test:production-signing",
   "test:proxy-auth",
