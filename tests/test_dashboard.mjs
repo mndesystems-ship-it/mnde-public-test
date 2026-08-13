@@ -363,7 +363,8 @@ async function main() {
       assert.equal(res.headers.get("x-content-type-options"), "nosniff");
       assert.equal(res.headers.get("referrer-policy"), "no-referrer");
       html = await res.text();
-      assert.ok(html.includes("Is routed execution protected right now?"), "headline question must be present");
+      assert.ok(html.includes("EXECUTION FIREWALL"), "firewall identity must be present");
+      assert.ok(html.includes("No valid, verified receipt = no execution"), "fail-closed invariant must be present");
     });
 
     await test("GET /dashboard also serves the dashboard", async () => {
@@ -372,14 +373,14 @@ async function main() {
       assert.match(res.headers.get("content-type") || "", /text\/html/);
     });
 
-    await test("status screen shows all seven operational panels", () => {
-      for (const panel of ["Protection Status", "Sidecar Status", "Active Policy", "Trust Status", "Last Decision", "Receipt Count", "Protected Sources"]) {
+    await test("operator console shows its core panels", () => {
+      for (const panel of ["Decision Gate", "Last Decision", "Decision Counts", "Execution Stream", "System Status", "Release Identity", "Trust Model"]) {
         assert.ok(html.includes(panel), `missing panel: ${panel}`);
       }
     });
 
-    await test("navigation is reduced to Status / Decisions / Policy / Audit / Settings", () => {
-      for (const nav of [">Status<", ">Decisions<", ">Policy<", ">Audit<", ">Settings<"]) {
+    await test("navigation is the operator rail: Decisions / Receipts / Governance / Reconstruct / System", () => {
+      for (const nav of [">Decisions<", ">Receipts<", ">Governance<", ">Reconstruct<", ">System<"]) {
         assert.ok(html.includes(nav), `missing nav item: ${nav}`);
       }
       // No SaaS / marketing nav.
