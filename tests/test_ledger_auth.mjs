@@ -26,6 +26,7 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -38,6 +39,22 @@ import {
   isSensitiveNamespacePath,
   requiredCapabilityForPath
 } from "../sidecar/auth_authority.mjs";
+
+// Allocate a guaranteed-free ephemeral port so the live-sidecar layer never
+// collides with a lingering bind from another suite. This suite previously
+// hardcoded 8811 — the same port test_production_posture and
+// test_executor_fail_closed use — so a TIME_WAIT on that port left by an
+// earlier serial suite could make this one's sidecar fail EADDRINUSE at bind.
+function getFreePort() {
+  return new Promise((res, rej) => {
+    const srv = createServer();
+    srv.once("error", rej);
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address();
+      srv.close(() => res(port));
+    });
+  });
+}
 
 const results = [];
 async function test(name, fn) {
@@ -277,7 +294,7 @@ async function main() {
   // ── Layer 2: live production sidecar (real request path) ─────────────────────
   const prodDir = mkdtempSync(join(tmpdir(), "mnde-ledger-auth-prod-"));
   let prod = null;
-  const PORT = 8811;
+  const PORT = await getFreePort();
   // Observable side effect for the registered-but-unmapped probe route: its
   // handler appends to this file ONLY on an allow result. The file must never
   // appear, proving no handler body executed.
