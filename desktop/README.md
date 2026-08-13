@@ -26,21 +26,27 @@ It reads only the sidecar's **unauthenticated local status endpoints** (`/readyz
 
 ## What it shows
 
-| Panel | Source | Meaning |
+The layout is an operator console — a persistent left rail, a top summary row, a live execution stream with a receipt inspector, and a governance rail — but every value is read from the live sidecar. Nothing is asserted the page cannot back with an endpoint.
+
+| Element | Source | Meaning |
 | --- | --- | --- |
-| Protection Status | `/readyz` + `/healthz` | PROTECTED / DEGRADED / FAIL-CLOSED / OFFLINE |
-| Sidecar Status | `/healthz` | runtime health, worker, event-loop lag |
-| Last Decision | `/receipts/recent` | most recent ALLOW/REFUSE, tool, reason |
-| Receipt Count | `/receipts/recent` | signed receipts observed |
-| Active Policy | `/policy/current` | active policy version + hash |
-| Connected Tool Sources | `/receipts/recent` | distinct tools that have routed through MNDe |
-| Trust Status | receipts + `/identity` | receipts signed & offline-verifiable |
+| Decision Gate | `/readyz` + `/receipts/recent` | last real verdict — ALLOW–EXECUTED / REFUSE–BLOCKED / FAIL-CLOSED / DEGRADED |
+| Last Decision | `/receipts/recent` | most recent ALLOW/REFUSE, action, reason, policy, receipt id |
+| Decision Counts | `/receipts/recent` | ALLOW / REFUSE / verifier-proved VALID / shown, over the loaded window |
+| Execution Stream | `/receipts/recent` | recent decisions; click a row to inspect its receipt |
+| Receipt inspector | `/receipts/recent` + `/verify` | full receipt fields, signature block, and **Verify Now** (offline replay + Ed25519 check) |
+| System Status rail | `/readyz` `/healthz` `/policy/current` `/capabilities` `/identity` | sidecar, receipt log, replay, authority bundle, policy, durability |
+| Governance rail | `/identity` + `/policy/current` + `/capabilities` | release identity, active policy + hash, exposed capabilities, trust model |
+
+### Honesty constraints
+
+The runtime's receipt API exposes verdicts of **ALLOW/REFUSE only** (no "held/awaiting-approval" state) and **no caller/executor fields**, so the dashboard renders none of those. Signature state is shown exactly as recorded: only a verifier-proved `VALID` reads as trust — `UNKNOWN`/`NOT_REPORTED`/`INVALID` render as *unverified*, never as a green check. `Verify Now` POSTs the receipt to `/verify`; that route is authority-gated, so when it refuses the panel says so and points to the offline verifier (`node tools/verify.mjs <receipt.json>`) rather than faking a result.
 
 ## Navigation / copy
 
-Infrastructure vocabulary only — no marketing or auth funnels:
+Infrastructure vocabulary only — no marketing or auth funnels. The rail's views are:
 
-`Authority` · `Protection Status` · `Infrastructure` · `Audit Record` · `Policy` · `Demonstration`
+`Decisions` · `Receipts` · `Governance` · `Reconstruct` · `System`
 
 Removed entirely: Login, Sign In, Create Account, Welcome, Get Started.
 
