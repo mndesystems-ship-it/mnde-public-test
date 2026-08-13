@@ -34,6 +34,7 @@
     "test:prod-trust-gate-hostile": "node ./tests/test_prod_trust_gate_hostile.mjs",
     "test:receipt-signing-characterization": "node ./tests/test_receipt_signing_characterization.mjs",
     "test:receipt-signing-key-status": "node ./tests/test_receipt_signing_key_status.mjs",
+    "test:release-documentation-truth": "node ./tests/test_release_documentation_truth.mjs",
     "test:release-identity": "node ./tests/test_release_identity.mjs",
     "test:replay": "node ./scripts/test-replay-verification.mjs",
     "release:verify": "node ./tests/test_release_truth.mjs",
