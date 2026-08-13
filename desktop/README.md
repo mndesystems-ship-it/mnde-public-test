@@ -20,9 +20,11 @@ It reads only the sidecar's **unauthenticated local status endpoints** (`/readyz
 ## Startup flow
 
 1. Launch the application (start the local sidecar).
-2. The sidecar starts / is connected to locally.
-3. Runtime status is verified via local endpoints.
-4. Routed protection status is displayed — within seconds, with no account.
+2. A startup splash animates the MNDe mark — inputs converge → authority node evaluates → allowed execution out.
+3. The splash doubles as an honest loading indicator: four boot steps (runtime, receipt log, active policy, release identity) each flip from a spinner to ✓/✕ as the real endpoint responds — no fake progress bar.
+4. The splash fades and routed protection status is displayed — within seconds, with no account. A `prefers-reduced-motion` user gets the same page with the animation collapsed.
+
+In-page loading indicators follow the same rule: a pulsing live-dot on the Execution Stream marks active polling, spinners stand in while data is pending, and if the sidecar drops the dot goes stale rather than implying fresh data.
 
 ## What it shows
 
