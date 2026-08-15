@@ -26,6 +26,7 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -38,6 +39,17 @@ import {
   isSensitiveNamespacePath,
   requiredCapabilityForPath
 } from "../sidecar/auth_authority.mjs";
+
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
+  });
+}
 
 const results = [];
 async function test(name, fn) {
@@ -277,7 +289,7 @@ async function main() {
   // ── Layer 2: live production sidecar (real request path) ─────────────────────
   const prodDir = mkdtempSync(join(tmpdir(), "mnde-ledger-auth-prod-"));
   let prod = null;
-  const PORT = 8811;
+  const PORT = await getFreePort();
   // Observable side effect for the registered-but-unmapped probe route: its
   // handler appends to this file ONLY on an allow result. The file must never
   // appear, proving no handler body executed.
