@@ -17,6 +17,7 @@
 import { createPublicKey } from "node:crypto";
 
 import { buildAuthorityBundle, fingerprintOf, verifyAuthorityBundle } from "./bundle.mjs";
+import { assertRootSignerIdentity, createFileRootSigner } from "./root-signer.mjs";
 
 const FAR_FUTURE = "2999-01-01T00:00:00.000Z";
 const ROLES = new Set(["receipt", "policy", "approval"]);
@@ -48,13 +49,32 @@ export function rootKeyMatches(bundle, rootPrivateKeyPem) {
   }
 }
 
+function lifecycleRootSigner(bundle, { rootSigner, rootPrivateKeyPem }) {
+  const root = {
+    keyId: bundle?.root_key?.key_id,
+    publicPem: bundle?.root_key?.public_key,
+    fingerprint: bundle?.root_key?.fingerprint
+  };
+  try {
+    if (rootSigner) return assertRootSignerIdentity(rootSigner, root);
+    if (!rootKeyMatches(bundle, rootPrivateKeyPem)) return null;
+    return createFileRootSigner({
+      keyId: root.keyId,
+      publicKeyPem: root.publicPem,
+      privateKeyPem: rootPrivateKeyPem
+    });
+  } catch {
+    return null;
+  }
+}
+
 // Re-sign a bundle with updated key material. Pure; returns a new bundle object.
-async function reissue(bundle, rootPrivateKeyPem, updates) {
+async function reissue(bundle, rootSigner, updates) {
   return buildAuthorityBundle({
     authorityId: bundle.authority_id,
     issuedAt: updates.now,
     notAfter: updates.notAfter ?? bundle.not_after,
-    root: { keyId: bundle.root_key.key_id, privatePem: rootPrivateKeyPem, publicPem: bundle.root_key.public_key },
+    root: { keyId: bundle.root_key.key_id, publicPem: bundle.root_key.public_key, signer: rootSigner },
     receiptKeys: updates.receiptKeys ?? keysToInput(bundle.keys?.receipt),
     policyKeys: updates.policyKeys ?? keysToInput(bundle.keys?.policy),
     approvalKeys: updates.approvalKeys ?? keysToInput(bundle.keys?.approval),
@@ -74,10 +94,12 @@ async function finalize(bundle, next, now) {
 // at `now`. Receipts signed by the old key BEFORE `now` stay verifiable; the old
 // key cannot sign anything dated at/after `now`.
 export async function rotateSigningKey(bundle, options = {}) {
-  const { role = "receipt", rootPrivateKeyPem, newKey, now, validUntil = FAR_FUTURE, retire = true } = options;
+  const { role = "receipt", rootPrivateKeyPem, rootSigner, newKey, now, validUntil = FAR_FUTURE, retire = true } = options;
   if (!ROLES.has(role)) return { ok: false, reason: "INVALID_ROLE" };
   if (!isValidTimestamp(now)) return { ok: false, reason: "INVALID_NOW" };
-  if (!rootKeyMatches(bundle, rootPrivateKeyPem)) return { ok: false, reason: "ROOT_KEY_MISMATCH" };
+  // Production callers must pass a capability obtained from resolveRootSigner.
+  const signer = lifecycleRootSigner(bundle, { rootSigner, rootPrivateKeyPem });
+  if (!signer) return { ok: false, reason: "ROOT_KEY_MISMATCH" };
   if (!newKey || typeof newKey.keyId !== "string" || typeof newKey.publicPem !== "string") {
     return { ok: false, reason: "INVALID_NEW_KEY" };
   }
@@ -87,7 +109,7 @@ export async function rotateSigningKey(bundle, options = {}) {
   const retired = retire ? existing.map((k) => ({ ...k, validUntil: earliest(k.validUntil, now) })) : existing;
   const updated = [...retired, { keyId: newKey.keyId, publicPem: newKey.publicPem, validFrom: now, validUntil }];
 
-  const next = await reissue(bundle, rootPrivateKeyPem, { now, [`${role}Keys`]: updated });
+  const next = await reissue(bundle, signer, { now, [`${role}Keys`]: updated });
   const result = await finalize(bundle, next, now);
   if (!result.ok) return result;
   return { ...result, role, newKeyId: newKey.keyId, retiredKeyIds: retire ? existing.map((k) => k.keyId) : [] };
@@ -97,17 +119,19 @@ export async function rotateSigningKey(bundle, options = {}) {
 // validity window. Use for compromise. Historical receipts signed by it stop
 // verifying (intended — a compromised key's receipts are no longer trustworthy).
 export async function revokeKey(bundle, options = {}) {
-  const { rootPrivateKeyPem, keyId, now } = options;
+  const { rootPrivateKeyPem, rootSigner, keyId, now } = options;
   if (!isValidTimestamp(now)) return { ok: false, reason: "INVALID_NOW" };
   if (typeof keyId !== "string" || keyId.length === 0) return { ok: false, reason: "INVALID_KEY_ID" };
-  if (!rootKeyMatches(bundle, rootPrivateKeyPem)) return { ok: false, reason: "ROOT_KEY_MISMATCH" };
+  // Production callers must pass a capability obtained from resolveRootSigner.
+  const signer = lifecycleRootSigner(bundle, { rootSigner, rootPrivateKeyPem });
+  if (!signer) return { ok: false, reason: "ROOT_KEY_MISMATCH" };
   const revocation = Array.isArray(bundle.revocation) ? bundle.revocation : [];
   if (revocation.includes(keyId)) return { ok: false, reason: "ALREADY_REVOKED" };
 
   const known = ["receipt", "policy", "approval"].some((r) => (bundle.keys?.[r] ?? []).some((k) => k.key_id === keyId));
   if (!known) return { ok: false, reason: "UNKNOWN_KEY_ID" };
 
-  const next = await reissue(bundle, rootPrivateKeyPem, { now, revocation: [...revocation, keyId] });
+  const next = await reissue(bundle, signer, { now, revocation: [...revocation, keyId] });
   const result = await finalize(bundle, next, now);
   if (!result.ok) return result;
   return { ...result, revokedKeyId: keyId };

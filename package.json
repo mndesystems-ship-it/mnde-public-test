@@ -138,6 +138,7 @@
     "test:fresh-setup": "node ./scripts/test-fresh-setup.mjs",
     "test:trust-anchor": "node ./tests/test_trust_anchor.mjs",
     "test:reviewer-kit": "node ./tests/test_cross_platform_reviewer.mjs",
+    "test:root-signer": "node ./tests/test_root_signer.mjs",
     "test:audit-remediation": "node ./tests/test_audit_remediation.mjs",
     "test:passport-subject": "node ./tests/test_passport_subject.mjs",
     "test:executor-lifecycle": "node ./tests/test_executor_lifecycle.mjs",

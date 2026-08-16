@@ -75,6 +75,7 @@
   "test:release-identity",
   "test:replay",
   "test:reviewer-kit",
+  "test:root-signer",
   "test:shell",
   "test:sidecar",
   "test:sidecar-cli-hostile",
