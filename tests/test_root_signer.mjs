@@ -15,6 +15,7 @@ import {
 } from "../src/custody/bundle.mjs";
 import { issueExecutorCredential, verifyExecutorCredential } from "../src/custody/executor-credential.mjs";
 import { revokeKey, rotateSigningKey } from "../src/custody/lifecycle.mjs";
+import { signVerifierPolicy, verifyPolicySignature } from "../src/identity/verifier-policy.mjs";
 import {
   ROOT_SIGNER_ERRORS,
   assertRootSignerIdentity,
@@ -262,6 +263,32 @@ async function main() {
         now: NOW
       });
       assert.equal(verified.ok, true, verified.detail);
+    });
+
+    const verifierPolicyOptions = {
+      authorityId: legacyBundle.authority_id,
+      rootKeyId: root.keyId,
+      rootPublicPem: root.publicPem,
+      policyVersion: 1,
+      issuedAt: NOW,
+      notAfter: null,
+      verifierPolicies: [{
+        issuer: "https://token.actions.githubusercontent.com",
+        audience: "https://mnde.example.com",
+        subject_allowlist: ["repo:acme/infra:ref:refs/heads/main"],
+        trusted_jwks_hash: `sha256:${"a".repeat(64)}`
+      }],
+      minLevelTable: [{ environment: "production", authority_scope: "chain-1", min_level: "ASSERTION_HASH_BOUND" }]
+    };
+    const legacyVerifierPolicy = await signVerifierPolicy({ ...verifierPolicyOptions, rootPrivatePem: root.privatePem });
+    await test("verifier-policy format is byte-identical through the capability", async () => {
+      const capabilityPolicy = await signVerifierPolicy({ ...verifierPolicyOptions, rootSigner: external });
+      assert.deepEqual(capabilityPolicy, legacyVerifierPolicy);
+    });
+
+    await test("externally root-signed verifier policy verifies offline", async () => {
+      const policy = await signVerifierPolicy({ ...verifierPolicyOptions, rootSigner: external });
+      assert.equal((await verifyPolicySignature(policy, { rootPublicKey: root.publicPem })).ok, true);
     });
   } finally {
     if (priorMode === undefined) delete process.env.MOCK_SIGNER_MODE;
