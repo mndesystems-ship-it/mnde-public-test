@@ -1,7 +1,8 @@
 // RootSigner capability and hostile-boundary tests.
 
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -63,6 +64,19 @@ function externalEnv(root, publicPath, privatePath, overrides = {}) {
     MNDE_EXTERNAL_ROOT_SIGNER_PUBLIC_KEY: publicPath,
     ...overrides
   };
+}
+
+function processEnvWithExternalRoot(root, publicPath, privatePath, overrides = {}) {
+  return { ...process.env, ...externalEnv(root, publicPath, privatePath), MOCK_SIGNER_MODE: "ok", ...overrides };
+}
+
+function processEnvWithoutExternalRoot() {
+  const env = { ...process.env };
+  delete env.MNDE_EXTERNAL_ROOT_SIGNER_CMD;
+  delete env.MNDE_EXTERNAL_ROOT_SIGNER_KEY_ID;
+  delete env.MNDE_EXTERNAL_ROOT_SIGNER_PUBLIC_KEY;
+  delete env.MNDE_EXTERNAL_ROOT_SIGNER_TIMEOUT_MS;
+  return env;
 }
 
 async function main() {
@@ -235,6 +249,80 @@ async function main() {
       assert.equal((await verifyAuthorityBundle(revoked.bundle, { trustedRootFingerprint: legacyBundle.root_key.fingerprint, now: LATER })).ok, true);
     });
 
+    const bundlePath = join(dir, "authority.bundle.json");
+    const nextReceiptPublicPath = join(dir, "receipt-2.pub.pem");
+    writeFileSync(bundlePath, JSON.stringify(legacyBundle));
+    writeFileSync(nextReceiptPublicPath, nextReceipt.publicPem);
+
+    await test("authority CLI rotates and revokes through external-root mode without --root-key", async () => {
+      const rotateOut = join(dir, "rotated.bundle.json");
+      const rotate = spawnSync(process.execPath, [
+        join(repoRoot, "bin", "mnde-authority.mjs"), "rotate",
+        "--bundle", bundlePath,
+        "--key-id", nextReceipt.keyId,
+        "--new-public", nextReceiptPublicPath,
+        "--now", LATER,
+        "--out", rotateOut
+      ], { encoding: "utf8", env: processEnvWithExternalRoot(root, rootPublicPath, rootPrivatePath) });
+      assert.equal(rotate.status, 0, rotate.stderr);
+      const rotated = JSON.parse(readFileSync(rotateOut, "utf8"));
+      assert.equal((await verifyAuthorityBundle(rotated, { trustedRootFingerprint: legacyBundle.root_key.fingerprint, now: LATER })).ok, true);
+
+      const revokeOut = join(dir, "revoked.bundle.json");
+      const revoke = spawnSync(process.execPath, [
+        join(repoRoot, "bin", "mnde-authority.mjs"), "revoke",
+        "--bundle", bundlePath,
+        "--key-id", receipt.keyId,
+        "--now", LATER,
+        "--out", revokeOut
+      ], { encoding: "utf8", env: processEnvWithExternalRoot(root, rootPublicPath, rootPrivatePath) });
+      assert.equal(revoke.status, 0, revoke.stderr);
+      const revoked = JSON.parse(readFileSync(revokeOut, "utf8"));
+      assert.ok(revoked.revocation.includes(receipt.keyId));
+    });
+
+    await test("authority CLI rejects --root-key before reading it in external mode", () => {
+      const run = spawnSync(process.execPath, [
+        join(repoRoot, "bin", "mnde-authority.mjs"), "revoke",
+        "--bundle", bundlePath,
+        "--root-key", join(dir, "must-not-be-read.pem"),
+        "--key-id", receipt.keyId,
+        "--out", join(dir, "forbidden.bundle.json")
+      ], { encoding: "utf8", env: processEnvWithExternalRoot(root, rootPublicPath, rootPrivatePath) });
+      assert.notEqual(run.status, 0);
+      assert.match(run.stderr, /ERR_ROOT_PEM_FALLBACK_FORBIDDEN/u);
+      assert.doesNotMatch(run.stderr, /cannot read root key/u);
+    });
+
+    await test("authority CLI preserves legacy --root-key operation", async () => {
+      const out = join(dir, "legacy-rotated.bundle.json");
+      const run = spawnSync(process.execPath, [
+        join(repoRoot, "bin", "mnde-authority.mjs"), "rotate",
+        "--bundle", bundlePath,
+        "--root-key", rootPrivatePath,
+        "--key-id", nextReceipt.keyId,
+        "--new-public", nextReceiptPublicPath,
+        "--now", LATER,
+        "--out", out
+      ], { encoding: "utf8", env: processEnvWithoutExternalRoot() });
+      assert.equal(run.status, 0, run.stderr);
+      const rotated = JSON.parse(readFileSync(out, "utf8"));
+      assert.equal((await verifyAuthorityBundle(rotated, { trustedRootFingerprint: legacyBundle.root_key.fingerprint, now: LATER })).ok, true);
+    });
+
+    await test("authority CLI fails closed without external mode or --root-key", () => {
+      const out = join(dir, "missing-root.bundle.json");
+      const run = spawnSync(process.execPath, [
+        join(repoRoot, "bin", "mnde-authority.mjs"), "revoke",
+        "--bundle", bundlePath,
+        "--key-id", receipt.keyId,
+        "--out", out
+      ], { encoding: "utf8", env: processEnvWithoutExternalRoot() });
+      assert.notEqual(run.status, 0);
+      assert.match(run.stderr, /ERR_ROOT_SIGNER_INVALID/u);
+      assert.equal(existsSync(out), false);
+    });
+
     const executor = generateAuthorityKeyPair();
     const credentialOptions = {
       authorityBundle: legacyBundle,
@@ -263,6 +351,78 @@ async function main() {
         now: NOW
       });
       assert.equal(verified.ok, true, verified.detail);
+    });
+
+    await test("executor enrollment CLI uses external-root mode without --root-key", async () => {
+      const outDir = join(dir, "external-executor");
+      const run = spawnSync(process.execPath, [
+        join(repoRoot, "scripts", "trust-enroll-executor.mjs"),
+        "--executor-id", credentialOptions.executorId,
+        "--environment", "prod",
+        "--bundle", bundlePath,
+        "--out-dir", outDir,
+        "--issued-at", NOW,
+        "--ttl-hours", "24"
+      ], { encoding: "utf8", env: processEnvWithExternalRoot(root, rootPublicPath, rootPrivatePath) });
+      assert.equal(run.status, 0, run.stderr);
+      const summary = JSON.parse(run.stdout);
+      const credential = JSON.parse(readFileSync(summary.credential_path, "utf8"));
+      const verified = await verifyExecutorCredential(credential, {
+        authorityBundle: legacyBundle,
+        trustedRootFingerprint: legacyBundle.root_key.fingerprint,
+        environmentId: "prod",
+        expectedExecutorId: credentialOptions.executorId,
+        requiredCapability: "sign_execution_receipt",
+        now: NOW
+      });
+      assert.equal(verified.ok, true, verified.detail);
+    });
+
+    await test("executor enrollment rejects mixed external-root and --root-key before output", () => {
+      const outDir = join(dir, "forbidden-executor");
+      const run = spawnSync(process.execPath, [
+        join(repoRoot, "scripts", "trust-enroll-executor.mjs"),
+        "--executor-id", credentialOptions.executorId,
+        "--environment", "prod",
+        "--bundle", bundlePath,
+        "--root-key", join(dir, "must-not-be-read.pem"),
+        "--out-dir", outDir
+      ], { encoding: "utf8", env: processEnvWithExternalRoot(root, rootPublicPath, rootPrivatePath) });
+      assert.notEqual(run.status, 0);
+      assert.match(run.stderr, /ERR_ROOT_PEM_FALLBACK_FORBIDDEN/u);
+      assert.equal(existsSync(outDir), false);
+    });
+
+    await test("production bootstrap external-root mode never creates root.key.pem", async () => {
+      const outDir = join(dir, "external-authority");
+      const run = spawnSync(process.execPath, [
+        join(repoRoot, "scripts", "init-production-authority.mjs"),
+        "--out", outDir,
+        "--authority-id", "external-acme-prod",
+        "--root-key-id", root.keyId,
+        "--valid-days", "365",
+        "--bundle-days", "90"
+      ], { encoding: "utf8", env: processEnvWithExternalRoot(root, rootPublicPath, rootPrivatePath) });
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(existsSync(join(outDir, "root.key.pem")), false);
+      assert.equal(readFileSync(join(outDir, "root.pub.pem"), "utf8"), root.publicPem);
+      const bundle = JSON.parse(readFileSync(join(outDir, "authority.bundle.json"), "utf8"));
+      assert.equal((await verifyAuthorityBundle(bundle, { trustedRootFingerprint: bundle.root_key.fingerprint, now: new Date().toISOString() })).ok, true);
+    });
+
+    await test("production bootstrap writes nothing when the external root signer fails", () => {
+      const outDir = join(dir, "failed-external-authority");
+      const run = spawnSync(process.execPath, [
+        join(repoRoot, "scripts", "init-production-authority.mjs"),
+        "--out", outDir,
+        "--authority-id", "external-failure-prod",
+        "--root-key-id", root.keyId
+      ], {
+        encoding: "utf8",
+        env: processEnvWithExternalRoot(root, rootPublicPath, rootPrivatePath, { MOCK_SIGNER_MODE: "exit1" })
+      });
+      assert.notEqual(run.status, 0);
+      assert.equal(existsSync(outDir), false);
     });
 
     const verifierPolicyOptions = {

@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 // mnde-authority — operate a production authority bundle's signing keys.
 //
-//   mnde-authority rotate --bundle b.json --root-key root.pem --key-id receipt-2 \
+//   mnde-authority rotate --bundle b.json [--root-key root.pem] --key-id receipt-2 \
 //                  (--new-public new.pub.pem | --generate --new-private-out new.key.pem) \
 //                  [--role receipt] [--valid-until <iso>] [--now <iso>] --out next.json
 //
-//   mnde-authority revoke --bundle b.json --root-key root.pem --key-id receipt-1 \
+//   mnde-authority revoke --bundle b.json [--root-key root.pem] --key-id receipt-1 \
 //                  [--now <iso>] --out next.json
 //
+// Omit --root-key when MNDE_EXTERNAL_ROOT_SIGNER_CMD selects isolated/HSM root
+// custody. Supplying both external-root mode and --root-key fails closed.
 // The root private key is used only to re-sign the bundle. The output is verified
 // before it is written; on any error nothing is written and the exit code is
 // non-zero (fail-closed). The input bundle is never overwritten unless --force.
@@ -15,7 +17,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { generateAuthorityKeyPair } from "../src/custody/index.mjs";
+import { generateAuthorityKeyPair, resolveRootSigner } from "../src/custody/index.mjs";
 import { rotateSigningKey, revokeKey } from "../src/custody/lifecycle.mjs";
 
 function parseArgs(argv) {
@@ -64,6 +66,27 @@ function writeBundle(args, next) {
   writeFileSync(out, `${JSON.stringify(next, null, 2)}\n`, "utf8");
 }
 
+function loadRootSigner(bundle, rootKeyPath) {
+  const root = {
+    keyId: bundle?.root_key?.key_id,
+    publicPem: bundle?.root_key?.public_key,
+    fingerprint: bundle?.root_key?.fingerprint
+  };
+  try {
+    // In external mode, reject the presence of --root-key before reading it so
+    // root PEM bytes never enter this process as a fallback path.
+    const externalRoot = typeof process.env.MNDE_EXTERNAL_ROOT_SIGNER_CMD === "string"
+      && process.env.MNDE_EXTERNAL_ROOT_SIGNER_CMD.trim().length > 0;
+    if (externalRoot && rootKeyPath) {
+      return resolveRootSigner({ env: process.env, root, rootPrivateKeyPem: "configured-via--root-key" });
+    }
+    const rootPrivateKeyPem = rootKeyPath ? readText(rootKeyPath, "root key") : undefined;
+    return resolveRootSigner({ env: process.env, root, rootPrivateKeyPem });
+  } catch (error) {
+    die(`${error?.code ?? "ERR_ROOT_SIGNER"}: ${error?.message ?? String(error)}`);
+  }
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const command = argv[0];
@@ -71,11 +94,11 @@ async function main() {
   const now = typeof args.now === "string" ? args.now : new Date().toISOString();
 
   if (command === "rotate") {
-    if (!args.bundle || !args["root-key"] || !args["key-id"]) {
-      die("usage: rotate --bundle <in> --root-key <root.pem> --key-id <id> (--new-public <pub.pem> | --generate --new-private-out <priv.pem>) [--role receipt] [--valid-until <iso>] [--now <iso>] --out <out>");
+    if (!args.bundle || !args["key-id"]) {
+      die("usage: rotate --bundle <in> [--root-key <root.pem> | external-root env] --key-id <id> (--new-public <pub.pem> | --generate --new-private-out <priv.pem>) [--role receipt] [--valid-until <iso>] [--now <iso>] --out <out>");
     }
     const bundle = readJson(args.bundle, "bundle");
-    const rootPrivateKeyPem = readText(args["root-key"], "root key");
+    const rootSigner = loadRootSigner(bundle, args["root-key"]);
 
     let publicPem;
     if (args.generate) {
@@ -92,7 +115,7 @@ async function main() {
 
     const result = await rotateSigningKey(bundle, {
       role: typeof args.role === "string" ? args.role : "receipt",
-      rootPrivateKeyPem,
+      rootSigner,
       newKey: { keyId: args["key-id"], publicPem },
       now,
       ...(typeof args["valid-until"] === "string" ? { validUntil: args["valid-until"] } : {})
@@ -105,12 +128,12 @@ async function main() {
   }
 
   if (command === "revoke") {
-    if (!args.bundle || !args["root-key"] || !args["key-id"]) {
-      die("usage: revoke --bundle <in> --root-key <root.pem> --key-id <id> [--now <iso>] --out <out>");
+    if (!args.bundle || !args["key-id"]) {
+      die("usage: revoke --bundle <in> [--root-key <root.pem> | external-root env] --key-id <id> [--now <iso>] --out <out>");
     }
     const bundle = readJson(args.bundle, "bundle");
-    const rootPrivateKeyPem = readText(args["root-key"], "root key");
-    const result = await revokeKey(bundle, { rootPrivateKeyPem, keyId: args["key-id"], now });
+    const rootSigner = loadRootSigner(bundle, args["root-key"]);
+    const result = await revokeKey(bundle, { rootSigner, keyId: args["key-id"], now });
     if (!result.ok) die(`revoke failed: ${result.reason}`);
     writeBundle(args, result.bundle);
     process.stdout.write(`revoked key '${result.revokedKeyId}', issued_at ${now}\n`);
