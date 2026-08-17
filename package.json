@@ -47,6 +47,7 @@
     "test:identity-assertion": "node ./tests/test_identity_assertion.mjs",
     "test:layered-receipt-verification": "node ./tests/test_layered_receipt_verification.mjs",
     "test:verifier-policy": "node ./tests/test_verifier_policy.mjs",
+    "test:witnessed-authority": "node ./tests/test_witnessed_authority_hostile.mjs",
     "test:policy-bundle-evidence-export": "node ./tests/test_policy_bundle_evidence_export.mjs",
     "test:policy-bundle-sign-cli": "node ./tests/test_sign_policy_bundle_cli.mjs",
     "policy-bundle:evidence:export": "node ./tools/export-policy-bundle-evidence.mjs",
