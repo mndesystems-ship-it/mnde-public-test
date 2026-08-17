@@ -118,6 +118,40 @@ The command is the integration point for any HSM — examples, none hardcoded:
 
 In `MNDE_PROFILE=production`, external-signer is accepted only after the pre-flight confirms both receipt and ledger signer commands run, their key ids are present, active, and not revoked in the bundle, each configured public key matches its bundle key, and **live self-test signatures verify**.
 
+### External root signer
+
+Root-authority operations use the same no-shell command boundary through the
+`RootSigner` capability:
+
+```bash
+MNDE_EXTERNAL_ROOT_SIGNER_CMD='["/usr/bin/your-root-signer","--slot","root"]'
+MNDE_EXTERNAL_ROOT_SIGNER_KEY_ID=root-1
+MNDE_EXTERNAL_ROOT_SIGNER_PUBLIC_KEY=/etc/mnde/root.pub.pem
+MNDE_EXTERNAL_ROOT_SIGNER_TIMEOUT_MS=5000 # optional; default 5000
+```
+
+With these variables configured:
+
+- `authority:init` uses the provisioned public key, signs through the command,
+  and **does not create `root.key.pem`**;
+- `authority rotate|revoke` signs through the command when `--root-key` is
+  omitted; and
+- `trust-enroll-executor` signs credentials through the command when
+  `--root-key` is omitted.
+
+Supplying `--root-key` while external-root mode is configured fails with
+`ERR_ROOT_PEM_FALLBACK_FORBIDDEN` before the file is read. Every returned root
+signature is verified against the configured/published root public key before an
+artifact is written. Command failure, timeout, malformed output, or wrong-key
+signatures fail closed; there is no PEM fallback.
+
+The command boundary is not itself an HSM. Its executable path, configuration,
+and authorization policy are part of the root trust boundary. A production
+wrapper should authenticate the requesting authority host, allow only expected
+MNDe root-signing object schemas, enforce operator approval where required, and
+emit an independent audit trail. Merely moving a PEM into a helper process on
+the same host does not constitute isolated custody.
+
 ## Production trust-root pre-flight (`MNDE_PROFILE`)
 
 MNDe must never enter live enforcement while signing with development keys. A deterministic pre-flight runs once before the decision server accepts traffic (`src/authority-signing/preflight.mjs`, `assertTrustRoot`).
@@ -167,9 +201,9 @@ To create a production trust root:
 npm run authority:init -- --out /secure/path/outside/the/repo --authority-id your-org-prod
 ```
 
-This generates the long-lived **root** key and the first **receipt**, **ledger**, and **activation** signing keys, builds a root-signed `mnde.authority.bundle.v1`, verifies it, and writes the public bundle/key plus private keys (`0600`). It refuses to write inside the repository, refuses to overwrite, and refuses a `demo`/`local` authority id.
+In file mode this generates the long-lived **root** key and the first **receipt**, **ledger**, and **activation** signing keys, builds a root-signed `mnde.authority.bundle.v1`, verifies it, and writes the public bundle/key plus private keys (`0600`). With the external-root variables above, the root must already be provisioned: the command writes `root.pub.pem` but never creates `root.key.pem`. Both modes refuse to write inside the repository, refuse to overwrite, and refuse a `demo`/`local` authority id.
 
-- `root.key.pem` — the root private key. It signs the bundle and key rotations only; it is **not** needed on the serving host. Move it offline / into an HSM or escrow.
+- `root.key.pem` — file mode only. The root private key is **not** needed on the serving host. Move it offline / into an HSM or escrow.
 - `receipt-signing.key.pem` — the receipt signing secret used by the sidecar.
 - `ledger-signing.key.pem` — the execution-ledger signing secret used by the sidecar.
 - `activation-signing.key.pem` — signs activation transitions; it is not needed by the serving sidecar.
@@ -187,7 +221,7 @@ Writes only public material and prints the **root fingerprint** to distribute as
 
 ## Key rotation, retirement & revocation
 
-Production trust roots must be operable. The `mnde-authority` CLI (`npm run authority -- <rotate|revoke> ...`, library `src/custody/lifecycle.mjs`) re-issues an authority bundle using only the **root private key** — signing keys' private material is never needed. The output is verified before it is written; on any error nothing is written and the exit code is non-zero (fail-closed). The input bundle is never overwritten unless `--force`, so the prior bundle is retained for rollback.
+Production trust roots must be operable. The `mnde-authority` CLI (`npm run authority -- <rotate|revoke> ...`, library `src/custody/lifecycle.mjs`) re-issues an authority bundle through a root-signing capability — file-backed or external — and never needs signing-role private material. The output is verified before it is written; on any error the bundle is not written and the exit code is non-zero (fail-closed). The input bundle is never overwritten unless `--force`, so the prior bundle is retained for rollback.
 
 **Rotate** (scheduled rotation, or replacing a soon-to-expire key):
 
@@ -224,7 +258,7 @@ Every re-issue advances `issued_at` (monotonic ordering) and stays **root-signed
 - **Revocation:** revoke + redistribute the new bundle; verifiers pick up the revocation as soon as they have the newer bundle (governed by `not_after`/`maxAgeMs`).
 - **Rollback:** redeploy the previous bundle file (rotation/revoke never overwrite it without `--force`).
 - **Disaster recovery:** the **root private key** is the recovery anchor — store it offline (HSM/escrow), separate from signing keys. Retain the published bundle history. Losing the root means a trust-anchor rollover (new root + out-of-band redistribution of the new fingerprint), which is why the root must be protected above all else.
-- **Key storage:** generated private keys are written `0600` (POSIX; Windows uses ACLs). For production, hold signing keys in `file-backed-production` outside the repo, or in a future HSM/KMS provider where the private key never leaves the boundary — the lifecycle commands are provider-agnostic and only need the root to re-sign.
+- **Key storage:** generated private keys are written `0600` (POSIX; Windows uses ACLs). For production, hold operational signing keys in `file-backed-production` outside the repo. The root may instead use the external signer adapter so its private key never enters the application process or filesystem; that command boundary must be provisioned, authenticated, and attested as part of the custody design.
 
 ## Threat model and guarantees
 

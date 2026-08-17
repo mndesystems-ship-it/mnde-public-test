@@ -139,7 +139,7 @@ The signature payload excludes `activation_id` because `activation_id` is derive
 
 This is a compatible extension: existing verifiers ignore unknown roles; activation verification requires the role to be present. Activation keys follow the same validity-window, rotation, and revocation rules as receipt keys. An activation record MUST fail verification if its `key_id` is absent from the `activation` role, revoked, or outside its validity window at `signed_at`.
 
-The customer trust root signs the bundle; the bundle authorizes the activation key; the activation key signs transitions. Root private-key use remains rare (bundle issuance), consistent with existing custody practice.
+The customer trust root signs the bundle; the bundle authorizes the activation key; the activation key signs transitions. Root private-key use remains rare (authority-artifact issuance), consistent with existing custody practice.
 
 ## 9. Runtime Requirements
 

@@ -27,10 +27,10 @@ import { sha256 } from "../crypto/provider.mjs";
 import { canonicalizeJson } from "../../shared/json.ts";
 import {
   fingerprintOf,
-  signCanonical,
   verifyAuthorityBundle,
   verifyCanonical
 } from "./bundle.mjs";
+import { createFileRootSigner, signWithRootSigner } from "./root-signer.mjs";
 
 export const EXECUTOR_CREDENTIAL_SCHEMA = "mnde.executor.credential.v1";
 
@@ -101,10 +101,12 @@ function bodyForSignature(credentialLike) {
   return rest;
 }
 
-// Issue (authority-side). Signs the credential with the bundle ROOT private key.
+// Issue (authority-side). Signs the credential with the bundle ROOT capability.
 //
 // options:
 //   authorityBundle  loaded mnde.authority.bundle.v1 (public material)
+//   rootSigner       root-signing capability (production callers resolve it via
+//                    resolveRootSigner so external-root mode cannot use a PEM)
 //   rootPrivatePem   Ed25519 private key PEM for authorityBundle.root_key
 //   executorId       stable executor id (e.g. mnde:local:prod:executor:codex:01)
 //   publicPem        the executor's OWN Ed25519 public key PEM
@@ -114,6 +116,7 @@ function bodyForSignature(credentialLike) {
 export async function issueExecutorCredential(options) {
   const {
     authorityBundle,
+    rootSigner,
     rootPrivatePem,
     executorId,
     publicPem,
@@ -127,7 +130,7 @@ export async function issueExecutorCredential(options) {
   if (!isObject(authorityBundle) || !isObject(authorityBundle.root_key)) {
     throw new Error("issueExecutorCredential: authorityBundle with root_key is required");
   }
-  if (!isNonEmptyString(rootPrivatePem)) throw new Error("issueExecutorCredential: rootPrivatePem is required");
+  if (!rootSigner && !isNonEmptyString(rootPrivatePem)) throw new Error("issueExecutorCredential: rootPrivatePem or rootSigner is required");
   if (!isNonEmptyString(executorId)) throw new Error("issueExecutorCredential: executorId is required");
   if (!isNonEmptyString(publicPem)) throw new Error("issueExecutorCredential: publicPem is required");
   if (!isNonEmptyString(environmentId)) throw new Error("issueExecutorCredential: environmentId is required");
@@ -158,8 +161,20 @@ export async function issueExecutorCredential(options) {
   };
   const credential_id = computeCredentialId(core);
   const signedBody = { ...core, credential_id };
-  const issuer_signature = await signCanonical(canonicalizeJson(signedBody), rootPrivatePem);
-  return { ...signedBody, issuer_signature };
+  const root = {
+    keyId: authorityBundle.root_key.key_id,
+    publicPem: authorityBundle.root_key.public_key,
+    fingerprint: authorityBundle.root_key.fingerprint
+  };
+  // Production callers must pass a capability obtained from resolveRootSigner;
+  // the inline PEM adapter remains for backward-compatible offline tooling.
+  const signer = rootSigner ?? createFileRootSigner({
+    keyId: root.keyId,
+    publicKeyPem: root.publicPem,
+    privateKeyPem: rootPrivatePem
+  });
+  const signature = await signWithRootSigner(signer, canonicalizeJson(signedBody), root);
+  return { ...signedBody, issuer_signature: signature.value };
 }
 
 function fail(code, detail) {

@@ -4,14 +4,15 @@
 //   node scripts/init-production-authority.mjs --out /secure/path --authority-id acme-prod
 //
 // Generates the long-lived ROOT authority key plus receipt and ledger signing keys,
-// builds a root-signed mnde.authority.bundle.v1, and verifies it before writing
-// anything. Secrets are written outside the repository with 0600 permissions.
+// or uses MNDE_EXTERNAL_ROOT_SIGNER_CMD with an already-provisioned root. It builds
+// a root-signed mnde.authority.bundle.v1 and verifies it before writing anything.
+// Secrets are written outside the repository with 0600 permissions.
 //
 // What comes out:
-//   <out>/root.key.pem            ROOT private key — the crown jewel. Move this
+//   <out>/root.key.pem            ROOT private key (file mode only). Move this
 //                                 offline / into an HSM or escrow. It is NOT
-//                                 needed on the serving host; it only signs the
-//                                 bundle and key rotations.
+//                                 needed on the serving host; it authorizes
+//                                 infrequent authority artifacts.
 //   <out>/root.pub.pem            ROOT public key.
 //   <out>/receipt-signing.key.pem Receipt signing private key — this is the only
 //                                 secret the sidecar needs (file-backed-production).
@@ -27,7 +28,9 @@ import { fileURLToPath } from "node:url";
 
 import {
   buildAuthorityBundle,
+  createExternalRootSigner,
   generateAuthorityKeyPair,
+  resolveRootSigner,
   signCanonical,
   verifyAuthorityBundle,
   verifyAgainstBundle
@@ -54,6 +57,8 @@ export async function initProductionAuthority(options = {}) {
     ledgerKeyId = "ledger-1",
     activationKeyId = "activation-1",
     rootKeyId = "root-1",
+    rootSigner = null,
+    rootPublicPem = null,
     repoRoot = REPO_ROOT
   } = options;
 
@@ -69,19 +74,28 @@ export async function initProductionAuthority(options = {}) {
     return { ok: false, reason: "refusing to write keys inside the repository (after canonical path resolution); choose an --out path outside the project" };
   }
 
+  const externalRoot = rootSigner !== null;
+  if (externalRoot && (typeof rootPublicPem !== "string" || rootPublicPem.length === 0)) {
+    return { ok: false, reason: "rootPublicPem is required with rootSigner" };
+  }
+
   const paths = {
-    rootPrivate: resolve(out, "root.key.pem"),
+    rootPrivate: externalRoot ? null : resolve(out, "root.key.pem"),
     rootPublic: resolve(out, "root.pub.pem"),
     receiptPrivate: resolve(out, "receipt-signing.key.pem"),
     ledgerPrivate: resolve(out, "ledger-signing.key.pem"),
     activationPrivate: resolve(out, "activation-signing.key.pem"),
     bundle: resolve(out, "authority.bundle.json")
   };
-  for (const p of Object.values(paths)) {
+  for (const p of Object.values(paths).filter(Boolean)) {
     if (existsSync(p)) return { ok: false, reason: `refusing to overwrite existing file: ${p}` };
   }
 
-  const root_ = { keyId: rootKeyId, ...generateAuthorityKeyPair() };
+  // Production callers must obtain rootSigner through resolveRootSigner. When
+  // present, no root private key is generated or written by this ceremony.
+  const root_ = externalRoot
+    ? { keyId: rootKeyId, publicPem: rootPublicPem, signer: rootSigner }
+    : { keyId: rootKeyId, ...generateAuthorityKeyPair() };
   const receipt = { keyId: receiptKeyId, ...generateAuthorityKeyPair() };
   const ledger = { keyId: ledgerKeyId, ...generateAuthorityKeyPair() };
   const activation = { keyId: activationKeyId, ...generateAuthorityKeyPair() };
@@ -126,7 +140,7 @@ export async function initProductionAuthority(options = {}) {
   // half-valid trust root is left behind.
   const written = [];
   for (const w of [
-    { path: paths.rootPrivate, data: root_.privatePem, mode: 0o600 },
+    ...(externalRoot ? [] : [{ path: paths.rootPrivate, data: root_.privatePem, mode: 0o600 }]),
     { path: paths.rootPublic, data: root_.publicPem, mode: 0o644 },
     { path: paths.receiptPrivate, data: receipt.privatePem, mode: 0o600 },
     { path: paths.ledgerPrivate, data: ledger.privatePem, mode: 0o600 },
@@ -172,6 +186,23 @@ async function main() {
     process.stderr.write("usage: node scripts/init-production-authority.mjs --out <dir-outside-repo> --authority-id <id> [--valid-days 365] [--bundle-days 90] [--receipt-key-id receipt-1] [--ledger-key-id ledger-1] [--root-key-id root-1]\n");
     process.exit(2);
   }
+  const rootKeyId = arg("--root-key-id", "root-1");
+  let rootSigner = null;
+  let rootPublicPem = null;
+  if (typeof process.env.MNDE_EXTERNAL_ROOT_SIGNER_CMD === "string" && process.env.MNDE_EXTERNAL_ROOT_SIGNER_CMD.trim().length > 0) {
+    try {
+      const external = createExternalRootSigner(process.env, { keyId: rootKeyId });
+      rootSigner = resolveRootSigner({
+        env: process.env,
+        root: { keyId: external.keyId, publicPem: external.publicKeyPem, fingerprint: external.fingerprint },
+        rootSigner: external
+      });
+      rootPublicPem = external.publicKeyPem;
+    } catch (error) {
+      process.stderr.write(`init-production-authority: root signer unavailable (${error?.code ?? "ERR_ROOT_SIGNER"}): ${error?.message ?? String(error)}\n`);
+      process.exit(1);
+    }
+  }
   const result = await initProductionAuthority({
     outDir,
     authorityId,
@@ -179,7 +210,9 @@ async function main() {
     bundleDays: Number(arg("--bundle-days", "90")),
     receiptKeyId: arg("--receipt-key-id", "receipt-1"),
     ledgerKeyId: arg("--ledger-key-id", "ledger-1"),
-    rootKeyId: arg("--root-key-id", "root-1")
+    rootKeyId,
+    rootSigner,
+    rootPublicPem
   });
   if (!result.ok) {
     process.stderr.write(`init-production-authority: ${result.reason}\n`);
@@ -195,7 +228,11 @@ async function main() {
   process.stdout.write(`  ${result.paths.receiptPrivate}  (sidecar secret — keep on the serving host)\n`);
   process.stdout.write(`  ${result.paths.ledgerPrivate}  (sidecar secret — signs execution-ledger entries)\n`);
   process.stdout.write(`  ${result.paths.activationPrivate}  (activation secret — signs install/upgrade/rollback transitions; not needed by the serving sidecar)\n`);
-  process.stdout.write(`  ${result.paths.rootPrivate}             (CROWN JEWEL — move OFFLINE / to HSM/escrow; not needed on the host)\n`);
+  if (result.paths.rootPrivate) {
+    process.stdout.write(`  ${result.paths.rootPrivate}             (CROWN JEWEL — move OFFLINE / to HSM/escrow; not needed on the host)\n`);
+  } else {
+    process.stdout.write("  root private key not created (external root signer)\n");
+  }
   process.stdout.write(`  ${result.paths.rootPublic}\n\n`);
   process.stdout.write("Run the sidecar against this trust root:\n");
   e("MNDE_PROFILE", "production");

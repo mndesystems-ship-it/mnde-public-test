@@ -41,6 +41,7 @@ import {
 
 export * from "./bundle.mjs";
 export { createExternalSignerCustody } from "./external-signer.mjs";
+export * from "./root-signer.mjs";
 
 export const KNOWN_PROVIDERS = Object.freeze(["local-demo", "file-backed-production", "external-signer"]);
 export const FUTURE_PROVIDERS = Object.freeze(["aws-kms", "azure-key-vault", "gcp-kms", "hsm-pkcs11"]);

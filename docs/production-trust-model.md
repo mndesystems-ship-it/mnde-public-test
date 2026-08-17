@@ -32,9 +32,11 @@ equality, not key-id matching. Implemented by
 
 ## The five roles, kept distinct
 
-1. **Root key** — offline. Its *only* job is to sign authority bundles (and key
-   rotations/revocations). It never signs execution receipts. This is the crown
-   jewel; it does not live on the serving host.
+1. **Root key** — offline or externally isolated. It authorizes infrequent
+   authority artifacts: authority bundles (including rotations/revocations),
+   short-lived executor credentials, and verifier policies. It never signs
+   execution receipts. This is the crown jewel; it does not live on the serving
+   host.
 2. **Receipt role key** — operational. Signs `mnde.execution_gate.receipt.v1`
    receipts. It is authorized *only* by being present, valid, and non-revoked in a
    root-signed bundle under `keys.receipt`. A key valid under any other role
@@ -79,6 +81,11 @@ air-gapped machine.**
    repository, refuses to overwrite, refuses a `local`/`demo` authority id, writes
    private keys `0600`, and prints the **root fingerprint** to pin. The bundle
    validity defaults to **90 days** (`--bundle-days`, decision below).
+   Alternatively, configure `MNDE_EXTERNAL_ROOT_SIGNER_CMD`,
+   `MNDE_EXTERNAL_ROOT_SIGNER_KEY_ID`, and
+   `MNDE_EXTERNAL_ROOT_SIGNER_PUBLIC_KEY` before running the same command. In
+   that mode the provisioned external root signs the initial bundle and the
+   bootstrap never creates `root.key.pem`.
 2. **Move the root private key offline** (`root.key.pem` — the crown jewel; not
    needed on the serving host) and make encrypted offline backups. Keep only the
    receipt (and ledger) private keys on the serving host.
@@ -89,6 +96,8 @@ air-gapped machine.**
    npm run authority -- rotate --bundle b.json --root-key root.key.pem --key-id receipt-2 --generate --new-private-out receipt-2.key.pem --out next.json
    npm run authority -- revoke --bundle b.json --root-key root.key.pem --key-id receipt-1 --out next.json
    ```
+   With external-root mode configured, omit `--root-key`; providing both fails
+   closed before the PEM path is read.
    `bin/mnde-authority.mjs` verifies the output before writing and never overwrites
    the input bundle without `--force` (rollback safety). `--new-public` accepts a
    key generated elsewhere, so the root signing step can run on the offline machine
@@ -151,7 +160,7 @@ receipts. Tracked as Phase 1 §7 in `mnde-gtm/phase1-trust-root-spec.md`.
 | Decision | Value | Basis |
 |---|---|---|
 | `authority_id` | `mnde-systems-production` | stable across rotations; no date/env/version suffix; accepted by the schema (rejects only `local`/`demo`). |
-| Root custody | offline Ed25519; signs bundles only; encrypted offline backups | `authority:init` writes root private outside the repo `0600`; never committed/uploaded. |
+| Root custody | offline or externally isolated Ed25519; signs authority artifacts only; encrypted offline backups where exportable | File-mode `authority:init` writes root private outside the repo `0600`; external mode creates no root private-key file. Never committed/uploaded. |
 | Trust URL | `https://trust.mnde.com/authority-bundle.json` **(PROPOSED — not published)** | DNS/hosting/TLS not assumed live; publishing contract only. |
 | Bundle validity | 90 days; rotate/republish before day 60 | `authority:init --bundle-days` default is 90; enforced from the signed `not_after`, not hard-coded in crypto. |
 | Ledger role | included | **Required** by the running production path: preflight step 6 ("the production ledger is always enabled") fails closed (`ERR_TRUST_ROOT_LEDGER_SIGNER`) without a verifying `ledger` key. The receipt-verification acceptance test alone needs only the `receipt` role. |
