@@ -69,18 +69,30 @@ Expected result:
 
 ## Install
 
-Requirements:
+No desktop installer or downloadable pilot release is currently published. The
+supported public evaluation path is a source checkout. Desktop installers remain
+outside the current pilot scope.
+
+Requirement:
 
 - Node.js 24 or later
-- Windows, macOS, or Linux
 
-Run:
+Clone and verify the source checkout:
 
 ```bash
+git clone https://github.com/mndesystems-ship-it/mnde-public-test.git
+cd mnde-public-test
 npm install
-npm run sidecar
-npm run mcp-proxy-demo
+npm run reviewer-kit
 ```
+
+Expected final result:
+
+```text
+FINAL VERDICT: PASS
+```
+
+Start the sidecar directly with `npm run sidecar`.
 
 `npm run sidecar` automatically creates the local authority assets it needs on first run, so no separate setup step is required. If you prefer to provision those assets explicitly (e.g. for the reviewer kit without starting a sidecar), `npm run tester:init -- TESTER-001` does the same bootstrap.
 
@@ -100,11 +112,19 @@ Optional executor identity produces explicit `executor_and_authority` live recei
 
 Production verification requires a stable MNDe-published authority bundle. Receipts are independently verifiable only when the verifier has the trusted authority manifest and root public key. Unknown authority IDs, unknown key IDs, expired keys, and invalid manifests fail closed.
 
-The supported pilot artifact is the versioned **npm tarball** published on GitHub Releases with a `SHA256SUMS.txt` digest; there is no desktop installer in this release. Verify the checksum before installing, then install without cloning the repo. See [`docs/RELEASE.md`](docs/RELEASE.md) for the full install / verify / start / stop / reinstall / uninstall contract and [`installer/README.md`](installer/README.md) for why desktop installers are out of scope.
+The repository includes npm release-build tooling. Maintainers can build and
+verify a local release candidate with:
 
-```text
-https://github.com/mndesystems-ship-it/mnde-public-test/releases
+```bash
+npm run release
+npm run release:verify
 ```
+
+The generated npm tarball, checksum file, and release manifest are local
+release-candidate artifacts, not public downloads. See
+[`docs/RELEASE.md`](docs/RELEASE.md) for the build and packaged-install contract,
+and [`installer/README.md`](installer/README.md) for the current installation
+status.
 
 ## Verify It Works
 

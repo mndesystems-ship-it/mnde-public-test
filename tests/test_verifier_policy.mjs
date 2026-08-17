@@ -62,6 +62,7 @@ function baseInput(overrides = {}) {
     issuedAt: "2026-07-05T00:00:00.000Z",
     notAfter: null,
     rootPrivatePem: root.privatePem,
+    rootPublicPem: root.publicPem,
     verifierPolicies: [entry],
     minLevelTable: [{ environment: "production", authority_scope: "chain-1", min_level: "ASSERTION_HASH_BOUND" }],
     ...overrides

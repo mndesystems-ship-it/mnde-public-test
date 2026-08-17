@@ -10,6 +10,7 @@
 
 import { canonicalizeJson } from "../../shared/json.ts";
 import { verifyAgainstBundle, verifyAuthorityBundle } from "../custody/index.mjs";
+import { verifyAnyReceiptObject } from "../../tools/verify.mjs";
 import {
   GRANT_ERR,
   canonicalGrantPayload,
@@ -30,9 +31,14 @@ function fail(reason_code, detail) {
 //   authorityBundle          — REQUIRED published bundle to verify against.
 //   trustedRootFingerprint   — out-of-band root anchor (bundle must chain to it).
 //   now                      — verification instant (defaults to real time).
-//   receipt                  — OPTIONAL. When supplied, the grant's four binding
-//                              hashes must match this receipt exactly, and the
-//                              receipt's decision must be ALLOW.
+//   receipt                  — OPTIONAL. When supplied, the receipt is first
+//                              CRYPTOGRAPHICALLY VERIFIED against the same bundle
+//                              (GRANT-4 — a binding check against an unverified
+//                              receipt proves only string-equality), then the
+//                              grant's four binding hashes must match it exactly
+//                              and its decision must be ALLOW.
+//   verifyReceipt            — OPTIONAL override of the receipt verifier (tests);
+//                              defaults to the unified offline verifier.
 //
 // Returns { ok: true, verified: true, grant_id, execution_id, scope, limits,
 // issuer_key_id } or { ok: false, verified: false, reason_code, detail? }.
@@ -63,12 +69,40 @@ export async function verifyExecutionGrant(grant, options = {}) {
   if (!isPlainObject(sig) || sig.algorithm !== "ED25519" || typeof sig.value !== "string" || sig.key_id !== grant.issuer_key_id) {
     return fail(GRANT_ERR.INVALID_SIGNATURE);
   }
-  const canonical = canonicalizeJson(canonicalGrantPayload(grant));
+  // Canonicalization must fail CLOSED, never throw (GRANT-5): a grant carrying a
+  // non-serializable field (e.g. an explicit `undefined`) is malformed, not a
+  // verification exception the caller has to catch.
+  let canonical;
+  try {
+    canonical = canonicalizeJson(canonicalGrantPayload(grant));
+  } catch {
+    return fail(GRANT_ERR.MALFORMED);
+  }
   const sigCheck = await verifyAgainstBundle(canonical, sig.value, "receipt", grant.issuer_key_id, grant.issued_at, bundle);
   if (!sigCheck.ok) return fail(GRANT_ERR.INVALID_SIGNATURE, sigCheck.reason);
 
   // 5) Optional receipt binding: the grant must pin THIS exact ALLOW decision.
   if (options.receipt !== undefined) {
+    // GRANT-4: authenticate the receipt against the trusted bundle BEFORE trusting
+    // its facts. Without this, the binding is field-equality against an object the
+    // attacker also controls — cryptographically meaningless.
+    const verifyReceipt = typeof options.verifyReceipt === "function" ? options.verifyReceipt : verifyAnyReceiptObject;
+    let receiptCheck;
+    try {
+      receiptCheck = await verifyReceipt(options.receipt, {
+        authorityBundle: bundle,
+        trustedRootFingerprint: options.trustedRootFingerprint,
+        environmentId: options.environmentId,
+        expectedExecutorId: options.expectedExecutorId,
+        requireExecutor: options.requireExecutor,
+        now
+      });
+    } catch (error) {
+      return fail(GRANT_ERR.RECEIPT_UNVERIFIED, error?.message ?? String(error));
+    }
+    if (!receiptCheck || receiptCheck.verified !== true) {
+      return fail(GRANT_ERR.RECEIPT_UNVERIFIED, receiptCheck?.reason ?? "receipt not verified");
+    }
     const f = receiptFacts(options.receipt);
     if (
       f.decision !== "ALLOW" ||

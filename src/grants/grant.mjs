@@ -46,9 +46,18 @@ export const GRANT_ERR = Object.freeze({
   // issuance-only
   RECEIPT_NOT_ALLOW: "ERR_GRANT_RECEIPT_NOT_ALLOW",
   RECEIPT_UNBINDABLE: "ERR_GRANT_RECEIPT_UNBINDABLE",
+  RECEIPT_UNVERIFIED: "ERR_GRANT_RECEIPT_UNVERIFIED",
+  SCOPE_EXCEEDS_RECEIPT: "ERR_GRANT_SCOPE_EXCEEDS_RECEIPT",
   SIGNING_FAILED: "ERR_GRANT_SIGNING_FAILED",
   SIGNING_KEY_INVALID: "ERR_GRANT_SIGNING_KEY_INVALID"
 });
+
+// Hard ceiling on a grant's validity window. A grant is permission for ONE
+// bounded execution held for a short moment, not a standing credential — an
+// over-long window is exactly a standing credential. Enforced in validateLimits
+// so BOTH issuance and verification reject it (defense in depth). Overridable by
+// an issuance policy in a later rung; the artifact contract is a hard cap here.
+export const MAX_GRANT_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 // Protocols treated as database egress for the first Rung 1 target (destructive
 // DB operations). For these, the scope MUST name a database and an operation.
@@ -110,6 +119,10 @@ export function validateLimits(limits) {
     if (typeof limits[key] !== "string" || Number.isNaN(Date.parse(limits[key]))) return GRANT_ERR.LIMITS_INVALID;
   }
   if (Date.parse(limits.not_after) <= Date.parse(limits.not_before)) return GRANT_ERR.LIMITS_INVALID;
+  // Bounded validity window: a grant is a short-lived capability, not a standing
+  // credential. Reject an over-long window (fail closed). "short TTL" is now a
+  // enforced property, not just a documented aspiration.
+  if (Date.parse(limits.not_after) - Date.parse(limits.not_before) > MAX_GRANT_TTL_MS) return GRANT_ERR.LIMITS_INVALID;
   return null;
 }
 
@@ -158,4 +171,64 @@ export function receiptFacts(receipt) {
     request_hash: str(dout.request_hash) ?? str(r?.request_hash),
     policy_hash: str(dout.policy_hash) ?? str(r?.policy_hash)
   };
+}
+
+// Extract the DB action a receipt actually APPROVED, from the signed
+// canonical_request parameters. Returns { database, operation, table } with null
+// for anything absent. This reads the same signed request the decision covered
+// (request_hash binds it), so it is trusted state, not attacker input. Operation
+// is upper-cased to match validateScope's DB_OPERATIONS vocabulary.
+export function approvedDbTarget(receipt) {
+  let r = receipt;
+  if (
+    isPlainObject(r) &&
+    (r.schema_version === "mnde.signed-receipt.v1" || r.schema_version === "mnde.signed-receipt.v2") &&
+    isPlainObject(r.receipt)
+  ) {
+    r = r.receipt; // unwrap custody envelope to the inner receipt
+  }
+  let params = null;
+  if (typeof r?.canonical_request === "string") {
+    try {
+      const cr = JSON.parse(r.canonical_request);
+      const er = isPlainObject(cr?.execution_request) ? cr.execution_request : cr;
+      if (isPlainObject(er?.parameters)) params = er.parameters;
+    } catch {
+      /* leave null */
+    }
+  }
+  if (!isPlainObject(params)) return { database: null, operation: null, table: null };
+  const str = (v) => (typeof v === "string" && v.length > 0 ? v : null);
+  const op = str(params.operation) ?? str(params.op);
+  return {
+    database: str(params.database) ?? str(params.db),
+    operation: op ? op.toUpperCase() : null,
+    table: str(params.table)
+  };
+}
+
+// Bound a DB-egress grant's scope to the receipt's approved action so a grant can
+// never WIDEN what the decision authorized (operation / database / table). The
+// first Rung 1 target is destructive DB operations, so DB scopes are constrained
+// here; non-DB protocols are not yet constrained (documented limitation — a later
+// rung settles the resource vocabulary for HTTP/other egress). Returns a
+// GRANT_ERR code or null. Fails CLOSED: a DB scope whose approved action the
+// receipt does not name is refused, not silently minted.
+export function validateScopeAgainstReceipt(scope, receipt) {
+  if (!isPlainObject(scope) || !DB_PROTOCOLS.has(scope.protocol)) return null;
+  const approved = approvedDbTarget(receipt);
+  // The receipt must actually name the DB operation + database this grant claims.
+  if (!approved.operation || !approved.database) return GRANT_ERR.SCOPE_EXCEEDS_RECEIPT;
+  if (scope.target.operation !== approved.operation) return GRANT_ERR.SCOPE_EXCEEDS_RECEIPT;
+  if (scope.target.database !== approved.database) return GRANT_ERR.SCOPE_EXCEEDS_RECEIPT;
+  const claimsWholeDb = !(typeof scope.target.table === "string" && scope.target.table.length > 0 && scope.target.table !== "*");
+  const approvesWholeDb = !approved.table || approved.table === "*";
+  if (claimsWholeDb) {
+    // Grant claims the whole database — the receipt must approve the whole database too.
+    if (!approvesWholeDb) return GRANT_ERR.SCOPE_EXCEEDS_RECEIPT;
+  } else if (!approvesWholeDb && approved.table !== scope.target.table) {
+    // Grant claims a specific table the receipt did not approve.
+    return GRANT_ERR.SCOPE_EXCEEDS_RECEIPT;
+  }
+  return null;
 }

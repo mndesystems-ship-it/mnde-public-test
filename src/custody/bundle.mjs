@@ -13,6 +13,7 @@
 import { generateKeyPair, sign as providerSign, spkiFingerprint, verify as providerVerify } from "../crypto/provider.mjs";
 
 import { canonicalizeJson } from "../../shared/json.ts";
+import { createFileRootSigner, signWithRootSigner } from "./root-signer.mjs";
 
 export const BUNDLE_SCHEMA = "mnde.authority.bundle.v1";
 export const AUTHORITY_KEY_ROLES = Object.freeze(["receipt", "policy", "approval", "result", "ledger", "activation", "checkpoint"]);
@@ -79,17 +80,29 @@ export async function buildAuthorityBundle(input) {
     }
   }
 
+  const rootIdentity = {
+    keyId: input.root.keyId,
+    publicPem: input.root.publicPem,
+    fingerprint: fingerprintOf(input.root.publicPem)
+  };
   const body = {
     schema_version: BUNDLE_SCHEMA,
     authority_id: input.authorityId,
     issued_at: input.issuedAt,
     not_after: input.notAfter,
-    root_key: { key_id: input.root.keyId, public_key: input.root.publicPem, fingerprint: fingerprintOf(input.root.publicPem) },
+    root_key: { key_id: rootIdentity.keyId, public_key: rootIdentity.publicPem, fingerprint: rootIdentity.fingerprint },
     keys: mappedKeys,
     revocation: Array.isArray(input.revocation) ? input.revocation : []
   };
-  const signatureValue = await signCanonical(canonicalizeJson(body), input.root.privatePem);
-  return { ...body, signature: { algorithm: "ED25519", value: signatureValue } };
+  // Production callers must obtain input.root.signer through resolveRootSigner;
+  // the inline PEM adapter exists only for backward-compatible local tooling.
+  const rootSigner = input.root.signer ?? createFileRootSigner({
+    keyId: rootIdentity.keyId,
+    publicKeyPem: rootIdentity.publicPem,
+    privateKeyPem: input.root.privatePem
+  });
+  const signature = await signWithRootSigner(rootSigner, canonicalizeJson(body), rootIdentity);
+  return { ...body, signature: { algorithm: "ED25519", value: signature.value } };
 }
 
 // Verify a bundle offline. `trustedRootFingerprint` is the out-of-band trust

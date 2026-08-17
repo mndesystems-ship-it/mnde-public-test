@@ -37,7 +37,11 @@
 import { sha256 } from "../crypto/provider.mjs";
 
 import { canonicalizeJson } from "../../shared/json.ts";
-import { signCanonical, verifyCanonical } from "../custody/index.mjs";
+import {
+  createFileRootSigner,
+  signWithRootSigner,
+  verifyCanonical
+} from "../custody/index.mjs";
 
 export const VERIFIER_POLICY_SCHEMA = "mnde.verifier_policy.v1";
 
@@ -275,7 +279,7 @@ export async function loadVerifierPolicy(raw, options = {}) {
 //
 // input:
 //   authorityId, rootKeyId, policyVersion, issuedAt, notAfter (string | null),
-//   rootPrivatePem,
+//   rootSigner, or rootPrivatePem + rootPublicPem,
 //   verifierPolicies: [{ issuer, audience, subject_allowlist? , allow_all_subjects?,
 //                        trusted_jwks_hash, max_token_age_seconds?, clock_skew_seconds? }],
 //   minLevelTable: [{ environment, authority_scope, min_level }]
@@ -293,6 +297,14 @@ export async function signVerifierPolicy(input) {
     })),
     min_level_table: input.minLevelTable ?? []
   };
-  const value = await signCanonical(canonicalizeJson(body), input.rootPrivatePem);
-  return { ...body, signature: { algorithm: "ED25519", value } };
+  const root = { keyId: input.rootKeyId, publicPem: input.rootPublicPem ?? input.rootSigner?.publicKeyPem };
+  // Production callers must pass a capability obtained from resolveRootSigner;
+  // the inline PEM adapter remains for backward-compatible offline authoring.
+  const signer = input.rootSigner ?? createFileRootSigner({
+    keyId: root.keyId,
+    publicKeyPem: root.publicPem,
+    privateKeyPem: input.rootPrivatePem
+  });
+  const signature = await signWithRootSigner(signer, canonicalizeJson(body), root);
+  return { ...body, signature: { algorithm: "ED25519", value: signature.value } };
 }

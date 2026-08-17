@@ -7,12 +7,41 @@ release:verify`); version-drift is guarded by
 [`tests/test_release_identity.mjs`](../tests/test_release_identity.mjs)
 (`test:release-identity`, in the default suite).
 
-## Supported installation method
+## Release states
 
-The **npm tarball** (`mnde-public-test-<version>.tgz`), installed into a
-dedicated project with `npm install`. No repository clone is required to install
-or run. Desktop installers (MSI/NSIS/DMG/PKG/AppImage) are **not** part of this
-release and are not published — see [`installer/README.md`](../installer/README.md).
+### Current public evaluation
+
+No release artifact is currently published. The supported public evaluation
+path is a source checkout:
+
+```bash
+git clone https://github.com/mndesystems-ship-it/mnde-public-test.git
+cd mnde-public-test
+npm install
+npm run reviewer-kit
+```
+
+### Local release-candidate build
+
+```bash
+npm ci
+npm run release
+npm run release:verify
+```
+
+These commands build a versioned npm tarball, `SHA256SUMS.txt`, and
+`release-manifest.json` locally. The artifacts are buildable local release
+candidates; they are not currently published.
+
+### Future published-artifact path
+
+A maintainer must publish and verify the artifacts through a working public
+download path before documentation may present the tarball as a public
+installation method. Desktop installers (MSI/NSIS/EXE/DMG/PKG/AppImage) are
+unsupported and unpublished. See
+[`release-publication-runbook.md`](release-publication-runbook.md) for the
+maintainer procedure and [`installer/README.md`](../installer/README.md) for the
+current installation status.
 
 ## Supported platform
 
@@ -23,7 +52,7 @@ in CI. macOS/Linux are not claimed as supported for the pilot.
 
 ## Runtime prerequisites
 
-- Node.js per `package.json` `engines` (`>=20`); CI runs and verifies on
+- Node.js per `package.json` `engines` (`>=24`); CI runs and verifies on
   **24.14.1**. `mnde-sidecar doctor` checks the running Node major version and
   fails closed if it is too old.
 - No third-party runtime dependencies: the package installs and runs from the
@@ -49,12 +78,15 @@ npx mnde-sidecar version --json     # machine-readable release identity
 `--json` fields: `schema, product, package, version, commit, commit_short,
 build_id, build_time, artifact_format, source, node`.
 
-## Install
+## Packaged installation test
 
 ```bash
 npm init -y
 npm install ./mnde-public-test-<version>.tgz
 npx mnde-sidecar version
+npx mnde-sidecar init
+npx mnde-sidecar doctor
+npx mnde-sidecar smoke
 ```
 
 ## Initial configuration
@@ -128,14 +160,15 @@ state, delete the `MNDE_HOME` directory yourself (e.g. `rm -rf ./.mnde`).
 
 ## Artifact integrity
 
-Each release is built with `npm run release`, which produces:
+A local release candidate is built with `npm run release`, which produces:
 
 - `mnde-public-test-<version>.tgz` — the tarball
 - `SHA256SUMS.txt` — SHA-256 digest(s)
 - `release-manifest.json` — version, source commit, build id/time, Node/npm/OS,
   and per-artifact size + SHA-256
 
-Verify a download:
+Verify the local tarball (or, after an authorized publication, a downloaded
+copy):
 
 ```bash
 sha256sum -c SHA256SUMS.txt

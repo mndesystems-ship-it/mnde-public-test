@@ -4,16 +4,16 @@
 // Generates a NEW Ed25519 keypair for one executor, writes the PRIVATE key to an
 // out-of-repository directory (fails closed if the path is inside the tree), and
 // issues an authority-signed credential using the custody authority bundle's root
-// key. The root private key is supplied by the operator from OUTSIDE the repo and
-// is never persisted or printed. No private material is ever written into the
-// repository or echoed to stdout.
+// signer. File mode reads --root-key from OUTSIDE the repo; external-root mode
+// invokes MNDE_EXTERNAL_ROOT_SIGNER_CMD and never reads root private material.
+// No private material is ever written into the repository or echoed to stdout.
 //
 // Usage:
 //   node scripts/trust-enroll-executor.mjs \
 //     --executor-id mnde:local:prod:executor:codex:01 \
 //     --environment prod \
 //     --bundle   /secure/authority-bundle.json \
-//     --root-key /secure/root_private.pem \
+//     [--root-key /secure/root_private.pem] \
 //     --out-dir  /secure/executors \
 //     [--capability sign_execution_receipt] [--ttl-hours 24] [--issued-at ISO]
 //
@@ -26,6 +26,7 @@ import { fileURLToPath } from "node:url";
 
 import { generateAuthorityKeyPair } from "../src/custody/bundle.mjs";
 import { issueExecutorCredential, executorKeyId } from "../src/custody/executor-credential.mjs";
+import { resolveRootSigner } from "../src/custody/root-signer.mjs";
 import {
   isRepoContainedPath,
   readSecureExecutorPrivateKey,
@@ -143,7 +144,6 @@ async function main() {
   if (!executorId) die("--executor-id is required");
   if (!environment) die("--environment is required");
   if (!bundlePath) die("--bundle is required");
-  if (!rootKeyPath) die("--root-key is required");
   if (!outDir) die("--out-dir is required");
   if (!Number.isFinite(ttlHours) || ttlHours <= 0) die("--ttl-hours must be a positive number");
 
@@ -157,11 +157,25 @@ async function main() {
     die("bundle is not a valid mnde.authority.bundle.v1");
   }
 
-  let rootPrivatePem;
+  let rootSigner;
   try {
-    rootPrivatePem = await readExternalRootKey(rootKeyPath);
+    const root = {
+      keyId: bundle.root_key.key_id,
+      publicPem: bundle.root_key.public_key,
+      fingerprint: bundle.root_key.fingerprint
+    };
+    // Reject mixed external + PEM configuration before the path is inspected or
+    // read, ensuring external-root mode cannot silently bring the key in-process.
+    const externalRoot = typeof process.env.MNDE_EXTERNAL_ROOT_SIGNER_CMD === "string"
+      && process.env.MNDE_EXTERNAL_ROOT_SIGNER_CMD.trim().length > 0;
+    if (externalRoot && rootKeyPath) {
+      rootSigner = resolveRootSigner({ env: process.env, root, rootPrivateKeyPem: "configured-via--root-key" });
+    } else {
+      const rootPrivatePem = rootKeyPath ? await readExternalRootKey(rootKeyPath) : undefined;
+      rootSigner = resolveRootSigner({ env: process.env, root, rootPrivateKeyPem: rootPrivatePem });
+    }
   } catch (error) {
-    die(`cannot read root key at ${rootKeyPath}: ${error instanceof Error ? error.message : String(error)}`);
+    die(`root signer unavailable (${error?.code ?? "ERR_ROOT_SIGNER"}): ${error instanceof Error ? error.message : String(error)}`);
   }
 
   let canonicalOutDir;
@@ -183,7 +197,7 @@ async function main() {
   try {
     credential = await issueExecutorCredential({
       authorityBundle: bundle,
-      rootPrivatePem,
+      rootSigner,
       executorId,
       publicPem,
       environmentId: environment,
