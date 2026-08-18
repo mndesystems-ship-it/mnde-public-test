@@ -33,6 +33,7 @@
 
 import { readFileSync } from "node:fs";
 
+import { importPrivateKey } from "../crypto/provider.mjs";
 import {
   buildAuthorityBundle,
   generateAuthorityKeyPair,
@@ -115,6 +116,39 @@ function readKeyFile(label, path) {
   }
 }
 
+// Custody-owned configuration error. Carries only SAFE metadata: a stable
+// custodyCode and the two env-variable NAMES involved. It never carries the
+// passphrase, the PEM, a file buffer, or the underlying provider error — nothing
+// downstream (logger, HTTP serializer) can traverse it to a secret.
+export class CustodyConfigurationError extends Error {
+  constructor(custodyCode, { keyEnv, passphraseEnv, message }) {
+    super(message);
+    this.name = "CustodyConfigurationError";
+    this.custodyCode = custodyCode;
+    this.keyEnv = keyEnv;
+    this.passphraseEnv = passphraseEnv;
+  }
+}
+
+// Detect a passphrase-protected PKCS#8 key by inspecting the PEM opening label.
+// Used ONLY to distinguish a missing required passphrase from malformed material;
+// Node still owns all real parsing, decryption, and validation.
+//
+// Implementation note: it parses the first BEGIN header's type field and checks
+// whether that type carries the "ENCRYPTED" marker — the encrypted PKCS#8 type is
+// the only standard PEM label that does. This deliberately references NO literal
+// private-key header string, so the shipped source stays clean of one: the build
+// content scanner (build/lib/private-key-scan.mjs) treats any such header in dist/
+// as shipped key material and fails the release. Unencrypted PKCS#8, PKCS#1
+// RSA/EC keys, and public-key labels all lack the ENCRYPTED marker and are not
+// classified as encrypted here.
+function isEncryptedPkcs8Pem(privateKeyPem) {
+  if (typeof privateKeyPem !== "string") return false;
+  const firstLine = privateKeyPem.split(/\r?\n/, 1)[0].trim();
+  const header = firstLine.match(/^-----BEGIN ([A-Z0-9 ]+)-----$/);
+  return header !== null && header[1].split(" ").includes("ENCRYPTED");
+}
+
 export function createFileBackedProductionCustody(env = process.env) {
   const bundleRaw = readKeyFile("MNDE_AUTHORITY_BUNDLE", env.MNDE_AUTHORITY_BUNDLE);
   let bundle;
@@ -127,27 +161,65 @@ export function createFileBackedProductionCustody(env = process.env) {
     throw new Error("custody: MNDE_AUTHORITY_BUNDLE is not an mnde.authority.bundle.v1");
   }
 
-  const roleKey = (role, keyEnv, idEnv) => {
+  // Load one file-backed signing role. Reads the PEM, resolves an optional
+  // passphrase (undefined/empty => none, whitespace preserved — never trimmed),
+  // and imports the key into an opaque handle at STARTUP so a wrong/missing
+  // passphrase or malformed key fails before readiness, not on the first request.
+  const roleKey = (role, keyEnv, idEnv, passphraseEnv) => {
     const privatePem = readKeyFile(keyEnv, env[keyEnv]);
+
+    const rawPassphrase = env[passphraseEnv];
+    const passphrase =
+      typeof rawPassphrase === "string" && rawPassphrase.length > 0 ? rawPassphrase : undefined;
+
+    const encrypted = isEncryptedPkcs8Pem(privatePem);
+    if (encrypted && passphrase === undefined) {
+      // Classified WITHOUT calling the provider: no passphrase for encrypted material.
+      throw new CustodyConfigurationError("PASSPHRASE_REQUIRED", {
+        keyEnv,
+        passphraseEnv,
+        message: `custody: ${keyEnv} requires ${passphraseEnv}`
+      });
+    }
+
+    let privateKey;
+    try {
+      privateKey = importPrivateKey(privatePem, { passphrase });
+    } catch (error) {
+      if (encrypted) {
+        // Sanitized: any provider import failure for encrypted material with a
+        // supplied passphrase is reported as invalid — deliberately hiding
+        // whether the file is corrupt, truncated, unsupported, or wrong-passphrase.
+        throw new CustodyConfigurationError("PASSPHRASE_INVALID", {
+          keyEnv,
+          passphraseEnv,
+          message: `custody: passphrase for ${keyEnv} is invalid`
+        });
+      }
+      // Unencrypted malformed material: preserve the existing signing-key failure
+      // classification (path/reason only, never key bytes or the provider error).
+      throw new Error(`custody: ${keyEnv} is not a valid signing key`);
+    }
+
     const published = Array.isArray(bundle.keys?.[role]) ? bundle.keys[role] : [];
     const keyId = env[idEnv] ?? published[0]?.key_id;
     const entry = published.find((k) => k.key_id === keyId);
     if (!entry) throw new Error(`custody: no published ${role} key '${keyId ?? "?"}' in bundle`);
-    return { keyId, privatePem, fingerprint: entry.fingerprint };
+    return { keyId, privateKey, fingerprint: entry.fingerprint };
   };
 
-  const receipt = roleKey("receipt", "MNDE_RECEIPT_SIGNING_KEY", "MNDE_RECEIPT_KEY_ID");
-  // Policy/approval/result/ledger signing keys are optional for a deploy that only signs receipts.
-  const optionalRoleKey = (role, keyEnv, idEnv) => (env[keyEnv] ? roleKey(role, keyEnv, idEnv) : null);
-  const policy = optionalRoleKey("policy", "MNDE_POLICY_SIGNING_KEY", "MNDE_POLICY_KEY_ID");
-  const approval = optionalRoleKey("approval", "MNDE_APPROVAL_SIGNING_KEY", "MNDE_APPROVAL_KEY_ID");
-  const resultKey = optionalRoleKey("result", "MNDE_RESULT_SIGNING_KEY", "MNDE_RESULT_KEY_ID");
-  const ledgerKey = optionalRoleKey("ledger", "MNDE_LEDGER_SIGNING_KEY", "MNDE_LEDGER_KEY_ID");
-  const activationKey = optionalRoleKey("activation", "MNDE_ACTIVATION_SIGNING_KEY", "MNDE_ACTIVATION_KEY_ID");
+  const receipt = roleKey("receipt", "MNDE_RECEIPT_SIGNING_KEY", "MNDE_RECEIPT_KEY_ID", "MNDE_RECEIPT_SIGNING_KEY_PASSPHRASE");
+  // Policy/approval/result/ledger/activation signing keys are optional for a deploy that only signs receipts.
+  const optionalRoleKey = (role, keyEnv, idEnv, passphraseEnv) => (env[keyEnv] ? roleKey(role, keyEnv, idEnv, passphraseEnv) : null);
+  const policy = optionalRoleKey("policy", "MNDE_POLICY_SIGNING_KEY", "MNDE_POLICY_KEY_ID", "MNDE_POLICY_SIGNING_KEY_PASSPHRASE");
+  const approval = optionalRoleKey("approval", "MNDE_APPROVAL_SIGNING_KEY", "MNDE_APPROVAL_KEY_ID", "MNDE_APPROVAL_SIGNING_KEY_PASSPHRASE");
+  const resultKey = optionalRoleKey("result", "MNDE_RESULT_SIGNING_KEY", "MNDE_RESULT_KEY_ID", "MNDE_RESULT_SIGNING_KEY_PASSPHRASE");
+  const ledgerKey = optionalRoleKey("ledger", "MNDE_LEDGER_SIGNING_KEY", "MNDE_LEDGER_KEY_ID", "MNDE_LEDGER_SIGNING_KEY_PASSPHRASE");
+  const activationKey = optionalRoleKey("activation", "MNDE_ACTIVATION_SIGNING_KEY", "MNDE_ACTIVATION_KEY_ID", "MNDE_ACTIVATION_SIGNING_KEY_PASSPHRASE");
 
   const signer = (key, role) => {
     if (!key) return () => { throw new Error(`custody: no ${role} signing key configured`); };
-    return async (payload) => ({ key_id: key.keyId, value: await signCanonical(payload, key.privatePem), fingerprint: key.fingerprint });
+    return async (payload) => ({ key_id: key.keyId, value: await signCanonical(payload, key.privateKey), fingerprint: key.fingerprint });
   };
 
   return {
@@ -171,8 +243,9 @@ export async function createCustody(env = process.env) {
     try {
       return { ok: true, provider: createFileBackedProductionCustody(env) };
     } catch (error) {
-      // error.message is path/reason only — never key material.
-      return { ok: false, reason: error?.message ?? String(error) };
+      // error.message is path/reason only — never key material. custodyCode is a
+      // stable structured classification (e.g. PASSPHRASE_REQUIRED) when present.
+      return { ok: false, reason: error?.message ?? String(error), custodyCode: error?.custodyCode };
     }
   }
   if (requested && !KNOWN_PROVIDERS.includes(requested)) {

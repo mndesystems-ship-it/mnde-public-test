@@ -39,6 +39,11 @@ export const randomBytes = active.randomBytes;
 export const generateKeyPair = active.generateKeyPair;
 export const now = active.now;
 
+// Import private signing material into an opaque, provider-specific handle.
+// Callers must not inspect, serialize, or export private material from it; they
+// pass it straight back to sign(). Synchronous in both Node and edge runtimes.
+export const importPrivateKey = active.importPrivateKey;
+
 // Asynchronous primitives (WebCrypto-compatible signature).
 export const sign = active.sign;
 export const verify = active.verify;

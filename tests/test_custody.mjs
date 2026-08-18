@@ -9,10 +9,12 @@
 // signature object, or an error message.
 
 import assert from "node:assert/strict";
+import { createPrivateKey } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { loadSigningConfig } from "../src/authority-signing/index.mjs";
 import { canonicalizeJson } from "../shared/json.ts";
 import {
   buildAuthorityBundle,
@@ -25,6 +27,48 @@ import {
   verifyAgainstBundle,
   verifyAuthorityBundle
 } from "../src/custody/index.mjs";
+
+// CUSTODY-ENC-1 encrypted-key fixtures. A single, obviously-synthetic secret
+// marker so any accidental leak of passphrase material into an error, log, or
+// serialized object is trivially detectable by the secret-leak tests below.
+const SECRET_MARKER = "CUSTODY_ENC_1_SECRET_DO_NOT_PRINT_7f29";
+const RECEIPT_PASS = `receipt-${SECRET_MARKER}`;
+const LEDGER_PASS = `ledger-${SECRET_MARKER}`;
+const POLICY_PASS = `policy-${SECRET_MARKER}`;
+const PEM_HEADER = "-----BEGIN ENCRYPTED PRIVATE KEY-----";
+
+// Re-export an unencrypted PKCS#8 PEM as an encrypted PKCS#8 PEM under a
+// passphrase. The public counterpart is unchanged, so it still matches the
+// bundle entry — only the at-rest private file becomes encrypted.
+function encryptPem(privatePem, passphrase) {
+  return createPrivateKey(privatePem).export({
+    type: "pkcs8",
+    format: "pem",
+    cipher: "aes-256-cbc",
+    passphrase
+  });
+}
+
+// A production bundle carrying receipt + ledger + policy keys, for cross-role
+// passphrase-isolation tests.
+async function makeMultiRoleFixture({ now = "2026-06-14T00:00:00.000Z" } = {}) {
+  const root = { keyId: "prod-root", ...generateAuthorityKeyPair() };
+  const receipt = { keyId: "prod-receipt-1", ...generateAuthorityKeyPair() };
+  const ledger = { keyId: "prod-ledger-1", ...generateAuthorityKeyPair() };
+  const policy = { keyId: "prod-policy-1", ...generateAuthorityKeyPair() };
+  const window = { validFrom: "2026-01-01T00:00:00.000Z", validUntil: "2027-01-01T00:00:00.000Z" };
+  const bundle = await buildAuthorityBundle({
+    authorityId: "mnde-prod",
+    issuedAt: now,
+    notAfter: "2027-06-14T00:00:00.000Z",
+    root,
+    receiptKeys: [{ keyId: receipt.keyId, publicPem: receipt.publicPem, ...window }],
+    ledgerKeys: [{ keyId: ledger.keyId, publicPem: ledger.publicPem, ...window }],
+    policyKeys: [{ keyId: policy.keyId, publicPem: policy.publicPem, ...window }],
+    revocation: []
+  });
+  return { root, receipt, ledger, policy, bundle, now };
+}
 
 const results = [];
 let testChain = Promise.resolve();
@@ -251,6 +295,298 @@ test("no private key material in bundle, signature, or error output", async () =
     assert.ok(!res.reason.includes(secret.slice(40, 80)), "error must not contain key bytes");
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── CUSTODY-ENC-1: passphrase-protected file-backed keys ─────────────────────
+// Helper: lay down a bundle + a set of role key files in a fresh temp dir and
+// return the env pointing at them. `keys` maps role -> { keyEnv, idEnv, keyId,
+// pem }. Caller sets passphrase env vars itself.
+function writeCustodyDir(bundle, keys) {
+  const dir = mkdtempSync(join(tmpdir(), "mnde-custody-enc-"));
+  const env = { MNDE_KEY_CUSTODY: "file-backed-production", MNDE_AUTHORITY_BUNDLE: join(dir, "authority.bundle.json") };
+  writeFileSync(env.MNDE_AUTHORITY_BUNDLE, JSON.stringify(bundle), "utf8");
+  for (const [role, k] of Object.entries(keys)) {
+    const keyPath = join(dir, `${role}.key.pem`);
+    writeFileSync(keyPath, k.pem, "utf8");
+    env[k.keyEnv] = keyPath;
+    env[k.idEnv] = k.keyId;
+  }
+  return { dir, env };
+}
+
+// Encrypted receipt key + correct passphrase → loads, signs, verifies.
+test("ENC: encrypted receipt key loads with correct passphrase and signs verifiably", async () => {
+  const { bundle, receipt, now } = await makeMultiRoleFixture();
+  const { dir, env } = writeCustodyDir(bundle, {
+    receipt: { keyEnv: "MNDE_RECEIPT_SIGNING_KEY", idEnv: "MNDE_RECEIPT_KEY_ID", keyId: receipt.keyId, pem: encryptPem(receipt.privatePem, RECEIPT_PASS) }
+  });
+  env.MNDE_RECEIPT_SIGNING_KEY_PASSPHRASE = RECEIPT_PASS;
+  try {
+    const res = await createCustody(env);
+    assert.equal(res.ok, true, res.reason);
+    const payload = canonicalizeJson({ decision: "ALLOW", enc: true });
+    const sig = await res.provider.signReceipt(payload);
+    assert.equal((await verifyAgainstBundle(payload, sig.value, "receipt", sig.key_id, now, res.provider.getPublicBundle())).ok, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Byte-compat: an encrypted key and the same key unencrypted produce the SAME
+// signature bytes, the same key id, and the same fingerprint.
+test("ENC: encrypted vs unencrypted same key → identical signature, key id, fingerprint", async () => {
+  const { bundle, receipt, now } = await makeMultiRoleFixture();
+  const payload = canonicalizeJson({ decision: "ALLOW", stable: 1 });
+
+  const plain = writeCustodyDir(bundle, {
+    receipt: { keyEnv: "MNDE_RECEIPT_SIGNING_KEY", idEnv: "MNDE_RECEIPT_KEY_ID", keyId: receipt.keyId, pem: receipt.privatePem }
+  });
+  const enc = writeCustodyDir(bundle, {
+    receipt: { keyEnv: "MNDE_RECEIPT_SIGNING_KEY", idEnv: "MNDE_RECEIPT_KEY_ID", keyId: receipt.keyId, pem: encryptPem(receipt.privatePem, RECEIPT_PASS) }
+  });
+  enc.env.MNDE_RECEIPT_SIGNING_KEY_PASSPHRASE = RECEIPT_PASS;
+  try {
+    const a = await createCustody(plain.env);
+    const b = await createCustody(enc.env);
+    assert.equal(a.ok && b.ok, true);
+    const sa = await a.provider.signReceipt(payload);
+    const sb = await b.provider.signReceipt(payload);
+    assert.equal(sa.value, sb.value, "Ed25519 is deterministic — encryption at rest must not change signature bytes");
+    assert.equal(sa.key_id, sb.key_id);
+    assert.equal(sa.fingerprint, sb.fingerprint);
+    void now;
+  } finally {
+    rmSync(plain.dir, { recursive: true, force: true });
+    rmSync(enc.dir, { recursive: true, force: true });
+  }
+});
+
+// Missing passphrase for an encrypted key fails closed with the required code.
+test("ENC: encrypted receipt key WITHOUT passphrase fails closed (PASSPHRASE_REQUIRED)", async () => {
+  const { bundle, receipt } = await makeMultiRoleFixture();
+  const { dir, env } = writeCustodyDir(bundle, {
+    receipt: { keyEnv: "MNDE_RECEIPT_SIGNING_KEY", idEnv: "MNDE_RECEIPT_KEY_ID", keyId: receipt.keyId, pem: encryptPem(receipt.privatePem, RECEIPT_PASS) }
+  });
+  try {
+    const res = await createCustody(env);
+    assert.equal(res.ok, false);
+    assert.equal(res.custodyCode, "PASSPHRASE_REQUIRED");
+    assert.equal(res.reason, "custody: MNDE_RECEIPT_SIGNING_KEY requires MNDE_RECEIPT_SIGNING_KEY_PASSPHRASE");
+    // Maps to the public reason code (not a missing-key code).
+    const cfg = await loadSigningConfig({ ...env, MNDE_RECEIPT_SIGNING_MODE: "custody" });
+    assert.equal(cfg.ok, false);
+    assert.equal(cfg.reason_code, "ERR_CUSTODY_KEY_PASSPHRASE_REQUIRED");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Empty passphrase behaves exactly as missing.
+test("ENC: empty passphrase behaves as missing (PASSPHRASE_REQUIRED)", async () => {
+  const { bundle, receipt } = await makeMultiRoleFixture();
+  const { dir, env } = writeCustodyDir(bundle, {
+    receipt: { keyEnv: "MNDE_RECEIPT_SIGNING_KEY", idEnv: "MNDE_RECEIPT_KEY_ID", keyId: receipt.keyId, pem: encryptPem(receipt.privatePem, RECEIPT_PASS) }
+  });
+  env.MNDE_RECEIPT_SIGNING_KEY_PASSPHRASE = "";
+  try {
+    const res = await createCustody(env);
+    assert.equal(res.ok, false);
+    assert.equal(res.custodyCode, "PASSPHRASE_REQUIRED");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Wrong passphrase fails closed with the invalid code.
+test("ENC: wrong receipt passphrase fails closed (PASSPHRASE_INVALID)", async () => {
+  const { bundle, receipt } = await makeMultiRoleFixture();
+  const { dir, env } = writeCustodyDir(bundle, {
+    receipt: { keyEnv: "MNDE_RECEIPT_SIGNING_KEY", idEnv: "MNDE_RECEIPT_KEY_ID", keyId: receipt.keyId, pem: encryptPem(receipt.privatePem, RECEIPT_PASS) }
+  });
+  env.MNDE_RECEIPT_SIGNING_KEY_PASSPHRASE = "not-the-right-passphrase";
+  try {
+    const res = await createCustody(env);
+    assert.equal(res.ok, false);
+    assert.equal(res.custodyCode, "PASSPHRASE_INVALID");
+    assert.equal(res.reason, "custody: passphrase for MNDE_RECEIPT_SIGNING_KEY is invalid");
+    const cfg = await loadSigningConfig({ ...env, MNDE_RECEIPT_SIGNING_MODE: "custody" });
+    assert.equal(cfg.reason_code, "ERR_CUSTODY_KEY_PASSPHRASE_INVALID");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A one-character whitespace passphrase " " is a real, untrimmed passphrase.
+test("ENC: single-space passphrase is honored (not trimmed to empty)", async () => {
+  const { bundle, receipt, now } = await makeMultiRoleFixture();
+  const { dir, env } = writeCustodyDir(bundle, {
+    receipt: { keyEnv: "MNDE_RECEIPT_SIGNING_KEY", idEnv: "MNDE_RECEIPT_KEY_ID", keyId: receipt.keyId, pem: encryptPem(receipt.privatePem, " ") }
+  });
+  env.MNDE_RECEIPT_SIGNING_KEY_PASSPHRASE = " ";
+  try {
+    const res = await createCustody(env);
+    assert.equal(res.ok, true, res.reason);
+    const payload = canonicalizeJson({ decision: "ALLOW" });
+    const sig = await res.provider.signReceipt(payload);
+    assert.equal((await verifyAgainstBundle(payload, sig.value, "receipt", sig.key_id, now, res.provider.getPublicBundle())).ok, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Unencrypted key + a supplied passphrase → provider ignores it; still signs,
+// and the signature is unchanged.
+test("ENC: passphrase supplied for an UNENCRYPTED key does not alter signatures", async () => {
+  const { bundle, receipt, now } = await makeMultiRoleFixture();
+  const payload = canonicalizeJson({ decision: "ALLOW", u: 1 });
+  const plain = writeCustodyDir(bundle, {
+    receipt: { keyEnv: "MNDE_RECEIPT_SIGNING_KEY", idEnv: "MNDE_RECEIPT_KEY_ID", keyId: receipt.keyId, pem: receipt.privatePem }
+  });
+  const withPass = writeCustodyDir(bundle, {
+    receipt: { keyEnv: "MNDE_RECEIPT_SIGNING_KEY", idEnv: "MNDE_RECEIPT_KEY_ID", keyId: receipt.keyId, pem: receipt.privatePem }
+  });
+  withPass.env.MNDE_RECEIPT_SIGNING_KEY_PASSPHRASE = "ignored-because-key-is-plaintext";
+  try {
+    const a = await createCustody(plain.env);
+    const b = await createCustody(withPass.env);
+    assert.equal(a.ok && b.ok, true);
+    const sa = await a.provider.signReceipt(payload);
+    const sb = await b.provider.signReceipt(payload);
+    assert.equal(sa.value, sb.value);
+    assert.equal((await verifyAgainstBundle(payload, sb.value, "receipt", sb.key_id, now, b.provider.getPublicBundle())).ok, true);
+  } finally {
+    rmSync(plain.dir, { recursive: true, force: true });
+    rmSync(withPass.dir, { recursive: true, force: true });
+  }
+});
+
+// Ledger role: loads + signs; and per-role passphrase isolation both ways.
+test("ENC: ledger role loads with its own passphrase and cross-role passphrases do not unlock", async () => {
+  const { bundle, receipt, ledger, now } = await makeMultiRoleFixture();
+  const encReceipt = encryptPem(receipt.privatePem, RECEIPT_PASS);
+  const encLedger = encryptPem(ledger.privatePem, LEDGER_PASS);
+
+  // Correct per-role passphrases: both load, ledger signs + verifies.
+  const good = writeCustodyDir(bundle, {
+    receipt: { keyEnv: "MNDE_RECEIPT_SIGNING_KEY", idEnv: "MNDE_RECEIPT_KEY_ID", keyId: receipt.keyId, pem: encReceipt },
+    ledger: { keyEnv: "MNDE_LEDGER_SIGNING_KEY", idEnv: "MNDE_LEDGER_KEY_ID", keyId: ledger.keyId, pem: encLedger }
+  });
+  good.env.MNDE_RECEIPT_SIGNING_KEY_PASSPHRASE = RECEIPT_PASS;
+  good.env.MNDE_LEDGER_SIGNING_KEY_PASSPHRASE = LEDGER_PASS;
+  try {
+    const res = await createCustody(good.env);
+    assert.equal(res.ok, true, res.reason);
+    const payload = canonicalizeJson({ ledger: "checkpoint" });
+    const sig = await res.provider.signLedger(payload);
+    assert.equal((await verifyAgainstBundle(payload, sig.value, "ledger", sig.key_id, now, res.provider.getPublicBundle())).ok, true);
+  } finally {
+    rmSync(good.dir, { recursive: true, force: true });
+  }
+
+  // Receipt's passphrase must NOT unlock the ledger key (and vice versa).
+  const swapped = writeCustodyDir(bundle, {
+    receipt: { keyEnv: "MNDE_RECEIPT_SIGNING_KEY", idEnv: "MNDE_RECEIPT_KEY_ID", keyId: receipt.keyId, pem: encReceipt },
+    ledger: { keyEnv: "MNDE_LEDGER_SIGNING_KEY", idEnv: "MNDE_LEDGER_KEY_ID", keyId: ledger.keyId, pem: encLedger }
+  });
+  swapped.env.MNDE_RECEIPT_SIGNING_KEY_PASSPHRASE = LEDGER_PASS; // wrong for receipt
+  swapped.env.MNDE_LEDGER_SIGNING_KEY_PASSPHRASE = RECEIPT_PASS; // wrong for ledger
+  try {
+    const res = await createCustody(swapped.env);
+    assert.equal(res.ok, false);
+    assert.equal(res.custodyCode, "PASSPHRASE_INVALID");
+  } finally {
+    rmSync(swapped.dir, { recursive: true, force: true });
+  }
+});
+
+// Optional policy role: missing passphrase when configured fails; wrong → invalid.
+test("ENC: configured encrypted policy key requires + validates its own passphrase", async () => {
+  const { bundle, receipt, policy } = await makeMultiRoleFixture();
+  const encReceipt = encryptPem(receipt.privatePem, RECEIPT_PASS);
+  const encPolicy = encryptPem(policy.privatePem, POLICY_PASS);
+
+  // Missing policy passphrase → fails even though it is an "optional" role.
+  const missing = writeCustodyDir(bundle, {
+    receipt: { keyEnv: "MNDE_RECEIPT_SIGNING_KEY", idEnv: "MNDE_RECEIPT_KEY_ID", keyId: receipt.keyId, pem: encReceipt },
+    policy: { keyEnv: "MNDE_POLICY_SIGNING_KEY", idEnv: "MNDE_POLICY_KEY_ID", keyId: policy.keyId, pem: encPolicy }
+  });
+  missing.env.MNDE_RECEIPT_SIGNING_KEY_PASSPHRASE = RECEIPT_PASS;
+  try {
+    const res = await createCustody(missing.env);
+    assert.equal(res.ok, false);
+    assert.equal(res.custodyCode, "PASSPHRASE_REQUIRED");
+    assert.equal(res.reason, "custody: MNDE_POLICY_SIGNING_KEY requires MNDE_POLICY_SIGNING_KEY_PASSPHRASE");
+  } finally {
+    rmSync(missing.dir, { recursive: true, force: true });
+  }
+
+  // Wrong policy passphrase → invalid code.
+  const wrong = writeCustodyDir(bundle, {
+    receipt: { keyEnv: "MNDE_RECEIPT_SIGNING_KEY", idEnv: "MNDE_RECEIPT_KEY_ID", keyId: receipt.keyId, pem: encReceipt },
+    policy: { keyEnv: "MNDE_POLICY_SIGNING_KEY", idEnv: "MNDE_POLICY_KEY_ID", keyId: policy.keyId, pem: encPolicy }
+  });
+  wrong.env.MNDE_RECEIPT_SIGNING_KEY_PASSPHRASE = RECEIPT_PASS;
+  wrong.env.MNDE_POLICY_SIGNING_KEY_PASSPHRASE = "wrong-policy-pass";
+  try {
+    const res = await createCustody(wrong.env);
+    assert.equal(res.ok, false);
+    assert.equal(res.custodyCode, "PASSPHRASE_INVALID");
+    assert.equal(res.reason, "custody: passphrase for MNDE_POLICY_SIGNING_KEY is invalid");
+  } finally {
+    rmSync(wrong.dir, { recursive: true, force: true });
+  }
+});
+
+// Retained role object shape: privateKey handle, no privatePem / passphrase.
+test("ENC: file-backed role objects retain an opaque handle, never PEM or passphrase", async () => {
+  const { bundle, receipt } = await makeMultiRoleFixture();
+  const { dir, env } = writeCustodyDir(bundle, {
+    receipt: { keyEnv: "MNDE_RECEIPT_SIGNING_KEY", idEnv: "MNDE_RECEIPT_KEY_ID", keyId: receipt.keyId, pem: encryptPem(receipt.privatePem, RECEIPT_PASS) }
+  });
+  env.MNDE_RECEIPT_SIGNING_KEY_PASSPHRASE = RECEIPT_PASS;
+  try {
+    const res = await createCustody(env);
+    assert.equal(res.ok, true, res.reason);
+    // The provider is a closure; assert via its serialized form that no secret
+    // leaks and that signing still works through the opaque handle.
+    const serialized = JSON.stringify(res.provider, (_k, v) => (typeof v === "function" ? "[fn]" : v));
+    assert.ok(!serialized.includes("PRIVATE KEY"), "provider must not serialize any PEM");
+    assert.ok(!serialized.includes(SECRET_MARKER), "provider must not serialize the passphrase");
+    assert.ok(!serialized.includes("privatePem"), "no privatePem field on file-backed roles");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Secret-leak sweep: neither failure surface may echo passphrase or PEM material.
+test("ENC: no failure surface leaks passphrase or PEM material", async () => {
+  const { bundle, receipt } = await makeMultiRoleFixture();
+  const encReceipt = encryptPem(receipt.privatePem, RECEIPT_PASS);
+
+  for (const [label, passOverride] of [["missing", undefined], ["invalid", "the-wrong-secret-value"]]) {
+    const { dir, env } = writeCustodyDir(bundle, {
+      receipt: { keyEnv: "MNDE_RECEIPT_SIGNING_KEY", idEnv: "MNDE_RECEIPT_KEY_ID", keyId: receipt.keyId, pem: encReceipt }
+    });
+    if (passOverride !== undefined) env.MNDE_RECEIPT_SIGNING_KEY_PASSPHRASE = passOverride;
+    try {
+      const res = await createCustody(env);
+      const cfg = await loadSigningConfig({ ...env, MNDE_RECEIPT_SIGNING_MODE: "custody" });
+      const surfaces = [
+        res.reason,
+        res.custodyCode,
+        cfg.reason_code,
+        cfg.detail,
+        JSON.stringify(res),
+        JSON.stringify(cfg)
+      ].join("\n");
+      assert.ok(!surfaces.includes(SECRET_MARKER), `${label}: must not contain passphrase marker`);
+      assert.ok(!surfaces.includes(PEM_HEADER), `${label}: must not contain PEM header`);
+      assert.ok(!surfaces.includes("aes-256-cbc"), `${label}: must not contain cipher/openssl detail`);
+      assert.ok(!surfaces.includes(encReceipt.slice(40, 90)), `${label}: must not contain PEM body bytes`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
 });
 

@@ -61,8 +61,17 @@ function versionOf(schema) {
 }
 
 // Map low-level custody/bundle/key reasons onto distinct, stable wire codes.
-function custodyConfigCode(reason) {
+// `custodyCode` is a structured classification from CustodyConfigurationError
+// (preferred); `reason` is the sanitized message (text fallback). Passphrase
+// codes are resolved FIRST so an encrypted-key failure never collapses into the
+// broad SIGNING_KEY / KEY_MISSING classification below (both passphrase messages
+// contain "SIGNING_KEY").
+function custodyConfigCode(reason, custodyCode) {
+  if (custodyCode === "PASSPHRASE_REQUIRED") return "ERR_CUSTODY_KEY_PASSPHRASE_REQUIRED";
+  if (custodyCode === "PASSPHRASE_INVALID") return "ERR_CUSTODY_KEY_PASSPHRASE_INVALID";
   const text = String(reason ?? "");
+  if (/^custody: MNDE_[A-Z_]+ requires MNDE_[A-Z_]+_PASSPHRASE$/.test(text)) return "ERR_CUSTODY_KEY_PASSPHRASE_REQUIRED";
+  if (/^custody: passphrase for MNDE_[A-Z_]+ is invalid$/.test(text)) return "ERR_CUSTODY_KEY_PASSPHRASE_INVALID";
   if (/cannot read MNDE_AUTHORITY_BUNDLE|MNDE_AUTHORITY_BUNDLE not configured/.test(text)) return "ERR_CUSTODY_BUNDLE_MISSING";
   if (/not valid JSON|not an mnde\.authority\.bundle/.test(text)) return "ERR_CUSTODY_BUNDLE_INVALID";
   if (/revoked|KEY_REVOKED/.test(text)) return "ERR_CUSTODY_KEY_REVOKED";
@@ -100,7 +109,7 @@ export async function loadSigningConfig(env = process.env) {
     }
   } else {
     const custody = await createCustody(env);
-    if (!custody.ok) return { ok: false, mode: "custody", reason_code: custodyConfigCode(custody.reason), detail: custody.reason };
+    if (!custody.ok) return { ok: false, mode: "custody", reason_code: custodyConfigCode(custody.reason, custody.custodyCode), detail: custody.reason };
     provider = custody.provider;
   }
 
