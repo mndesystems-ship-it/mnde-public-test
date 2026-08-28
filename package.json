@@ -87,6 +87,7 @@
     "test:sidecar": "node ./tests/test_sidecar_launcher.mjs",
     "test:feline": "node ./tests/test_feline_input.mjs",
     "executor-demo": "node ./scripts/executor-demo.mjs",
+    "test:execution-envelope": "node ./tests/test_execution_envelope.mjs",
     "test:execution-gate": "node ./tests/test_execution_gate.mjs",
     "test:execution-gate-signing": "node ./tests/test_execution_gate_signing.mjs",
     "test:execution-ledger": "node ./tests/test_execution_ledger.mjs",

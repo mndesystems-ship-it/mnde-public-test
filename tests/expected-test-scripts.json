@@ -17,6 +17,7 @@
   "test:data-root-receipts",
   "test:engine-default",
   "test:event-import",
+  "test:execution-envelope",
   "test:execution-gate",
   "test:execution-gate-signing",
   "test:execution-id-dedup",
