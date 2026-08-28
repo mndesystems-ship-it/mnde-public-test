@@ -16,6 +16,7 @@
   "test:dashboard",
   "test:data-root-receipts",
   "test:engine-default",
+  "test:execution-envelope",
   "test:execution-gate",
   "test:execution-gate-signing",
   "test:execution-id-dedup",
