@@ -13,6 +13,19 @@ import { activateSignedPolicyBundle } from "../src/policy-bundles/index.mjs";
 const NOW = "2026-08-15T12:00:00.000Z";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = join(repoRoot, "tools", "sign-policy-bundle.mjs");
+
+// Temp-dir teardown is best-effort and must never fail a test. On Windows a
+// recursive rmSync of a just-spawned child's working dir can transiently throw
+// EBUSY/EPERM when AV/indexer/a lingering handle holds a file — more likely
+// under full-suite load, which is why this suite passed in isolation but
+// occasionally failed in the full run. Retry, then swallow.
+function safeCleanup(dir) {
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  } catch {
+    // ignore: cleanup of a scratch temp dir is not part of the assertion under test
+  }
+}
 let passed = 0;
 let failed = 0;
 
@@ -92,7 +105,7 @@ await test("CLI output activates through the real signed-bundle gate", async () 
     const activated = await activate(f, bundle);
     assert.equal(activated.ok, true, activated.reason);
     assert.equal(activated.policy.policy_id, "editor-policy");
-  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  } finally { safeCleanup(f.dir); }
 });
 
 await test("tampering the signed policy is rejected by its policy hash", async () => {
@@ -103,7 +116,7 @@ await test("tampering the signed policy is rejected by its policy hash", async (
     const result = await activate(f, bundle);
     assert.equal(result.ok, false);
     assert.equal(result.reason, "POLICY_BUNDLE_POLICY_HASH_MISMATCH");
-  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  } finally { safeCleanup(f.dir); }
 });
 
 await test("tampering the signature is rejected", async () => {
@@ -114,7 +127,7 @@ await test("tampering the signature is rejected", async () => {
     const result = await activate(f, bundle);
     assert.equal(result.ok, false);
     assert.equal(result.reason, "POLICY_BUNDLE_SIGNATURE_INVALID");
-  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  } finally { safeCleanup(f.dir); }
 });
 
 await test("a foreign private key cannot impersonate the trusted policy key id", async () => {
@@ -128,7 +141,7 @@ await test("a foreign private key cannot impersonate the trusted policy key id",
     const result = await activate(f, bundle);
     assert.equal(result.ok, false);
     assert.equal(result.reason, "POLICY_BUNDLE_SIGNATURE_INVALID");
-  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  } finally { safeCleanup(f.dir); }
 });
 
 await test("serial reuse with different signed content is refused", async () => {
@@ -140,7 +153,7 @@ await test("serial reuse with different signed content is refused", async () => 
     const result = await activate(f, replacement);
     assert.equal(result.ok, false);
     assert.equal(result.reason, "POLICY_BUNDLE_SERIAL_REUSE_REFUSED");
-  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  } finally { safeCleanup(f.dir); }
 });
 
 await test("serial rollback without authorization is refused", async () => {
@@ -152,7 +165,7 @@ await test("serial rollback without authorization is refused", async () => {
     const result = await activate(f, stale);
     assert.equal(result.ok, false);
     assert.equal(result.reason, "POLICY_BUNDLE_SERIAL_ROLLBACK_REFUSED");
-  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  } finally { safeCleanup(f.dir); }
 });
 
 await test("CLI rejects malformed input and dangerous output paths without leaking key material", async () => {
@@ -175,7 +188,7 @@ await test("CLI rejects malformed input and dangerous output paths without leaki
     assert.equal(overwrite.status, 1);
     assert.match(overwrite.stderr, /must not overwrite the signing key/);
     assert.ok(!`${badSchema.result.stderr}${badSerial.result.stderr}${unknown.result.stderr}${overwrite.stderr}`.includes(f.policyKey.privatePem));
-  } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  } finally { safeCleanup(f.dir); }
 });
 
 console.log(`\n${failed === 0 ? "PASS" : "FAIL"} policy bundle signing CLI (${passed}/${passed + failed})`);

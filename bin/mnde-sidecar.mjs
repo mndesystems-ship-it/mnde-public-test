@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // @mnde/sidecar — zero-to-first-receipt bootstrap CLI.
 //
-//   npx @mnde/sidecar init      # generate local keys + authority + starter policy
-//   npx @mnde/sidecar doctor    # fail-closed readiness check (exit 1 on any FAIL)
-//   npx @mnde/sidecar start     # run the sidecar (foreground)
-//   npx @mnde/sidecar smoke     # prove it: one decision -> signed receipt -> verified
+//   npx mnde-sidecar init      # generate local keys + authority + starter policy
+//   npx mnde-sidecar doctor    # fail-closed readiness check (exit 1 on any FAIL)
+//   npx mnde-sidecar start     # run the sidecar (foreground)
+//   npx mnde-sidecar smoke     # prove it: one decision -> signed receipt -> verified
 //
 // Goal: `init -> doctor -> start` (or `smoke`) yields a first verifiable receipt
 // in under two minutes. Everything here reuses the repo's audited modules; this
@@ -143,7 +143,7 @@ function cmdInit() {
     say(ok(`receipt signing keys + authority manifest (${res.status})`));
     say(ok(`receipt directory  ${RECEIPTS_DIR}`));
     say(ok(`starter policy     ${STARTER_POLICY}`));
-    say("\nNext:  npx @mnde/sidecar doctor   then   npx @mnde/sidecar start");
+    say("\nNext:  npx mnde-sidecar doctor   then   npx mnde-sidecar start");
     return 0;
   });
 }
@@ -194,8 +194,8 @@ async function cmdDoctor() {
   }
   const hardFails = checks.filter((c) => !c.pass && !c.soft);
   say("");
-  if (hardFails.length === 0) { say("\x1b[32mAll checks passed.\x1b[0m  Run: npx @mnde/sidecar start"); return 0; }
-  err(`\x1b[31m${hardFails.length} check(s) failed.\x1b[0m  Run: npx @mnde/sidecar init`);
+  if (hardFails.length === 0) { say("\x1b[32mAll checks passed.\x1b[0m  Run: npx mnde-sidecar start"); return 0; }
+  err(`\x1b[31m${hardFails.length} check(s) failed.\x1b[0m  Run: npx mnde-sidecar init`);
   return 1;
 }
 
@@ -204,7 +204,7 @@ async function cmdStart() {
   const missing = [];
   if (!existsSync(RUNTIME)) missing.push("sidecar runtime");
   if (!existsSync(PRIVATE_KEY)) missing.push("receipt signing key");
-  if (missing.length) { err(`Not initialized (${missing.join(", ")}). Run: npx @mnde/sidecar init`); return 1; }
+  if (missing.length) { err(`Not initialized (${missing.join(", ")}). Run: npx mnde-sidecar init`); return 1; }
   const { receiptSigningKeyStatus } = await import(pathToFileURL(resolveTsOrJs("shared/receipt-signing")).href);
   const keyStatus = receiptSigningKeyStatus();
   if (!keyStatus.ok) {
@@ -232,7 +232,7 @@ async function cmdSmoke() {
   // Reusing whatever happens to be running on PORT is non-deterministic — a
   // foreign policy would REFUSE read_status and give a false failure.
   materializeStarterPolicy();
-  if (!existsSync(PRIVATE_KEY)) { err("Not initialized. Run: npx @mnde/sidecar init"); return 1; }
+  if (!existsSync(PRIVATE_KEY)) { err("Not initialized. Run: npx mnde-sidecar init"); return 1; }
   const targetPort = SMOKE_PORT;
   if (await health(SMOKE_PORT)) { err(`Smoke port ${SMOKE_PORT} is busy. Set MNDE_SMOKE_PORT to a free port.`); return 1; }
   say(`  booting a transient sidecar on ${targetPort} (starter policy)...`);
@@ -278,7 +278,7 @@ function cmdHelp() {
   say(`@mnde/sidecar — verifiable authorization receipts for AI actions
 
 Usage:
-  npx @mnde/sidecar <command>
+  npx mnde-sidecar <command>
 
 Commands:
   version   show installed release identity (add --json for machine output)
