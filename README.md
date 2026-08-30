@@ -24,6 +24,12 @@ Three integration paths share the same decision and receipt flow:
 - **MNDe MCP server** ([mcp/](mcp/)) — expose tools over the Model Context Protocol; each `tools/call` is authorized first. `npm run mcp-demo`, `npm run test:mcp`.
 - **MNDe MCP proxy** ([mcp/mnde-mcp-proxy.mjs](mcp/mnde-mcp-proxy.mjs)) — place MNDe in front of an existing MCP server; `tools/call` is authorized before execution, with no changes to the upstream. `npm run mcp-proxy-demo`, `npm run test:mcp-proxy`.
 
+Historical evidence can enter through the **Generic Event Import Foundation**
+([specification and usage](docs/generic-event-import-foundation.md)). It preserves
+raw evidence, normalizes source data through adapters into one canonical event
+model, and supports tenant-scoped search and policy simulation without executing
+actions.
+
 The tests assert that no code path executes (or, in the proxy, forwards) a `REFUSE`d call. The MCP tests check this across process boundaries using a marker file written only when the underlying tool actually runs.
 
 ## Quick Start
@@ -314,6 +320,7 @@ These exist as architecture or concepts in the repository but are not claimed as
 - [Discovery](docs/discovery.md)
 - [Wiring](docs/wiring.md)
 - [Policy drafting](docs/policy-drafting.md)
+- [Policy lifecycle (DRAFT/READY/ACTIVE/RETIRED) and activation](docs/policy-lifecycle.md)
 - [MNDe Policy Engine production spec](docs/mnde-policy-engine-production-spec-v1.md)
 - [Onboarding security model](docs/security-model.md)
 - [Trust-anchored receipt verification](docs/trust-anchored-verification.md)

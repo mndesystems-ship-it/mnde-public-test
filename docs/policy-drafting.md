@@ -53,6 +53,38 @@ It does not:
 - prove a tool is safe
 - override MNDe decisions
 
+## From Draft To Policy
+
+The draft is a starting point, not an active policy. To turn it into one, load it
+into the Policy Editor, which converts each recommendation into an editable rule.
+The full path:
+
+```text
+mnde init --apply            # discovers tools, writes policy.draft.json
+  -> open policy-editor/mnde-policy-editor.html
+  -> Load draft               # (or Import…) select policy.draft.json
+  -> review recommendations   # allow -> ALLOW, approval -> APPROVAL, deny -> REFUSE
+  -> edit rules               # tighten conditions, rename rule IDs, add authority
+  -> compile                  # editor emits a schema_version "1.0" policy
+  -> Download                 # policy.json for MNDE_PE_POLICY (dev/test), or
+  -> sign                     # policy-bundle:sign for MNDE_PE_POLICY_BUNDLE (prod)
+```
+
+On import the editor is deliberately conservative: `allow` becomes an `ALLOW`
+rule, `approval` becomes `APPROVAL`, and `deny` — plus any unclassified or
+unrecognized recommendation — becomes `REFUSE`. It never upgrades an unknown
+recommendation to `ALLOW`. Servers whose tools were not enumerated
+(`tools_enumerated: false`) are skipped, with a notice to re-run discovery with
+`--probe` or add those rules by hand.
+
+The imported rules are only the tool recommendations. The draft's own
+`default_decision: REFUSE` is not imported as a rule because the engine already
+denies by default — every tool you do not explicitly allow is refused.
+
+The same **Load draft** / **Import…** picker also accepts an already-compiled
+`schema_version "1.0"` policy or a signed `mnde.policy.bundle.v1` (unwrapped to
+its policy document for editing; re-sign before activating).
+
 ## Production Use
 
 Before production use, an operator should replace the generated draft with an organization-specific policy reviewed by the people responsible for the systems being protected.

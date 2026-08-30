@@ -36,7 +36,7 @@ function bundleDigest(bundle) {
   return sha256(canonicalUnsignedBundle(bundle));
 }
 
-function policyHash(policyDocument) {
+export function policyHash(policyDocument) {
   return `sha256:${sha256(canonicalizeJson(policyDocument))}`;
 }
 
