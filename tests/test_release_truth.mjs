@@ -365,7 +365,7 @@ try {
     const freshHome = join(projectDir, "uninit-home");
     const r = run(nodeCmd, [sidecarCli, "start"], { cwd: projectDir, env: { ...process.env, MNDE_HOME: freshHome, MNDE_BIND_PORT: "8849" } });
     assert.notEqual(r.status, 0, "start without init must exit non-zero");
-    assert.match(`${r.stdout}\n${r.stderr}`, /Not initialized|Run: npx @mnde\/sidecar init/, "must give a clear, actionable message");
+    assert.match(`${r.stdout}\n${r.stderr}`, /Not initialized|Run: npx mnde-sidecar init/, "must give a clear, actionable message");
   });
 
   // ---- REL-06: production profile without custody fails closed --------------
