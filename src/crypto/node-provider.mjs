@@ -14,6 +14,7 @@ import {
   createPrivateKey,
   createPublicKey,
   generateKeyPairSync,
+  KeyObject,
   randomBytes as nodeRandomBytes,
   sign as nodeSign,
   timingSafeEqual,
@@ -38,9 +39,26 @@ export function spkiFingerprint(publicKeyPem) {
   return createHash("sha256").update(der).digest("hex");
 }
 
+// Import PKCS#8 private-key material into an opaque KeyObject handle.
+//
+// Synchronous. `privateKeyPem` is a PEM string; `options.passphrase` decrypts an
+// ENCRYPTED PRIVATE KEY (PKCS#8) — `undefined` means the material is unencrypted.
+// Node's provider is solely responsible for parsing, decrypting, and validating;
+// no custody-specific classification, logging, or PEM retention happens here.
+export function importPrivateKey(privateKeyPem, options = {}) {
+  const { passphrase } = options;
+  if (passphrase === undefined) {
+    return createPrivateKey({ key: privateKeyPem, format: "pem" });
+  }
+  return createPrivateKey({ key: privateKeyPem, format: "pem", passphrase });
+}
+
 // Ed25519 sign. Returns lowercase hex. Async to match the provider contract.
-export async function sign(messageBytes, privateKeyPem) {
-  return Buffer.from(nodeSign(null, toBuffer(messageBytes), createPrivateKey(privateKeyPem))).toString("hex");
+// Accepts either an existing PEM string (unchanged path) or a private KeyObject
+// handle produced by importPrivateKey(); the imported handle is never re-parsed.
+export async function sign(messageBytes, privateKey) {
+  const key = privateKey instanceof KeyObject ? privateKey : createPrivateKey(privateKey);
+  return Buffer.from(nodeSign(null, toBuffer(messageBytes), key)).toString("hex");
 }
 
 // Ed25519 verify. Returns boolean; never throws (malformed inputs => false).

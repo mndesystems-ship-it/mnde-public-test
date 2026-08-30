@@ -76,11 +76,40 @@ Loads a published bundle plus role private keys from the filesystem — keys liv
 | `MNDE_AUTHORITY_BUNDLE` | Path to the published `mnde.authority.bundle.v1` |
 | `MNDE_RECEIPT_SIGNING_KEY` | Path to the receipt private key (PEM) |
 | `MNDE_RECEIPT_KEY_ID` | Receipt key id in the bundle (defaults to first) |
+| `MNDE_RECEIPT_SIGNING_KEY_PASSPHRASE` | Passphrase for an encrypted receipt key (see below) |
 | `MNDE_LEDGER_SIGNING_KEY` / `MNDE_LEDGER_KEY_ID` | Ledger signing key; required in production because the execution ledger is always enabled |
+| `MNDE_LEDGER_SIGNING_KEY_PASSPHRASE` | Passphrase for an encrypted ledger key |
 | `MNDE_POLICY_SIGNING_KEY` / `MNDE_POLICY_KEY_ID` | Optional policy signing key |
+| `MNDE_POLICY_SIGNING_KEY_PASSPHRASE` | Passphrase for an encrypted policy key |
 | `MNDE_APPROVAL_SIGNING_KEY` / `MNDE_APPROVAL_KEY_ID` | Optional approval signing key |
+| `MNDE_APPROVAL_SIGNING_KEY_PASSPHRASE` | Passphrase for an encrypted approval key |
+| `MNDE_RESULT_SIGNING_KEY` / `MNDE_RESULT_KEY_ID` / `MNDE_RESULT_SIGNING_KEY_PASSPHRASE` | Optional result signing key + its passphrase |
+| `MNDE_ACTIVATION_SIGNING_KEY` / `MNDE_ACTIVATION_KEY_ID` / `MNDE_ACTIVATION_SIGNING_KEY_PASSPHRASE` | Optional activation signing key + its passphrase |
 
 Missing, malformed, or non-matching configuration **fails closed** — `createCustody()` returns `{ ok: false, reason }` and never silently falls back to demo keys.
+
+#### Passphrase-protected keys
+
+File-backed keys may be either an unencrypted PKCS#8 PEM (`BEGIN PRIVATE KEY`) or a passphrase-protected PKCS#8 PEM (the encrypted `ENCRYPTED PRIVATE KEY` form, e.g. `openssl pkcs8 -topk8 -v2 aes-256-cbc`). For an encrypted key, set the role's matching `*_PASSPHRASE` variable:
+
+- Each role uses **only** its own passphrase variable — one role's passphrase is never a fallback for another.
+- An **unset or empty** passphrase counts as *no passphrase*; passphrase whitespace is significant and never trimmed (`" "` is a one-character passphrase).
+- MNDe imports and validates every configured key **at startup, before readiness**. A **missing** passphrase for an encrypted key fails production startup (`ERR_CUSTODY_KEY_PASSPHRASE_REQUIRED`); an **incorrect** one fails production startup (`ERR_CUSTODY_KEY_PASSPHRASE_INVALID`). No decision or signing request is served after a failed preflight.
+- MNDe never logs or returns passphrases or private PEM; failure detail is limited to the variable name and a stable reason code.
+- Signature bytes, key ids, published public keys, and bundle fingerprints are **unchanged** by encryption at rest — an encrypted key and the same key unencrypted produce identical signatures.
+
+Minimal deployment example (placeholders only — never put a real passphrase in a committed file or shell history):
+
+```bash
+MNDE_KEY_CUSTODY=file-backed-production
+MNDE_AUTHORITY_BUNDLE=/etc/mnde/authority.bundle.json
+MNDE_RECEIPT_SIGNING_KEY=/etc/mnde/receipt-signing.key.pem      # ENCRYPTED PKCS#8
+MNDE_RECEIPT_SIGNING_KEY_PASSPHRASE=<injected-secret>
+MNDE_LEDGER_SIGNING_KEY=/etc/mnde/ledger-signing.key.pem        # ENCRYPTED PKCS#8
+MNDE_LEDGER_SIGNING_KEY_PASSPHRASE=<injected-secret>
+```
+
+**Scope of protection.** This encrypts supported private-key *files at rest*. It is not a secret manager: environment-variable injection is only as safe as the deployment tooling that populates it, which must protect these secrets. Once a key is imported, its decrypted signing capability exists inside the MNDe process — so process compromise, a host-administrator with process access, or memory inspection defeats file-at-rest encryption. For a stronger isolation boundary where the private key never enters the MNDe process, use **external-signer custody** (below). This feature is not threshold custody and not HSM-equivalent custody.
 
 ## Tier 2: external-signer custody
 
